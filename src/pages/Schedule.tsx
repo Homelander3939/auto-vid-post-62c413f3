@@ -35,10 +35,15 @@ export default function Schedule() {
     if (data) setConfig(data);
   }, [data]);
 
-  const handleSave = () => {
-    saveSchedule(config);
+  const handleSave = async () => {
+    await saveSchedule(config);
     queryClient.invalidateQueries({ queryKey: ['schedule'] });
-    toast({ title: 'Schedule saved', description: config.enabled ? `Cron: ${config.cronExpression}` : 'Schedule disabled' });
+    toast({
+      title: 'Schedule saved',
+      description: config.enabled
+        ? `Cron: ${config.cronExpression} (active when running locally)`
+        : 'Schedule disabled',
+    });
   };
 
   const togglePlatform = (p: string) => {
@@ -55,7 +60,7 @@ export default function Schedule() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Scheduled Uploads</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Auto-upload videos on a schedule (active when running locally)
+          Auto-upload videos on a schedule (cron runs on local server)
         </p>
       </div>
 

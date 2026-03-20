@@ -1,22 +1,13 @@
-import {
-  getSettings,
-  saveSettings,
-  getDemoFiles,
-  setDemoFiles,
-  clearDemoFiles,
-  type AppSettings,
-  type DemoFiles,
-} from '@/lib/storage';
+import { getSettings, saveSettings, type AppSettings } from '@/lib/storage';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
-import { useState, useEffect, useRef } from 'react';
-import { FolderOpen, Eye, EyeOff, FlaskConical, Trash2, UploadCloud, FileVideo, FileText } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { FolderOpen, Eye, EyeOff } from 'lucide-react';
 
 function PasswordInput({
   value,
@@ -55,11 +46,6 @@ const defaultSettings: AppSettings = {
   telegram: { botToken: '', chatId: '', enabled: false },
 };
 
-const sampleTextContent = `Title: My Amazing Video
-Description: Check out this awesome content I made!
-Tags: vlog, tutorial, howto, trending
-Platforms: youtube, tiktok, instagram`;
-
 export default function SettingsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -70,67 +56,22 @@ export default function SettingsPage() {
   });
 
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
-  const [demoVideoName, setDemoVideoName] = useState('');
-  const [demoTextContent, setDemoTextContent] = useState('');
-  const [demoVideoFile, setDemoVideoFile] = useState<File | null>(null);
-  const videoInputRef = useRef<HTMLInputElement>(null);
-  const textInputRef = useRef<HTMLInputElement>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (savedSettings) setSettings(savedSettings);
-    const demo = getDemoFiles();
-    if (demo) {
-      setDemoVideoName(demo.videoFileName);
-      setDemoTextContent(demo.textContent);
-    }
   }, [savedSettings]);
 
-  const handleSaveSettings = () => {
-    saveSettings(settings);
-    queryClient.invalidateQueries({ queryKey: ['settings'] });
-    toast({ title: 'Settings saved' });
-  };
-
-  const handleSaveDemo = () => {
-    if (!demoVideoName.trim()) {
-      toast({ title: 'Enter a video filename', variant: 'destructive' });
-      return;
-    }
-    setDemoFiles({ videoFileName: demoVideoName, textContent: demoTextContent });
-    queryClient.invalidateQueries({ queryKey: ['scan'] });
-    toast({ title: 'Demo files saved', description: 'Go to Dashboard to see detected files.' });
-  };
-
-  const handleClearDemo = () => {
-    clearDemoFiles();
-    setDemoVideoName('');
-    setDemoTextContent('');
-    queryClient.invalidateQueries({ queryKey: ['scan'] });
-    toast({ title: 'Demo files cleared' });
-  };
-
-  const handleLoadSample = () => {
-    setDemoVideoName('my_awesome_video.mp4');
-    setDemoTextContent(sampleTextContent);
-  };
-
-  const handleVideoFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setDemoVideoName(file.name);
-    setDemoVideoFile(file);
-    toast({ title: `Video selected: ${file.name}` });
-  };
-
-  const handleTextFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleSave = async () => {
+    setSaving(true);
     try {
-      const text = await file.text();
-      setDemoTextContent(text);
-      toast({ title: `Text file loaded: ${file.name}` });
-    } catch {
-      toast({ title: 'Could not read text file', variant: 'destructive' });
+      await saveSettings(settings);
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      toast({ title: 'Settings saved' });
+    } catch (err: any) {
+      toast({ title: 'Error saving', description: err.message, variant: 'destructive' });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -150,113 +91,19 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Configure folder, credentials, notifications, and demo files
+          Configure folder path, platform credentials, and Telegram notifications
         </p>
       </div>
-
-      {/* Demo Files — show first since this is needed for preview testing */}
-      <Card className="border-primary/20">
-        <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2">
-            <FlaskConical className="w-4 h-4 text-primary" />
-            Demo Files (Preview Mode)
-          </CardTitle>
-          <CardDescription>
-            Simulate video and text files to test the full flow without a local server
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          {/* Upload buttons */}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input
-              ref={videoInputRef}
-              type="file"
-              accept="video/*,.mp4,.mov,.avi,.mkv,.webm"
-              className="hidden"
-              onChange={handleVideoFileSelect}
-            />
-            <button
-              type="button"
-              onClick={() => videoInputRef.current?.click()}
-              className="flex flex-col items-center gap-2 rounded-lg border-2 border-dashed border-border p-6 text-center transition-colors hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98]"
-            >
-              <FileVideo className="w-6 h-6 text-primary" />
-              <span className="text-sm font-medium">Upload Video File</span>
-              <span className="text-xs text-muted-foreground">.mp4, .mov, .avi, .mkv, .webm</span>
-            </button>
-
-            <input
-              ref={textInputRef}
-              type="file"
-              accept=".txt,text/plain"
-              className="hidden"
-              onChange={handleTextFileSelect}
-            />
-            <button
-              type="button"
-              onClick={() => textInputRef.current?.click()}
-              className="flex flex-col items-center gap-2 rounded-lg border-2 border-dashed border-border p-6 text-center transition-colors hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98]"
-            >
-              <FileText className="w-6 h-6 text-primary" />
-              <span className="text-sm font-medium">Upload Text File</span>
-              <span className="text-xs text-muted-foreground">.txt with title, description, tags</span>
-            </button>
-          </div>
-
-          {/* Video filename */}
-          <div className="space-y-2">
-            <Label>Video Filename</Label>
-            <Input
-              value={demoVideoName}
-              onChange={(e) => setDemoVideoName(e.target.value)}
-              placeholder="my_video.mp4"
-              className="font-mono"
-            />
-            {demoVideoFile && (
-              <p className="text-xs text-muted-foreground">
-                Selected: {demoVideoFile.name} ({(demoVideoFile.size / 1024 / 1024).toFixed(1)} MB)
-              </p>
-            )}
-          </div>
-
-          {/* Text content */}
-          <div className="space-y-2">
-            <Label>Text File Content</Label>
-            <Textarea
-              value={demoTextContent}
-              onChange={(e) => setDemoTextContent(e.target.value)}
-              placeholder={`Title: My Video\nDescription: ...\nTags: tag1, tag2\nPlatforms: youtube, tiktok, instagram`}
-              className="font-mono text-sm min-h-[120px]"
-            />
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={handleSaveDemo} size="sm" className="gap-1.5">
-              <UploadCloud className="w-3.5 h-3.5" />
-              Save & Apply
-            </Button>
-            <Button variant="outline" size="sm" onClick={handleLoadSample}>
-              Load Sample
-            </Button>
-            {getDemoFiles() && (
-              <Button variant="ghost" size="sm" onClick={handleClearDemo} className="text-destructive">
-                <Trash2 className="w-3.5 h-3.5 mr-1" />
-                Clear
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
 
       {/* Folder Path */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <FolderOpen className="w-4 h-4" />
-            Video Folder
+            Video Folder (Local Mode)
           </CardTitle>
           <CardDescription>
-            Path to the folder where videos and text files are placed (used when running locally)
+            Path to the folder where videos and text files are placed when running locally
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -352,8 +199,8 @@ export default function SettingsPage() {
         )}
       </Card>
 
-      <Button onClick={handleSaveSettings} size="lg">
-        Save All Settings
+      <Button onClick={handleSave} disabled={saving} size="lg">
+        {saving ? 'Saving…' : 'Save All Settings'}
       </Button>
     </div>
   );

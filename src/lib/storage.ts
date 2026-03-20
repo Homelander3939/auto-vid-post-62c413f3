@@ -1,8 +1,7 @@
-// Storage layer — works entirely in-browser via localStorage.
-// When running locally with the Node.js server, the server handles actual uploads.
-// This layer handles all CRUD so the UI works standalone in Lovable preview.
+// Storage layer — uses Supabase for persistence.
+// Works in Lovable preview (online) and locally when pulled from GitHub.
 
-// No external deps needed — we use a simple ID generator below
+import { supabase } from '@/integrations/supabase/client';
 
 export interface AppSettings {
   folderPath: string;
@@ -19,13 +18,7 @@ export interface VideoMetadata {
   platforms: string[];
 }
 
-export interface ScanResult {
-  videoFile: string | null;
-  textFile: string | null;
-  metadata: VideoMetadata | null;
-}
-
-export interface PlatformStatus {
+export interface PlatformResult {
   name: string;
   status: 'pending' | 'uploading' | 'success' | 'error';
   url?: string;
@@ -34,11 +27,16 @@ export interface PlatformStatus {
 
 export interface UploadJob {
   id: string;
-  videoFile: string;
-  metadata: VideoMetadata | null;
-  platforms: PlatformStatus[];
-  createdAt: string;
-  completedAt?: string;
+  video_file_name: string;
+  video_storage_path: string | null;
+  title: string;
+  description: string;
+  tags: string[];
+  target_platforms: string[];
+  status: string;
+  platform_results: PlatformResult[];
+  created_at: string;
+  completed_at: string | null;
 }
 
 export interface ScheduleConfig {
@@ -46,13 +44,6 @@ export interface ScheduleConfig {
   cronExpression: string;
   platforms: string[];
 }
-
-const KEYS = {
-  settings: 'vu_settings',
-  queue: 'vu_queue',
-  schedule: 'vu_schedule',
-  demoFiles: 'vu_demo_files',
-};
 
 const defaultSettings: AppSettings = {
   folderPath: '',
@@ -62,57 +53,65 @@ const defaultSettings: AppSettings = {
   telegram: { botToken: '', chatId: '', enabled: false },
 };
 
-const defaultSchedule: ScheduleConfig = {
-  enabled: false,
-  cronExpression: '0 9 * * *',
-  platforms: ['youtube', 'tiktok', 'instagram'],
-};
-
-function read<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function write<T>(key: string, data: T): void {
-  localStorage.setItem(key, JSON.stringify(data));
-}
-
-function generateId(): string {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-}
-
 // --- Settings ---
-export function getSettings(): AppSettings {
-  return read(KEYS.settings, defaultSettings);
+export async function getSettings(): Promise<AppSettings> {
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('*')
+    .eq('id', 1)
+    .single();
+
+  if (error || !data) return defaultSettings;
+
+  return {
+    folderPath: data.folder_path,
+    youtube: { email: data.youtube_email, password: data.youtube_password, enabled: data.youtube_enabled },
+    tiktok: { email: data.tiktok_email, password: data.tiktok_password, enabled: data.tiktok_enabled },
+    instagram: { email: data.instagram_email, password: data.instagram_password, enabled: data.instagram_enabled },
+    telegram: { botToken: data.telegram_bot_token, chatId: data.telegram_chat_id, enabled: data.telegram_enabled },
+  };
 }
 
-export function saveSettings(settings: AppSettings): AppSettings {
-  write(KEYS.settings, settings);
-  return settings;
+export async function saveSettings(settings: AppSettings): Promise<void> {
+  await supabase
+    .from('app_settings')
+    .update({
+      folder_path: settings.folderPath,
+      youtube_email: settings.youtube.email,
+      youtube_password: settings.youtube.password,
+      youtube_enabled: settings.youtube.enabled,
+      tiktok_email: settings.tiktok.email,
+      tiktok_password: settings.tiktok.password,
+      tiktok_enabled: settings.tiktok.enabled,
+      instagram_email: settings.instagram.email,
+      instagram_password: settings.instagram.password,
+      instagram_enabled: settings.instagram.enabled,
+      telegram_bot_token: settings.telegram.botToken,
+      telegram_chat_id: settings.telegram.chatId,
+      telegram_enabled: settings.telegram.enabled,
+    })
+    .eq('id', 1);
 }
 
-// --- Scan (demo mode) ---
-export interface DemoFiles {
-  videoFileName: string;
-  textContent: string;
+// --- Video file upload to storage ---
+export async function uploadVideoFile(file: File): Promise<string> {
+  const ext = file.name.split('.').pop() || 'mp4';
+  const storagePath = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+  const { error } = await supabase.storage
+    .from('videos')
+    .upload(storagePath, file);
+
+  if (error) throw new Error(`Upload failed: ${error.message}`);
+  return storagePath;
 }
 
-export function getDemoFiles(): DemoFiles | null {
-  return read<DemoFiles | null>(KEYS.demoFiles, null);
+export function getVideoUrl(storagePath: string): string {
+  const { data } = supabase.storage.from('videos').getPublicUrl(storagePath);
+  return data.publicUrl;
 }
 
-export function setDemoFiles(files: DemoFiles): void {
-  write(KEYS.demoFiles, files);
-}
-
-export function clearDemoFiles(): void {
-  localStorage.removeItem(KEYS.demoFiles);
-}
-
+// --- Text file parsing ---
 export function parseTextContent(content: string): VideoMetadata {
   const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
   const metadata: VideoMetadata = {
@@ -149,152 +148,169 @@ export function parseTextContent(content: string): VideoMetadata {
   return metadata;
 }
 
-export function scanFolder(): ScanResult {
-  const demo = getDemoFiles();
-  if (!demo) {
-    const settings = getSettings();
-    if (settings.folderPath) {
-      // In standalone mode we can't read the filesystem.
-      // Return null to indicate "configure demo files or run locally"
-      return { videoFile: null, textFile: null, metadata: null };
+// --- Upload Jobs ---
+export async function getQueue(): Promise<UploadJob[]> {
+  const { data, error } = await supabase
+    .from('upload_jobs')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (error || !data) return [];
+  return data.map((row) => ({
+    ...row,
+    platform_results: (row.platform_results as any) || [],
+  }));
+}
+
+export async function createUploadJob(
+  videoFileName: string,
+  videoStoragePath: string | null,
+  metadata: VideoMetadata,
+  platforms: string[]
+): Promise<UploadJob> {
+  const platformResults: PlatformResult[] = platforms.map((name) => ({
+    name,
+    status: 'pending' as const,
+  }));
+
+  const { data, error } = await supabase
+    .from('upload_jobs')
+    .insert({
+      video_file_name: videoFileName,
+      video_storage_path: videoStoragePath,
+      title: metadata.title,
+      description: metadata.description,
+      tags: metadata.tags,
+      target_platforms: platforms,
+      status: 'pending',
+      platform_results: platformResults as any,
+    })
+    .select()
+    .single();
+
+  if (error || !data) throw new Error(error?.message || 'Failed to create job');
+
+  return { ...data, platform_results: platformResults };
+}
+
+export async function updateJobPlatformResults(
+  jobId: string,
+  platformResults: PlatformResult[],
+  status?: string,
+  completedAt?: string
+): Promise<void> {
+  const updates: any = { platform_results: platformResults };
+  if (status) updates.status = status;
+  if (completedAt) updates.completed_at = completedAt;
+
+  await supabase.from('upload_jobs').update(updates).eq('id', jobId);
+}
+
+export async function simulateUpload(jobId: string): Promise<void> {
+  // Get the job
+  const { data: job } = await supabase
+    .from('upload_jobs')
+    .select('*')
+    .eq('id', jobId)
+    .single();
+
+  if (!job) return;
+
+  const results = (job.platform_results as any as PlatformResult[]) || [];
+
+  // Update to processing
+  await updateJobPlatformResults(jobId, results, 'processing');
+
+  // Simulate each platform upload with delays
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].status !== 'pending') continue;
+
+    // Set uploading
+    results[i].status = 'uploading';
+    await updateJobPlatformResults(jobId, [...results], 'processing');
+
+    // Wait a bit
+    await new Promise((r) => setTimeout(r, 1500 + Math.random() * 2000));
+
+    // Simulate result (90% success in simulation)
+    const success = Math.random() > 0.1;
+    if (success) {
+      const urls: Record<string, string> = {
+        youtube: 'https://youtube.com/watch?v=demo_' + jobId.slice(0, 6),
+        tiktok: 'https://tiktok.com/@user/video/demo_' + jobId.slice(0, 6),
+        instagram: 'https://instagram.com/reel/demo_' + jobId.slice(0, 6),
+      };
+      results[i] = { ...results[i], status: 'success', url: urls[results[i].name] || '#' };
+    } else {
+      results[i] = { ...results[i], status: 'error', error: 'Simulated error — works with local server' };
     }
-    return { videoFile: null, textFile: null, metadata: null };
+    await updateJobPlatformResults(jobId, [...results], 'processing');
   }
 
-  const metadata = parseTextContent(demo.textContent);
-  return {
-    videoFile: demo.videoFileName,
-    textFile: demo.videoFileName.replace(/\.\w+$/, '.txt'),
-    metadata,
-  };
+  // Mark complete
+  const allSuccess = results.every((r) => r.status === 'success');
+  const anyError = results.some((r) => r.status === 'error');
+  const finalStatus = anyError ? 'failed' : 'completed';
+
+  await updateJobPlatformResults(
+    jobId,
+    results,
+    finalStatus,
+    new Date().toISOString()
+  );
 }
 
-// --- Upload Queue ---
-export function getQueue(): UploadJob[] {
-  return read<UploadJob[]>(KEYS.queue, []);
-}
+export async function retryJob(jobId: string): Promise<void> {
+  const { data: job } = await supabase
+    .from('upload_jobs')
+    .select('*')
+    .eq('id', jobId)
+    .single();
 
-function saveQueue(queue: UploadJob[]): void {
-  write(KEYS.queue, queue);
-}
-
-export function createUploadJob(
-  videoFile: string,
-  metadata: VideoMetadata | null,
-  platforms: string[]
-): UploadJob {
-  const job: UploadJob = {
-    id: generateId(),
-    videoFile,
-    metadata,
-    platforms: platforms.map((name) => ({ name, status: 'pending' })),
-    createdAt: new Date().toISOString(),
-  };
-
-  const queue = getQueue();
-  queue.unshift(job);
-  saveQueue(queue);
-  return job;
-}
-
-export function updateJobPlatformStatus(
-  jobId: string,
-  platformName: string,
-  status: PlatformStatus['status'],
-  extra?: { url?: string; error?: string }
-): void {
-  const queue = getQueue();
-  const job = queue.find((j) => j.id === jobId);
   if (!job) return;
 
-  const platform = job.platforms.find((p) => p.name === platformName);
-  if (!platform) return;
-
-  platform.status = status;
-  if (extra?.url) platform.url = extra.url;
-  if (extra?.error) platform.error = extra.error;
-  if (status === 'error') platform.error = extra?.error || 'Unknown error';
-
-  // Check if all done
-  const allDone = job.platforms.every((p) => p.status === 'success' || p.status === 'error');
-  if (allDone) job.completedAt = new Date().toISOString();
-
-  saveQueue(queue);
-}
-
-export function simulateUpload(jobId: string): void {
-  const queue = getQueue();
-  const job = queue.find((j) => j.id === jobId);
-  if (!job) return;
-
-  // Simulate uploads with delays
-  job.platforms.forEach((platform, i) => {
-    if (platform.status !== 'pending') return;
-
-    // Set to uploading
-    setTimeout(() => {
-      updateJobPlatformStatus(jobId, platform.name, 'uploading');
-      window.dispatchEvent(new Event('queue-updated'));
-    }, i * 1500 + 500);
-
-    // Simulate completion (80% success, 20% error for realism)
-    setTimeout(() => {
-      const success = Math.random() > 0.2;
-      if (success) {
-        const urls: Record<string, string> = {
-          youtube: 'https://youtube.com/watch?v=demo123',
-          tiktok: 'https://tiktok.com/@user/video/demo123',
-          instagram: 'https://instagram.com/reel/demo123',
-        };
-        updateJobPlatformStatus(jobId, platform.name, 'success', {
-          url: urls[platform.name] || '#',
-        });
-      } else {
-        updateJobPlatformStatus(jobId, platform.name, 'error', {
-          error: 'Simulated error — will work with real server',
-        });
-      }
-      window.dispatchEvent(new Event('queue-updated'));
-    }, i * 1500 + 3000 + Math.random() * 2000);
+  const results = (job.platform_results as any as PlatformResult[]) || [];
+  results.filter((r) => r.status === 'error').forEach((r) => {
+    r.status = 'pending';
+    r.error = undefined;
   });
+
+  await updateJobPlatformResults(jobId, results, 'pending');
+  simulateUpload(jobId); // fire and forget
 }
 
-export function retryJob(jobId: string): void {
-  const queue = getQueue();
-  const job = queue.find((j) => j.id === jobId);
-  if (!job) return;
-
-  job.platforms
-    .filter((p) => p.status === 'error')
-    .forEach((p) => {
-      p.status = 'pending';
-      p.error = undefined;
-    });
-  job.completedAt = undefined;
-  saveQueue(queue);
-  simulateUpload(jobId);
+export async function deleteJob(jobId: string): Promise<void> {
+  await supabase.from('upload_jobs').delete().eq('id', jobId);
 }
 
-export function clearQueue(): void {
-  saveQueue([]);
+export async function clearQueue(): Promise<void> {
+  await supabase.from('upload_jobs').delete().neq('id', '00000000-0000-0000-0000-000000000000');
 }
 
 // --- Schedule ---
-export function getSchedule(): ScheduleConfig {
-  return read(KEYS.schedule, defaultSchedule);
+export async function getSchedule(): Promise<ScheduleConfig> {
+  const { data, error } = await supabase
+    .from('schedule_config')
+    .select('*')
+    .eq('id', 1)
+    .single();
+
+  if (error || !data) return { enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'] };
+
+  return {
+    enabled: data.enabled,
+    cronExpression: data.cron_expression,
+    platforms: data.platforms,
+  };
 }
 
-export function saveSchedule(config: ScheduleConfig): ScheduleConfig {
-  write(KEYS.schedule, config);
-  return config;
-}
-
-// --- Server check ---
-export async function checkServer(): Promise<boolean> {
-  try {
-    const res = await fetch('http://localhost:3001/api/health', { signal: AbortSignal.timeout(2000) });
-    return res.ok;
-  } catch {
-    return false;
-  }
+export async function saveSchedule(config: ScheduleConfig): Promise<void> {
+  await supabase
+    .from('schedule_config')
+    .update({
+      enabled: config.enabled,
+      cron_expression: config.cronExpression,
+      platforms: config.platforms,
+    })
+    .eq('id', 1);
 }

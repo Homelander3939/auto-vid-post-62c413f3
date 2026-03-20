@@ -1,126 +1,99 @@
+// Local server that reads settings/jobs from Supabase and performs actual Playwright uploads.
+// This only runs on your local machine — it's the bridge between the web UI and browser automation.
+
 const express = require('express');
 const cors = require('cors');
+const { createClient } = require('@supabase/supabase-js');
 const { scanFolder } = require('./folderWatcher');
 const { parseTextFile } = require('./textParser');
 const { uploadToYouTube } = require('./uploaders/youtube');
 const { uploadToTikTok } = require('./uploaders/tiktok');
 const { uploadToInstagram } = require('./uploaders/instagram');
 const { sendTelegram } = require('./telegram');
-const { setupCron, getCronStatus, updateCron } = require('./scheduler');
-const fs = require('fs');
+const cron = require('node-cron');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const fs = require('fs');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const SETTINGS_FILE = path.join(__dirname, 'data', 'settings.json');
-const QUEUE_FILE = path.join(__dirname, 'data', 'queue.json');
-const SCHEDULE_FILE = path.join(__dirname, 'data', 'schedule.json');
+// --- Supabase client ---
+// These are the same keys used by the frontend (publishable/anon key)
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://mgcfeddzbgpcnzdgxzfp.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1nY2ZlZGR6YmdwY256ZGd4emZwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQwMDM3MDMsImV4cCI6MjA4OTU3OTcwM30.-EuZuspd55AdbVfpY5pFSw8Wuk_56iYbtOgCOMDOLhE';
 
-// Ensure data directory exists
-const dataDir = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-function readJSON(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf-8')); }
-  catch { return fallback; }
+// --- Helpers ---
+async function getSettings() {
+  const { data } = await supabase.from('app_settings').select('*').eq('id', 1).single();
+  if (!data) throw new Error('No settings found');
+  return {
+    folderPath: data.folder_path,
+    youtube: { email: data.youtube_email, password: data.youtube_password, enabled: data.youtube_enabled },
+    tiktok: { email: data.tiktok_email, password: data.tiktok_password, enabled: data.tiktok_enabled },
+    instagram: { email: data.instagram_email, password: data.instagram_password, enabled: data.instagram_enabled },
+    telegram: { botToken: data.telegram_bot_token, chatId: data.telegram_chat_id, enabled: data.telegram_enabled },
+  };
 }
-function writeJSON(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-}
 
-const defaultSettings = {
-  folderPath: '',
-  youtube: { email: '', password: '', enabled: false },
-  tiktok: { email: '', password: '', enabled: false },
-  instagram: { email: '', password: '', enabled: false },
-  telegram: { botToken: '', chatId: '', enabled: false },
-};
-
-// --- Health ---
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
-});
-
-// --- Settings ---
-app.get('/api/settings', (req, res) => {
-  res.json(readJSON(SETTINGS_FILE, defaultSettings));
-});
-
-app.post('/api/settings', (req, res) => {
-  writeJSON(SETTINGS_FILE, req.body);
-  res.json(req.body);
-});
-
-// --- Scan Folder ---
-app.get('/api/scan', async (req, res) => {
-  try {
-    const settings = readJSON(SETTINGS_FILE, defaultSettings);
-    if (!settings.folderPath) {
-      return res.json({ videoFile: null, textFile: null, metadata: null });
-    }
-    const { videoFile, textFile } = scanFolder(settings.folderPath);
-    let metadata = null;
-    if (textFile) {
-      const fullPath = path.join(settings.folderPath, textFile);
-      metadata = parseTextFile(fullPath);
-    }
-    res.json({ videoFile, textFile, metadata });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// --- Upload ---
 const uploaders = { youtube: uploadToYouTube, tiktok: uploadToTikTok, instagram: uploadToInstagram };
 
-app.post('/api/upload', async (req, res) => {
-  const settings = readJSON(SETTINGS_FILE, defaultSettings);
-  const { platforms } = req.body;
+async function processJob(jobId) {
+  const { data: job } = await supabase.from('upload_jobs').select('*').eq('id', jobId).single();
+  if (!job) return;
 
-  const { videoFile, textFile } = scanFolder(settings.folderPath);
-  if (!videoFile) return res.status(400).json({ message: 'No video file found' });
+  const settings = await getSettings();
+  const results = job.platform_results || [];
 
-  let metadata = null;
-  if (textFile) {
-    metadata = parseTextFile(path.join(settings.folderPath, textFile));
+  // Determine video path — either from storage download or local folder
+  let videoPath;
+  if (job.video_storage_path) {
+    // Download from Supabase storage to temp
+    const { data: fileData, error } = await supabase.storage
+      .from('videos')
+      .download(job.video_storage_path);
+
+    if (error || !fileData) {
+      console.error('Failed to download video from storage:', error);
+      return;
+    }
+
+    const tempDir = path.join(__dirname, 'data', 'temp');
+    fs.mkdirSync(tempDir, { recursive: true });
+    videoPath = path.join(tempDir, job.video_file_name);
+    const buffer = Buffer.from(await fileData.arrayBuffer());
+    fs.writeFileSync(videoPath, buffer);
+  } else if (settings.folderPath) {
+    videoPath = path.join(settings.folderPath, job.video_file_name);
   }
 
-  const job = {
-    id: uuidv4(),
-    videoFile,
-    metadata,
-    platforms: platforms.map(p => ({ name: p, status: 'pending' })),
-    createdAt: new Date().toISOString(),
-  };
+  if (!videoPath || !fs.existsSync(videoPath)) {
+    console.error('Video file not found:', videoPath);
+    return;
+  }
 
-  const queue = readJSON(QUEUE_FILE, []);
-  queue.unshift(job);
-  writeJSON(QUEUE_FILE, queue);
+  const metadata = { title: job.title, description: job.description, tags: job.tags };
 
-  // Process uploads in background
-  processJob(job, settings).catch(console.error);
+  await supabase.from('upload_jobs').update({ status: 'processing', platform_results: results }).eq('id', jobId);
 
-  res.json(job);
-});
-
-async function processJob(job, settings) {
-  const queue = readJSON(QUEUE_FILE, []);
-  const jobIndex = queue.findIndex(j => j.id === job.id);
-
-  for (let i = 0; i < job.platforms.length; i++) {
-    const platform = job.platforms[i];
+  for (let i = 0; i < results.length; i++) {
+    const platform = results[i];
+    if (platform.status !== 'pending') continue;
     if (!uploaders[platform.name]) continue;
+    if (!settings[platform.name]?.enabled) {
+      platform.status = 'error';
+      platform.error = `${platform.name} is not enabled in settings`;
+      await supabase.from('upload_jobs').update({ platform_results: [...results] }).eq('id', jobId);
+      continue;
+    }
 
     platform.status = 'uploading';
-    queue[jobIndex] = job;
-    writeJSON(QUEUE_FILE, queue);
+    await supabase.from('upload_jobs').update({ platform_results: [...results] }).eq('id', jobId);
 
     try {
-      const videoPath = path.join(settings.folderPath, job.videoFile);
-      const result = await uploaders[platform.name](videoPath, job.metadata, settings[platform.name]);
+      const result = await uploaders[platform.name](videoPath, metadata, settings[platform.name]);
       platform.status = 'success';
       platform.url = result.url || '';
 
@@ -128,8 +101,8 @@ async function processJob(job, settings) {
         await sendTelegram(
           settings.telegram.botToken,
           settings.telegram.chatId,
-          `✅ Upload successful!\nPlatform: ${platform.name}\nTitle: ${job.metadata?.title || job.videoFile}\nURL: ${platform.url || 'N/A'}`
-        );
+          `✅ Upload successful!\nPlatform: ${platform.name}\nTitle: ${metadata.title || job.video_file_name}\nURL: ${platform.url || 'N/A'}`
+        ).catch(console.error);
       }
     } catch (err) {
       platform.status = 'error';
@@ -139,58 +112,95 @@ async function processJob(job, settings) {
         await sendTelegram(
           settings.telegram.botToken,
           settings.telegram.chatId,
-          `❌ Upload failed!\nPlatform: ${platform.name}\nTitle: ${job.metadata?.title || job.videoFile}\nError: ${err.message}`
+          `❌ Upload failed!\nPlatform: ${platform.name}\nTitle: ${metadata.title || job.video_file_name}\nError: ${err.message}`
         ).catch(console.error);
       }
     }
 
-    queue[jobIndex] = job;
-    writeJSON(QUEUE_FILE, queue);
+    await supabase.from('upload_jobs').update({ platform_results: [...results] }).eq('id', jobId);
   }
 
-  job.completedAt = new Date().toISOString();
-  queue[jobIndex] = job;
-  writeJSON(QUEUE_FILE, queue);
+  const anyError = results.some(r => r.status === 'error');
+  await supabase.from('upload_jobs').update({
+    status: anyError ? 'failed' : 'completed',
+    platform_results: results,
+    completed_at: new Date().toISOString(),
+  }).eq('id', jobId);
 }
 
-// --- Queue ---
-app.get('/api/queue', (req, res) => {
-  res.json(readJSON(QUEUE_FILE, []));
+// --- API Endpoints ---
+app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
+
+// Process a specific job (called from frontend or cron)
+app.post('/api/process/:id', async (req, res) => {
+  try {
+    processJob(req.params.id).catch(console.error);
+    res.json({ started: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
-app.post('/api/queue/:id/retry', async (req, res) => {
-  const queue = readJSON(QUEUE_FILE, []);
-  const job = queue.find(j => j.id === req.params.id);
-  if (!job) return res.status(404).json({ message: 'Job not found' });
+// Process all pending jobs
+app.post('/api/process-pending', async (req, res) => {
+  try {
+    const { data: jobs } = await supabase
+      .from('upload_jobs')
+      .select('id')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true });
 
-  const settings = readJSON(SETTINGS_FILE, defaultSettings);
-  const failedPlatforms = job.platforms.filter(p => p.status === 'error');
-  failedPlatforms.forEach(p => { p.status = 'pending'; p.error = undefined; });
-  writeJSON(QUEUE_FILE, queue);
-
-  processJob(job, settings).catch(console.error);
-  res.json(job);
+    const ids = (jobs || []).map(j => j.id);
+    for (const id of ids) {
+      await processJob(id);
+    }
+    res.json({ processed: ids.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
-// --- Schedule ---
-app.get('/api/schedule', (req, res) => {
-  res.json(readJSON(SCHEDULE_FILE, { enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'] }));
+// --- Cron: poll for pending jobs ---
+let cronJob = null;
+
+async function setupCron() {
+  if (cronJob) { cronJob.stop(); cronJob = null; }
+
+  const { data } = await supabase.from('schedule_config').select('*').eq('id', 1).single();
+  if (!data || !data.enabled) {
+    console.log('[Cron] Schedule disabled');
+    return;
+  }
+
+  try {
+    cronJob = cron.schedule(data.cron_expression, async () => {
+      console.log(`[Cron] Running at ${new Date().toISOString()}`);
+      const { data: jobs } = await supabase
+        .from('upload_jobs')
+        .select('id')
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true });
+
+      for (const job of (jobs || [])) {
+        await processJob(job.id);
+      }
+    });
+    console.log(`[Cron] Active: ${data.cron_expression}`);
+  } catch (err) {
+    console.error('[Cron] Invalid expression:', data.cron_expression);
+  }
+}
+
+// Refresh cron when schedule changes
+app.post('/api/refresh-cron', async (req, res) => {
+  await setupCron();
+  res.json({ ok: true });
 });
 
-app.post('/api/schedule', (req, res) => {
-  writeJSON(SCHEDULE_FILE, req.body);
-  updateCron(req.body, readJSON(SETTINGS_FILE, defaultSettings));
-  res.json(req.body);
-});
-
-// Initialize cron
-const scheduleConfig = readJSON(SCHEDULE_FILE, { enabled: false, cronExpression: '0 9 * * *', platforms: [] });
-const settingsData = readJSON(SETTINGS_FILE, defaultSettings);
-setupCron(scheduleConfig, settingsData, scanFolder, parseTextFile, processJob);
-
+// --- Start ---
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+app.listen(PORT, async () => {
+  console.log(`Local server running on http://localhost:${PORT}`);
+  console.log(`Connected to Supabase: ${SUPABASE_URL}`);
+  await setupCron();
 });
-
-module.exports = { processJob };

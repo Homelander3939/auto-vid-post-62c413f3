@@ -2,14 +2,40 @@
 
 Automated video uploader for YouTube, TikTok, and Instagram with Telegram notifications.
 
-## How It Works
+## Architecture
 
-- **React Frontend** (port 8080) — Dashboard, settings, upload queue, scheduling
-- **Node.js Server** (port 3001) — Reads local folder, automates browser uploads via Playwright
+```
+┌──────────────────────────────────┐
+│  React Frontend (Vite, :8080)    │  ← Works online AND locally
+│  - Upload video + text file      │
+│  - Configure platform creds      │
+│  - Upload queue with status      │
+│  - Schedule configuration        │
+└──────────┬───────────────────────┘
+           │ Supabase (database + file storage)
+┌──────────▼───────────────────────┐
+│  Local Node.js Server (:3001)    │  ← Only when running locally
+│  - Downloads video from storage  │
+│  - Playwright browser automation │
+│  - Uploads to YouTube/TikTok/IG  │
+│  - Sends Telegram notifications  │
+│  - Cron scheduler for auto-runs  │
+└──────────────────────────────────┘
+```
 
-## Setup Instructions (Windows)
+## Online Mode (Lovable Preview)
 
-### 1. Clone and install frontend
+The app works fully online — you can:
+- Upload video and text files (stored in cloud)
+- Configure all settings (saved to database)
+- Create upload jobs and see simulated progress
+- Set up schedules
+
+Actual platform uploads only happen via the local server.
+
+## Local Setup (Windows)
+
+### 1. Clone and install
 
 ```bash
 git clone <your-repo-url>
@@ -28,72 +54,43 @@ cd ..
 
 ### 3. Start the app
 
-Open **two terminals**:
-
 **Terminal 1 — Frontend:**
 ```bash
 npm run dev
 ```
 
-**Terminal 2 — Server:**
+**Terminal 2 — Local Server:**
 ```bash
 cd server
 npm start
 ```
 
-### 4. Open the app
+### 4. Open `http://localhost:8080`
 
-Go to `http://localhost:8080` in your browser.
+## How It Works
 
-## Configuration
-
-### Settings Page
-
-1. **Folder Path** — Set the Windows folder path where you place videos (e.g., `C:\Users\You\Videos\uploads`)
-2. **Platform Credentials** — Enable and enter login credentials for YouTube, TikTok, Instagram
-3. **Telegram** — Enter your bot token and chat ID for notifications
-
-### Text File Format
-
-Place a `.txt` file alongside your video in the folder:
-
-```
-Title: My Video Title
-Description: This is the video description
-Tags: tag1, tag2, tag3
-Platforms: youtube, tiktok, instagram
-```
-
-### Supported Video Formats
-
-`.mp4`, `.mov`, `.avi`, `.mkv`, `.webm`
-
-## Usage
-
-1. Place a video file and `.txt` file in your configured folder
-2. Open the Dashboard — files are auto-detected
-3. Select platforms and click "Start Upload"
-4. Monitor progress in the Upload Queue
-5. Set up scheduled uploads in the Schedule page
-
-## How Upload Works
-
-- Playwright opens a real Chromium browser window
-- First time: you'll see the login flow (credentials auto-filled)
-- Sessions persist — subsequent uploads won't need re-login
-- Telegram sends you the upload link or error message
+1. **Upload files** — Select video (.mp4, .mov) and text (.txt) on the Dashboard
+2. **Text file format:**
+   ```
+   Title: My Video Title
+   Description: This is the description
+   Tags: tag1, tag2, tag3
+   Platforms: youtube, tiktok, instagram
+   ```
+3. **Click "Start Upload"** — Video is stored in cloud, job is queued
+4. **Local server processes** — Downloads video, opens Playwright browser, uploads to each platform
+5. **Telegram notification** — Success link or error sent to your bot
 
 ## Telegram Bot Setup
 
-1. Message [@BotFather](https://t.me/BotFather) on Telegram
-2. Send `/newbot` and follow instructions
-3. Copy the bot token
-4. Message your bot, then visit `https://api.telegram.org/bot<TOKEN>/getUpdates` to find your chat ID
-5. Enter both in Settings
+1. Message [@BotFather](https://t.me/BotFather) → `/newbot`
+2. Copy the bot token
+3. Message your bot, visit `https://api.telegram.org/bot<TOKEN>/getUpdates` for chat ID
+4. Enter both in Settings
 
 ## Important Notes
 
-- **Browser automation is fragile** — Platform UI changes may break upload scripts
-- **First login** — The browser will open visibly for you to complete any 2FA/captcha
+- **Browser automation is fragile** — Platform UI changes can break upload scripts
+- **First login** — Browser opens visibly for 2FA/captcha
 - **Sessions persist** in `server/data/browser-sessions/`
-- **Credentials stored locally** in `server/data/settings.json` — never uploaded anywhere
+- **All data** is stored in the cloud database — works from any device
