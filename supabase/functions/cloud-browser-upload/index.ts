@@ -721,7 +721,17 @@ type YouTubeSignals = {
 
 async function getYouTubeSignals(sendCmd: SendCmd): Promise<YouTubeSignals> {
   const signals = await evalJS(sendCmd, `
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      return el.offsetParent !== null || style.position === 'fixed';
+    };
+
     const text = (document.body?.innerText || '').substring(0, 2000).toLowerCase();
+    const emailInput = [...document.querySelectorAll('input[type="email"]')].find(isVisible);
+    const passwordInput = [...document.querySelectorAll('input[type="password"]')].find(isVisible);
+    const verificationCodeInput = [...document.querySelectorAll('input[type="tel"], input[autocomplete="one-time-code"], input[name*="code" i], input[id*="code" i], input[name*="pin" i], input[id*="totp" i]')].find(isVisible);
     const hasCreateByText = [...document.querySelectorAll('button, ytcp-button, [role="button"]')]
       .some((el) => {
         const t = (el.textContent || '').toLowerCase().trim();
@@ -729,11 +739,30 @@ async function getYouTubeSignals(sendCmd: SendCmd): Promise<YouTubeSignals> {
         return t === 'create' || a.includes('create') || el.id === 'create-icon';
       });
     const isGoogleLogin = window.location.href.includes('accounts.google.com');
+    const hasVerificationKeywords = [
+      '2-step verification',
+      '2 step verification',
+      'check your phone',
+      'verify it\\'s you',
+      'confirm it\\'s you',
+      'enter the code',
+      'security code',
+      'tap yes',
+      'choose a number',
+      'get a verification code',
+      'approve sign in',
+    ].some((phrase) => text.includes(phrase));
+    const hasVerificationActionButton = [...document.querySelectorAll('button, [role="button"]')]
+      .some((el) => {
+        if (!isVisible(el)) return false;
+        const t = (el.textContent || '').toLowerCase();
+        return t.includes('try another way') || t.includes('send code') || t.includes('resend code') || t.includes('yes, it\'s me');
+      });
     return {
       url: window.location.href,
-      hasEmailInput: !!document.querySelector('input[type="email"]'),
-      hasPasswordInput: !!document.querySelector('input[type="password"]'),
-      hasVerificationChallenge: isGoogleLogin && (text.includes('2-step verification') || text.includes('verify it\\'s you') || text.includes('try another way') || text.includes('check your phone') || text.includes('confirm your identity')),
+      hasEmailInput: !!emailInput,
+      hasPasswordInput: !!passwordInput,
+      hasVerificationChallenge: isGoogleLogin && !passwordInput && (Boolean(verificationCodeInput) || hasVerificationKeywords || hasVerificationActionButton),
       hasCreateButton: !!document.querySelector('#create-icon') || hasCreateByText,
       hasUploadVideosMenu: !!document.querySelector('#text-item-0') || [...document.querySelectorAll('tp-yt-paper-item, [role="menuitem"]')].some((el) => (el.textContent || '').toLowerCase().includes('upload')),
       hasVideoFileInput: !!document.querySelector('input[type="file"]'),
@@ -767,15 +796,77 @@ async function getDeterministicYouTubeAction(
   const s = await getYouTubeSignals(sendCmd);
 
   if (s.url.includes('accounts.google.com')) {
-    if (s.hasVerificationChallenge) return { action: 'need_verification', reasoning: 'Google verification challenge detected.' };
+    if (s.hasPasswordInput && params.password) {
+      return {
+        action: 'run_js',
+        reasoning: 'Deterministic: fill Google password.',
+        js: `
+          const isVisible = (el) => {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            return el.offsetParent !== null || style.position === 'fixed';
+          };
+          const setNativeValue = (el, value) => {
+            const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (desc?.set) desc.set.call(el, value);
+            else el.value = value;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          };
+          const i = [...document.querySelectorAll('input[type="password"]')].find(isVisible);
+          if (!i) return 'no-password-input';
+          i.focus();
+          setNativeValue(i, '${escJS(params.password)}');
+          const n = document.querySelector('#passwordNext button, #passwordNext') ||
+            [...document.querySelectorAll('button,[role="button"]')]
+              .find((b) => isVisible(b) && (b.textContent || '').toLowerCase().includes('next'));
+          if (n) {
+            n.click();
+            return 'password-submitted';
+          }
+          i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+          i.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+          return 'password-enter-pressed';
+        `,
+      };
+    }
     if (s.hasEmailInput && params.email) {
       return { action: 'run_js', reasoning: 'Deterministic: fill Google email.',
-        js: `const i=document.querySelector('input[type="email"]');if(!i)return 'none';i.focus();i.value='${escJS(params.email)}';i.dispatchEvent(new Event('input',{bubbles:true}));const n=document.querySelector('#identifierNext')||[...document.querySelectorAll('button,[role="button"]')].find(b=>(b.textContent||'').toLowerCase().includes('next'));if(n)n.click();return 'ok';` };
+        js: `
+          const isVisible = (el) => {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            return el.offsetParent !== null || style.position === 'fixed';
+          };
+          const setNativeValue = (el, value) => {
+            const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+            if (desc?.set) desc.set.call(el, value);
+            else el.value = value;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          };
+          const i = [...document.querySelectorAll('input[type="email"]')].find(isVisible);
+          if (!i) return 'no-email-input';
+          i.focus();
+          setNativeValue(i, '${escJS(params.email)}');
+          const n = document.querySelector('#identifierNext button, #identifierNext') ||
+            [...document.querySelectorAll('button,[role="button"]')]
+              .find((b) => isVisible(b) && (b.textContent || '').toLowerCase().includes('next'));
+          if (n) {
+            n.click();
+            return 'email-submitted';
+          }
+          i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+          i.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+          return 'email-enter-pressed';
+        `,
+      };
     }
-    if (s.hasPasswordInput && params.password) {
-      return { action: 'run_js', reasoning: 'Deterministic: fill Google password.',
-        js: `const i=document.querySelector('input[type="password"]');if(!i)return 'none';i.focus();i.value='${escJS(params.password)}';i.dispatchEvent(new Event('input',{bubbles:true}));const n=document.querySelector('#passwordNext')||[...document.querySelectorAll('button,[role="button"]')].find(b=>(b.textContent||'').toLowerCase().includes('next'));if(n)n.click();return 'ok';` };
-    }
+    if (s.hasVerificationChallenge) return { action: 'need_verification', reasoning: 'Google verification challenge detected.' };
+    return { action: 'wait', ms: 2000, reasoning: 'Google login transition in progress.' };
   }
 
   if (s.url.includes('studio.youtube.com') || s.url.includes('youtube.com')) {
@@ -822,17 +913,56 @@ async function getDeterministicYouTubeAction(
 // TikTok deterministic controller
 async function getDeterministicTikTokAction(sendCmd: SendCmd, params: AutomationParams, fileUploaded: boolean): Promise<AgentAction | null> {
   const s = await evalJS(sendCmd, `
-    const url=window.location.href;const text=(document.body?.innerText||'').substring(0,2000).toLowerCase();
-    return {url, hasLoginForm:!!document.querySelector('input[name="username"],input[placeholder*="email" i]'),
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      return el.offsetParent !== null || style.position === 'fixed';
+    };
+    const url=window.location.href;const text=(document.body?.innerText||'').substring(0,3000).toLowerCase();
+    const loginUser = [...document.querySelectorAll('input[name="username"],input[placeholder*="email" i],input[type="email"]')].find(isVisible);
+    const loginPass = [...document.querySelectorAll('input[type="password"]')].find(isVisible);
+    const hasLoginForm = Boolean(loginUser || loginPass);
+    const hasCaptchaIframe = !![...document.querySelectorAll('iframe')].find((f) => (f.getAttribute('src') || '').toLowerCase().includes('captcha'));
+    const hasCodeInput = !![...document.querySelectorAll('input[type="tel"], input[name*="code" i], input[id*="code" i], input[autocomplete="one-time-code"]')].find(isVisible);
+    return {url, hasLoginForm,
       hasFileInput:!!document.querySelector('input[type="file"]'),
       hasPostButton:[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim().toLowerCase()==='post'),
-      hasVerification:text.includes('verify')||text.includes('captcha')||text.includes('security check')};
+      hasVerification:!hasLoginForm && (hasCaptchaIframe || hasCodeInput || text.includes('security verification') || text.includes('verify to continue') || text.includes('complete the puzzle') || text.includes('enter verification code') || text.includes('captcha'))};
   `);
   if (!s) return null;
   if (s.hasVerification) return { action: 'need_verification', reasoning: 'TikTok verification detected.' };
   if (s.hasLoginForm && params.email) {
     return { action: 'run_js', reasoning: 'Fill TikTok login.',
-      js: `const e=document.querySelector('input[name="username"]')||document.querySelector('input[placeholder*="email" i]');if(e){e.focus();e.value='${escJS(params.email)}';e.dispatchEvent(new Event('input',{bubbles:true}));}const p=document.querySelector('input[type="password"]');if(p){p.focus();p.value='${escJS(params.password)}';p.dispatchEvent(new Event('input',{bubbles:true}));}setTimeout(()=>{const b=[...document.querySelectorAll('button')].find(b=>(b.textContent||'').toLowerCase().includes('log in'));if(b)b.click();},500);return 'ok';` };
+      js: `
+        const isVisible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') return false;
+          return el.offsetParent !== null || style.position === 'fixed';
+        };
+        const setNativeValue = (el, value) => {
+          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+          const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+          if (desc?.set) desc.set.call(el, value);
+          else el.value = value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        const e = [...document.querySelectorAll('input[name="username"],input[placeholder*="email" i],input[type="email"]')].find(isVisible);
+        if (e) { e.focus(); setNativeValue(e, '${escJS(params.email)}'); }
+        const p = [...document.querySelectorAll('input[type="password"]')].find(isVisible);
+        if (p) { p.focus(); setNativeValue(p, '${escJS(params.password)}'); }
+        setTimeout(() => {
+          const b = [...document.querySelectorAll('button,[role="button"]')].find((btn) => {
+            const t = (btn.textContent || '').toLowerCase();
+            return isVisible(btn) && (t.includes('log in') || t.includes('login') || t.includes('sign in') || t === 'continue');
+          });
+          if (b) b.click();
+        }, 400);
+        return 'ok';
+      `,
+    };
   }
   if (!fileUploaded && s.hasFileInput) return { action: 'upload_file', reasoning: 'TikTok file input found.' };
   if (fileUploaded && s.hasPostButton) {
@@ -844,21 +974,49 @@ async function getDeterministicTikTokAction(sendCmd: SendCmd, params: Automation
 // Instagram deterministic controller
 async function getDeterministicInstagramAction(sendCmd: SendCmd, params: AutomationParams, fileUploaded: boolean): Promise<AgentAction | null> {
   const s = await evalJS(sendCmd, `
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      return el.offsetParent !== null || style.position === 'fixed';
+    };
     const url=window.location.href;
+    const text=(document.body?.innerText||'').toLowerCase();
+    const isLoginPage=url.includes('accounts/login')||([...]document.querySelectorAll('input[name="username"],input[name="password"]').length>=2);
+    const codeInput=[...document.querySelectorAll('input[type="tel"], input[name*="code" i], input[id*="code" i], input[autocomplete="one-time-code"]')].find(isVisible);
     return {url, hasLoginForm:!!document.querySelector('input[name="username"]'),
       hasFileInput:!!document.querySelector('input[type="file"]'),
       hasNotNow:[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim().toLowerCase().includes('not now')),
       hasNewPost:!!document.querySelector('[aria-label="New post"],[aria-label="New Post"]'),
       hasShareButton:[...document.querySelectorAll('button,div[role="button"]')].some(b=>(b.textContent||'').trim().toLowerCase()==='share'),
       hasNextButton:[...document.querySelectorAll('button,div[role="button"]')].some(b=>(b.textContent||'').trim().toLowerCase()==='next'),
-      hasVerification:(document.body?.innerText||'').toLowerCase().includes('suspicious')||(document.body?.innerText||'').toLowerCase().includes('security code'),
-      isLoginPage:url.includes('accounts/login')||(!!document.querySelector('input[name="username"]')&&!!document.querySelector('input[name="password"]'))};
+      hasVerification:!isLoginPage && (Boolean(codeInput) || text.includes('enter security code') || text.includes('confirm it was you') || text.includes('suspicious login attempt') || text.includes('we noticed an unusual login')),
+      isLoginPage};
   `);
   if (!s) return null;
   if (s.hasVerification) return { action: 'need_verification', reasoning: 'Instagram verification detected.' };
   if (s.isLoginPage && s.hasLoginForm && params.email) {
     return { action: 'run_js', reasoning: 'Fill Instagram login.',
-      js: `const u=document.querySelector('input[name="username"]');const p=document.querySelector('input[name="password"]');if(u){u.focus();u.value='';document.execCommand('insertText',false,'${escJS(params.email)}');}if(p){p.focus();p.value='';document.execCommand('insertText',false,'${escJS(params.password)}');}setTimeout(()=>{const b=[...document.querySelectorAll('button[type="submit"],button')].find(b=>(b.textContent||'').toLowerCase().includes('log in'));if(b)b.click();},500);return 'ok';` };
+      js: `
+        const setNativeValue = (el, value) => {
+          const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+          if (desc?.set) desc.set.call(el, value);
+          else el.value = value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        const u=document.querySelector('input[name="username"]');
+        const p=document.querySelector('input[name="password"]');
+        if(u){u.focus();setNativeValue(u,'${escJS(params.email)}');}
+        if(p){p.focus();setNativeValue(p,'${escJS(params.password)}');}
+        setTimeout(()=>{
+          const b=[...document.querySelectorAll('button[type="submit"],button,[role="button"]')]
+            .find((btn)=>(btn.textContent||'').toLowerCase().includes('log in') || (btn.textContent||'').toLowerCase().includes('login') || (btn.textContent||'').toLowerCase().includes('sign in'));
+          if(b) b.click();
+        }, 400);
+        return 'ok';
+      `,
+    };
   }
   if (s.hasNotNow) {
     return { action: 'run_js', reasoning: 'Dismiss popup.', js: `const b=[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim().toLowerCase().includes('not now'));if(b){b.click();return 'ok';}return 'none';` };
