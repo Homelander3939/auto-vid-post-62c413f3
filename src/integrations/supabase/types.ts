@@ -14,7 +14,129 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      app_settings: {
+        Row: {
+          created_at: string
+          folder_path: string
+          id: number
+          instagram_email: string
+          instagram_enabled: boolean
+          instagram_password: string
+          telegram_bot_token: string
+          telegram_chat_id: string
+          telegram_enabled: boolean
+          tiktok_email: string
+          tiktok_enabled: boolean
+          tiktok_password: string
+          updated_at: string
+          youtube_email: string
+          youtube_enabled: boolean
+          youtube_password: string
+        }
+        Insert: {
+          created_at?: string
+          folder_path?: string
+          id?: number
+          instagram_email?: string
+          instagram_enabled?: boolean
+          instagram_password?: string
+          telegram_bot_token?: string
+          telegram_chat_id?: string
+          telegram_enabled?: boolean
+          tiktok_email?: string
+          tiktok_enabled?: boolean
+          tiktok_password?: string
+          updated_at?: string
+          youtube_email?: string
+          youtube_enabled?: boolean
+          youtube_password?: string
+        }
+        Update: {
+          created_at?: string
+          folder_path?: string
+          id?: number
+          instagram_email?: string
+          instagram_enabled?: boolean
+          instagram_password?: string
+          telegram_bot_token?: string
+          telegram_chat_id?: string
+          telegram_enabled?: boolean
+          tiktok_email?: string
+          tiktok_enabled?: boolean
+          tiktok_password?: string
+          updated_at?: string
+          youtube_email?: string
+          youtube_enabled?: boolean
+          youtube_password?: string
+        }
+        Relationships: []
+      }
+      schedule_config: {
+        Row: {
+          cron_expression: string
+          enabled: boolean
+          id: number
+          platforms: string[]
+          updated_at: string
+        }
+        Insert: {
+          cron_expression?: string
+          enabled?: boolean
+          id?: number
+          platforms?: string[]
+          updated_at?: string
+        }
+        Update: {
+          cron_expression?: string
+          enabled?: boolean
+          id?: number
+          platforms?: string[]
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      upload_jobs: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          description: string
+          id: string
+          platform_results: Json
+          status: string
+          tags: string[]
+          target_platforms: string[]
+          title: string
+          video_file_name: string
+          video_storage_path: string | null
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          description?: string
+          id?: string
+          platform_results?: Json
+          status?: string
+          tags?: string[]
+          target_platforms?: string[]
+          title?: string
+          video_file_name: string
+          video_storage_path?: string | null
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          description?: string
+          id?: string
+          platform_results?: Json
+          status?: string
+          tags?: string[]
+          target_platforms?: string[]
+          title?: string
+          video_file_name?: string
+          video_storage_path?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
