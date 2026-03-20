@@ -787,6 +787,21 @@ async function agenticUpload(
           if (!params.telegram.enabled || !params.telegram.chatId) {
             throw new Error(`${platform} verification required but Telegram is not configured.`);
           }
+
+          // Capture screenshot and send to Telegram so user can see what's on screen
+          try {
+            const verifyScreenshot = await captureScreenshot(sendCmd);
+            if (verifyScreenshot) {
+              await sendTelegramPhoto(
+                params.telegram,
+                verifyScreenshot,
+                `🔐 <b>${platform}</b> verification screen — see what the browser is showing:`
+              );
+            }
+          } catch (e) {
+            console.error('[Agent] Failed to send verification screenshot:', e);
+          }
+
           const sinceIso = new Date().toISOString();
           const reason = action.reasoning || 'Login verification or 2FA required';
           await sendTelegramPrompt(params.telegram, platform, params.jobId, reason);
