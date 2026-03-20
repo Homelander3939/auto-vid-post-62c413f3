@@ -779,21 +779,10 @@ async function agenticUpload(
           const resultUrl = urlMatch?.[0];
 
           // Telegram success notification
-          if (params.telegram.enabled && params.telegram.chatId && params.telegram.lovableApiKey && params.telegram.telegramApiKey) {
-            await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${params.telegram.lovableApiKey}`,
-                'X-Connection-Api-Key': params.telegram.telegramApiKey!,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                chat_id: params.telegram.chatId,
-                text: `✅ ${platform.toUpperCase()} upload complete!\n📹 ${params.title}\n${resultUrl ? `🔗 ${resultUrl}` : 'URL not captured'}`,
-                parse_mode: 'HTML',
-              }),
-            }).catch(() => {});
-          }
+          await sendTelegramMessage(
+            params.telegram,
+            `✅ <b>${platform.toUpperCase()}</b> upload complete!\n📹 ${params.title}\n${resultUrl ? `🔗 ${resultUrl}` : 'URL not captured'}`
+          );
 
           return { url: resultUrl, message: action.result || `${platform} upload completed.` };
         }
@@ -804,10 +793,24 @@ async function agenticUpload(
     } catch (actionErr: any) {
       console.error(`[Agent] Action ${action.action} failed:`, actionErr.message);
       history.push({ action: 'system', reasoning: `Action failed: ${actionErr.message}. Try a different approach.` });
+
+      // If we've had too many errors, notify via Telegram
+      const errorCount = history.filter(h => h.action === 'system' && h.reasoning.startsWith('Action failed')).length;
+      if (errorCount >= 5) {
+        await sendTelegramMessage(
+          params.telegram,
+          `⚠️ <b>${platform}</b> upload is having trouble.\n\nMultiple actions failed. The agent will keep trying but may need your attention.\n\nLast error: ${actionErr.message}`
+        );
+      }
       await wait(2000);
     }
   }
 
+  // Max steps reached — send failure notification
+  await sendTelegramMessage(
+    params.telegram,
+    `❌ <b>${platform}</b> upload did not complete within ${MAX_STEPS} steps.\n📹 ${params.title}\n\nPlease check the Browser Sessions page for details.`
+  );
   throw new Error(`${platform} upload did not complete within ${MAX_STEPS} steps.`);
 }
 
