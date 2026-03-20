@@ -2,9 +2,59 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
-const { smartClick, smartFill } = require('./smart-agent');
+const { smartClick, smartFill, analyzePage } = require('./smart-agent');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok');
+
+async function extractTikTokVideoUrl(page) {
+  return page.evaluate(() => {
+    const candidates = Array.from(document.querySelectorAll('a[href]'))
+      .map((a) => a.getAttribute('href') || '')
+      .filter(Boolean);
+
+    for (const href of candidates) {
+      if (href.includes('/video/')) {
+        if (href.startsWith('http')) return href;
+        return `https://www.tiktok.com${href}`;
+      }
+    }
+    return '';
+  }).catch(() => '');
+}
+
+async function assessTikTokCompletion(page) {
+  const dom = await page.evaluate(() => {
+    const text = (document.body?.innerText || '').toLowerCase();
+    const success =
+      text.includes('posted') ||
+      text.includes('your video is being uploaded') ||
+      text.includes('your video is being processed') ||
+      text.includes('video uploaded');
+    const hardError =
+      text.includes('upload failed') ||
+      text.includes('couldn\'t upload') ||
+      text.includes('try again');
+    return { success, hardError, summary: text.slice(0, 1200) };
+  }).catch(() => ({ success: false, hardError: false, summary: '' }));
+
+  if (dom.success) return { success: true, reason: 'TikTok UI shows upload/post completion.' };
+  if (dom.hardError) return { success: false, needsHuman: true, reason: 'TikTok UI shows an upload/post error.' };
+
+  try {
+    const ai = await analyzePage(page, 'TikTok post-completion check. Decide if upload succeeded/processing, or needs manual help.');
+    const state = String(ai?.state || '').toLowerCase();
+    if (['success', 'processing', 'uploading'].includes(state)) {
+      return { success: true, reason: ai?.description || 'AI detected successful upload processing state.' };
+    }
+    return {
+      success: false,
+      needsHuman: Boolean(ai?.needs_human),
+      reason: ai?.description || 'No clear TikTok completion signal found.',
+    };
+  } catch {
+    return { success: false, needsHuman: false, reason: 'No clear TikTok completion signal found.' };
+  }
+}
 
 async function uploadToTikTok(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
@@ -135,9 +185,32 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     });
     await page.waitForTimeout(10000);
 
+    let completion = await assessTikTokCompletion(page);
+    let videoUrl = await extractTikTokVideoUrl(page);
+
+    if (!completion.success && completion.needsHuman) {
+      const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
+      await requestTelegramApproval({
+        telegram: credentials.telegram,
+        platform: 'TikTok',
+        backend: credentials.backend,
+        screenshotBuffer,
+        screenshotCaption: '📸 <b>TikTok obstacle screen</b> — reply APPROVED after you resolve the step',
+        customMessage: `🚧 <b>TikTok uploader needs your help</b>\n${completion.reason}\n\nResolve the on-screen step and reply APPROVED.`,
+      });
+
+      await page.waitForTimeout(8000);
+      completion = await assessTikTokCompletion(page);
+      videoUrl = videoUrl || await extractTikTokVideoUrl(page);
+    }
+
+    if (!completion.success) {
+      throw new Error(`TikTok publish was not confirmed. ${completion.reason}`);
+    }
+
     console.log('[TikTok] Upload complete!');
     await context.close();
-    return { url: 'https://www.tiktok.com' };
+    return { url: videoUrl || 'https://www.tiktok.com' };
   } catch (err) {
     console.error('[TikTok] Upload failed:', err.message);
     await context.close();
