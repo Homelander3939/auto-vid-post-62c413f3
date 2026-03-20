@@ -167,6 +167,160 @@ async function ensureStudioUploadPage(page) {
   return getYouTubeFileInput(page);
 }
 
+function isLikelyYouTubeUrl(url) {
+  if (!url) return false;
+  const value = String(url).trim();
+  return /youtube\.com\/(watch\?v=|shorts\/)|youtu\.be\//i.test(value);
+}
+
+async function selectAudienceNotMadeForKids(page) {
+  const clicked = await smartClick(page, [
+    'ytcp-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]',
+    'tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]',
+    '[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]',
+    'input[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]',
+  ], "No, it's not made for kids");
+
+  if (clicked) return true;
+
+  return page.evaluate(() => {
+    const options = Array.from(document.querySelectorAll('ytcp-radio-button, tp-yt-paper-radio-button, [role="radio"], label, div'));
+    for (const node of options) {
+      const text = (node.textContent || '').toLowerCase();
+      if (!text) continue;
+      if (text.includes("not made for kids") || text.includes("no, it's not made for kids")) {
+        node.click();
+        return true;
+      }
+    }
+    return false;
+  }).catch(() => false);
+}
+
+async function acceptUploadAgreements(page) {
+  return page.evaluate(() => {
+    const agreementWords = ['i agree', 'i understand', 'confirm', 'acknowledge', 'accept'];
+    let clicked = 0;
+    const candidates = Array.from(document.querySelectorAll('ytcp-checkbox-lit, tp-yt-paper-checkbox, [role="checkbox"], input[type="checkbox"]'));
+
+    for (const box of candidates) {
+      const container = box.closest('label, ytcp-checkbox-lit, tp-yt-paper-checkbox, div, span') || box;
+      const text = ((container?.textContent || box.textContent || '')).toLowerCase();
+      if (!agreementWords.some((word) => text.includes(word))) continue;
+
+      const isChecked = box.getAttribute('aria-checked') === 'true' || box.checked === true;
+      if (isChecked) continue;
+
+      box.click();
+      clicked += 1;
+    }
+
+    return clicked;
+  }).catch(() => 0);
+}
+
+async function clickNextWizardStep(page) {
+  const clicked = await smartClick(page, [
+    '#next-button',
+    'ytcp-button#next-button',
+    'button[aria-label="Next"]',
+    'button:has-text("Next")',
+  ], 'Next');
+  if (clicked) return { clicked: true, disabled: false };
+
+  return page.evaluate(() => {
+    const btn = document.querySelector('#next-button, ytcp-button#next-button, button[aria-label="Next"]');
+    if (!btn) return { clicked: false, disabled: false };
+    const disabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true' || btn.classList.contains('disabled');
+    if (disabled) return { clicked: false, disabled: true };
+
+    const target = btn.querySelector('button') || btn;
+    target.click();
+    return { clicked: true, disabled: false };
+  }).catch(() => ({ clicked: false, disabled: false }));
+}
+
+async function isVisibilityStep(page) {
+  return page.evaluate(() => {
+    const text = (document.body?.innerText || '').toLowerCase();
+    const hasVisibilityText = text.includes('visibility');
+    const hasPublicOption = text.includes('public') && (text.includes('unlisted') || text.includes('private'));
+    return hasVisibilityText && hasPublicOption;
+  }).catch(() => false);
+}
+
+async function waitForPublishConfirmation(page, timeoutMs = 15000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const published = await page.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      return text.includes('video published') || text.includes('checks complete') || text.includes('your video is uploaded');
+    }).catch(() => false);
+
+    if (published) return true;
+    await page.waitForTimeout(1000);
+  }
+  return false;
+}
+
+async function extractPublishedVideoUrl(page) {
+  const url = await page.evaluate(() => {
+    const candidates = [
+      'a.style-scope.ytcp-video-info[href*="youtu"]',
+      'a[href*="youtu.be"]',
+      'a[href*="youtube.com/watch"]',
+      'a[href*="youtube.com/shorts/"]',
+      '.video-url-fadeable a',
+      'input#share-url',
+      'input[readonly][value*="youtu"]',
+    ];
+
+    for (const selector of candidates) {
+      const node = document.querySelector(selector);
+      if (!node) continue;
+      const href = node.href || node.value || node.textContent || '';
+      if (href) return String(href).trim();
+    }
+    return '';
+  }).catch(() => '');
+
+  return isLikelyYouTubeUrl(url) ? url : '';
+}
+
+async function requestHumanObstacleHelp(page, credentials, reason) {
+  const screenshotBuffer = await safeScreenshot(page);
+  const message =
+    `🚧 <b>YouTube uploader needs your help</b>\n` +
+    `${reason}\n\n` +
+    `Please do one of these:\n` +
+    `• Reply <b>APPROVED</b> after you fix it on-screen\n` +
+    `• Reply <b>METHOD PHONE</b> or <b>METHOD CODE</b> for verification flow\n` +
+    `• Reply <b>CODE 123456</b> if code input is shown`;
+
+  const approval = await requestTelegramApproval({
+    telegram: credentials.telegram,
+    platform: 'YouTube',
+    customMessage: message,
+    screenshotBuffer,
+    backend: credentials.backend,
+  });
+
+  if (!approval) throw new Error('Uploader is blocked and no Telegram response was received.');
+
+  if (approval.method) {
+    await chooseGoogleVerificationMethod(page, approval.method);
+  }
+  if (approval.code) {
+    await tryFillVerificationCode(page, approval.code);
+    await page.waitForTimeout(5000);
+  }
+  if (approval.approved) {
+    await page.waitForTimeout(2500);
+  }
+
+  return approval;
+}
+
 async function uploadToYouTube(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
   fs.mkdirSync(USER_DATA_DIR, { recursive: true });
@@ -333,6 +487,17 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
         if (repeatedStateCount >= 2) {
           console.log('[YouTube] Auth state stuck, retrying via YouTube Studio route...');
+          if (repeatedStateCount >= 5) {
+            await requestHumanObstacleHelp(
+              page,
+              credentials,
+              'Login is looping on the same Google screen. Choose verification method or complete this step and reply APPROVED.'
+            );
+            repeatedStateCount = 0;
+            await page.waitForTimeout(2000);
+            continue;
+          }
+
           await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => {});
           await page.waitForTimeout(2500);
           continue;
@@ -499,18 +664,52 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     }
     await page.waitForTimeout(2000);
 
+    // Audience is often mandatory before moving to the next step.
+    await selectAudienceNotMadeForKids(page);
+    await page.waitForTimeout(1200);
+
     // ===== PHASE 5: NAVIGATE WIZARD (Next × 3) =====
     console.log('[YouTube] Navigating upload wizard...');
-    for (let i = 0; i < 3; i++) {
-      await page.waitForTimeout(1500);
-      const clicked = await smartClick(page, ['#next-button', '#step-badge-' + (i + 1)], 'Next');
-      if (!clicked) {
-        await page.evaluate(() => {
-          const btn = document.querySelector('#next-button');
-          if (btn) btn.click();
-        });
+    let nextClicks = 0;
+    let stuckRounds = 0;
+    while (nextClicks < 3) {
+      if (await isVisibilityStep(page)) break;
+
+      await page.waitForTimeout(1200);
+      await selectAudienceNotMadeForKids(page);
+      await acceptUploadAgreements(page);
+
+      const next = await clickNextWizardStep(page);
+      if (next.clicked) {
+        nextClicks += 1;
+        stuckRounds = 0;
+        await page.waitForTimeout(2200);
+        continue;
       }
-      await page.waitForTimeout(2000);
+
+      stuckRounds += 1;
+      if (next.disabled && stuckRounds >= 2) {
+        await requestHumanObstacleHelp(
+          page,
+          credentials,
+          'The Next button is disabled (usually audience/agreements/required fields). Please complete the visible requirement, then reply APPROVED.'
+        );
+        stuckRounds = 0;
+        continue;
+      }
+
+      if (stuckRounds >= 4) {
+        await requestHumanObstacleHelp(
+          page,
+          credentials,
+          'Uploader cannot progress to the next step. Please guide/fix this step on-screen, then reply APPROVED.'
+        );
+        stuckRounds = 0;
+      }
+    }
+
+    if (!(await isVisibilityStep(page))) {
+      throw new Error('YouTube upload wizard did not reach the visibility step.');
     }
 
     // ===== PHASE 6: SET VISIBILITY TO PUBLIC =====
@@ -542,19 +741,24 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       const btn = document.querySelector('#done-button') || document.querySelector('#publish-button');
       if (btn) btn.click();
     });
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(6000);
+
+    let publishConfirmed = await waitForPublishConfirmation(page, 12000);
+    if (!publishConfirmed) {
+      await requestHumanObstacleHelp(
+        page,
+        credentials,
+        'Publish confirmation was not detected. If YouTube is asking for any final option, complete it and reply APPROVED.'
+      );
+      publishConfirmed = await waitForPublishConfirmation(page, 15000);
+    }
+
+    if (!publishConfirmed) {
+      throw new Error('Publish was not confirmed, so URL was not returned.');
+    }
 
     // ===== PHASE 8: EXTRACT VIDEO URL =====
-    let videoUrl = '';
-    try {
-      videoUrl = await page.evaluate(() => {
-        const link = document.querySelector('a.style-scope.ytcp-video-info[href*="youtu"]') ||
-                     document.querySelector('a[href*="youtu.be"]') ||
-                     document.querySelector('a[href*="youtube.com/watch"]') ||
-                     document.querySelector('.video-url-fadeable a');
-        return link?.href || link?.textContent || '';
-      });
-    } catch {}
+    const videoUrl = await extractPublishedVideoUrl(page);
 
     console.log(`[YouTube] Upload complete! URL: ${videoUrl || 'not captured'}`);
     await context.close();
