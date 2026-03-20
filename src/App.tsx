@@ -9,6 +9,7 @@ import UploadQueue from "@/pages/UploadQueue";
 import Schedule from "@/pages/Schedule";
 import SettingsPage from "@/pages/SettingsPage";
 import SetupGuide from "@/pages/SetupGuide";
+import AIChat from "@/pages/AIChat";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -24,6 +25,7 @@ const App = () => (
             <Route path="/" element={<Dashboard />} />
             <Route path="/queue" element={<UploadQueue />} />
             <Route path="/schedule" element={<Schedule />} />
+            <Route path="/chat" element={<AIChat />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/setup" element={<SetupGuide />} />
           </Route>

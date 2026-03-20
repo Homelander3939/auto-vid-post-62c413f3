@@ -1,11 +1,12 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Settings, LayoutDashboard, Upload, Clock, BookOpen } from 'lucide-react';
+import { Settings, LayoutDashboard, Upload, Clock, BookOpen, MessageSquare } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/queue', icon: Upload, label: 'Upload Queue' },
   { to: '/schedule', icon: Clock, label: 'Schedule' },
+  { to: '/chat', icon: MessageSquare, label: 'AI Chat' },
   { to: '/settings', icon: Settings, label: 'Settings' },
   { to: '/setup', icon: BookOpen, label: 'Setup Guide' },
 ];
