@@ -377,10 +377,26 @@ export default function UploadQueue() {
           <p className="text-sm text-muted-foreground mt-1">Track and manage upload jobs</p>
         </div>
         {jobs.length > 0 && (
-          <Button variant="outline" size="sm" onClick={handleClear} className="gap-2 text-muted-foreground">
-            <Trash2 className="w-3.5 h-3.5" />
-            Clear All
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-2 text-muted-foreground">
+                <Trash2 className="w-3.5 h-3.5" />
+                Clear All
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Clear entire queue?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  All jobs will be deleted and any active browser sessions will be stopped. This cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={handleClear} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Clear All</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         )}
       </div>
 
