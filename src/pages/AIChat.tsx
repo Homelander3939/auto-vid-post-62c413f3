@@ -175,11 +175,10 @@ function useVoiceRecorder() {
 
 export default function AIChat() {
   const { toast } = useToast();
-  const [messages, setMessages] = useState<Msg[]>([]);
+  const [appMessages, setAppMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<FileAttachment[]>([]);
-  const [historyLoaded, setHistoryLoaded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const voice = useVoiceRecorder();
@@ -194,7 +193,7 @@ export default function AIChat() {
   });
   const telegramConnected = !!(settings?.telegram_enabled && settings?.telegram_chat_id);
 
-  /* ── Telegram history ──────────────── */
+  /* ── Telegram history (auto-refreshes) ── */
   const { data: telegramMessages } = useQuery({
     queryKey: ['telegram-history'],
     queryFn: async () => {
@@ -205,43 +204,25 @@ export default function AIChat() {
         .limit(200);
       return data || [];
     },
-    refetchInterval: 8000,
+    refetchInterval: 4000,
   });
 
-  useEffect(() => {
-    if (telegramMessages && telegramMessages.length > 0 && !historyLoaded) {
-      const tgMsgs: Msg[] = telegramMessages.map((m: any) => ({
-        role: m.is_bot ? 'assistant' as const : 'user' as const,
-        content: m.text || '',
-        source: 'telegram' as const,
-        timestamp: m.created_at,
-      }));
-      setMessages(tgMsgs);
-      setHistoryLoaded(true);
-    }
-  }, [telegramMessages, historyLoaded]);
-
-  /* ── Realtime subscription ─────────── */
-  useEffect(() => {
-    const channel = supabase
-      .channel('telegram-live')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'telegram_messages' }, (payload: any) => {
-        const m = payload.new;
-        if (!m?.text) return;
-        const newMsg: Msg = {
-          role: m.is_bot ? 'assistant' : 'user',
-          content: m.text,
-          source: 'telegram',
-          timestamp: m.created_at,
-        };
-        setMessages((prev) => {
-          if (prev.some((p) => p.source === 'telegram' && p.content === newMsg.content && p.timestamp === newMsg.timestamp)) return prev;
-          return [...prev, newMsg];
-        });
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, []);
+  /* ── Merge app + telegram messages by timestamp ── */
+  const messages = useMemo(() => {
+    const tgMsgs: Msg[] = (telegramMessages || []).map((m: any) => ({
+      role: m.is_bot ? 'assistant' as const : 'user' as const,
+      content: m.text || '',
+      source: 'telegram' as const,
+      timestamp: m.created_at,
+    }));
+    const all = [...appMessages, ...tgMsgs];
+    all.sort((a, b) => {
+      const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return ta - tb;
+    });
+    return all;
+  }, [appMessages, telegramMessages]);
 
   /* ── Auto-scroll ───────────────────── */
   useEffect(() => {
