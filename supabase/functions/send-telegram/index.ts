@@ -19,7 +19,28 @@ serve(async (req) => {
     const TELEGRAM_API_KEY = Deno.env.get('TELEGRAM_API_KEY');
     if (!TELEGRAM_API_KEY) throw new Error('TELEGRAM_API_KEY is not configured');
 
-    const { chat_id, text, parse_mode } = await req.json();
+    const { chat_id, text, parse_mode, action } = await req.json();
+
+    // Ensure chat_id is a number for Telegram API
+    const numericChatId = typeof chat_id === 'string' ? Number(chat_id) : chat_id;
+
+    // If action is specified (e.g. "typing"), send chat action instead of message
+    if (action) {
+      const actionResp = await fetch(`${GATEWAY_URL}/sendChatAction`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${LOVABLE_API_KEY}`,
+          'X-Connection-Api-Key': TELEGRAM_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ chat_id: numericChatId, action }),
+      });
+      const actionData = await actionResp.json();
+      return new Response(
+        JSON.stringify({ success: actionResp.ok, result: actionData.result }),
+        { status: actionResp.ok ? 200 : 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     if (!chat_id || !text) {
       return new Response(
@@ -27,9 +48,6 @@ serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
-
-    // Ensure chat_id is a number for Telegram API
-    const numericChatId = typeof chat_id === 'string' ? Number(chat_id) : chat_id;
 
     const response = await fetch(`${GATEWAY_URL}/sendMessage`, {
       method: 'POST',
