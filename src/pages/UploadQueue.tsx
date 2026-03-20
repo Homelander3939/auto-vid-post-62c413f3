@@ -161,6 +161,14 @@ function JobCard({ job }: { job: UploadJob }) {
     toast({ title: 'Job deleted' });
   };
 
+  const handleStop = async () => {
+    await stopJob(job.id);
+    queryClient.invalidateQueries({ queryKey: ['queue'] });
+    toast({ title: 'Job stopped', description: 'Browser session terminated.' });
+  };
+
+  const isActive = ['pending', 'processing', 'uploading'].includes(overallStatus);
+
   const videoUrl = job.video_storage_path ? getVideoUrl(job.video_storage_path) : null;
   const isVideo = job.video_file_name?.match(/\.(mp4|mov|avi|mkv|webm)$/i);
 
