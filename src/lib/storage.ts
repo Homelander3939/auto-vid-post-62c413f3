@@ -225,7 +225,6 @@ export async function retryJob(jobId: string): Promise<void> {
   });
 
   await updateJobPlatformResults(jobId, results, 'pending');
-  simulateUpload(jobId); // fire and forget
 }
 
 export async function deleteJob(jobId: string): Promise<void> {
