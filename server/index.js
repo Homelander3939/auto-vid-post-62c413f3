@@ -166,7 +166,10 @@ async function processJob(jobId, options = {}) {
         if (!resolvedDescription) resolvedDescription = parsed.description || '';
         if (!Array.isArray(resolvedTags) || resolvedTags.length === 0) resolvedTags = parsed.tags || [];
       } else if (!resolvedTitle || resolvedTitle === '(auto from folder)') {
-        resolvedTitle = videoFile;
+        const generated = generateMetadataFromFilename(videoFile);
+        resolvedTitle = generated.title;
+        if (!resolvedDescription) resolvedDescription = generated.description;
+        if (!Array.isArray(resolvedTags) || resolvedTags.length === 0) resolvedTags = generated.tags;
       }
     } else if (path.isAbsolute(job.video_file_name)) {
       videoPath = job.video_file_name;
