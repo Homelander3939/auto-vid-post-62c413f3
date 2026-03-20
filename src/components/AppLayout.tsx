@@ -25,7 +25,7 @@ function useLocalServerStatus() {
     let mounted = true;
     const check = async () => {
       try {
-        const resp = await fetch('http://localhost:3001/health', { signal: AbortSignal.timeout(3000) });
+        const resp = await fetch('http://localhost:3001/api/health', { signal: AbortSignal.timeout(3000) });
         if (mounted) setStatus(resp.ok ? 'connected' : 'disconnected');
       } catch {
         if (mounted) setStatus('disconnected');

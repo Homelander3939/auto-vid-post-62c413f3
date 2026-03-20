@@ -19,41 +19,35 @@ function parseApprovalCommand(rawText) {
 
   for (const pattern of codePatterns) {
     const match = text.match(pattern);
-    if (match?.[1]) {
-      return { approved: true, code: match[1] };
-    }
+    if (match?.[1]) return { approved: true, code: match[1] };
   }
 
   return null;
 }
 
-async function requestTelegramApproval({ telegram, platform, timeoutMs = 240000 }) {
+async function requestTelegramApproval({ telegram, platform, customMessage, timeoutMs = 240000 }) {
   if (!telegram?.enabled || !telegram?.botToken || !telegram?.chatId) return null;
 
   const startedAt = Date.now();
   const seenUpdateIds = new Set();
 
-  await sendTelegram(
-    telegram.botToken,
-    telegram.chatId,
-    `🔐 ${platform} login needs verification.\n` +
-      `Please approve sign-in on your phone.\n` +
-      `Then reply here with:\n` +
-      `• APPROVED\n` +
-      `or\n` +
-      `• CODE 123456`
-  ).catch((e) => console.error('[Approval] Telegram notify failed:', e?.message || e));
+  // Send the notification — use custom message if provided, otherwise default
+  const message = customMessage || (
+    `🔐 <b>${platform}</b> login needs verification.\n` +
+    `Please approve sign-in on your phone.\n` +
+    `Then reply here with:\n` +
+    `• APPROVED\n` +
+    `or\n` +
+    `• CODE 123456`
+  );
+
+  await sendTelegram(telegram.botToken, telegram.chatId, message)
+    .catch((e) => console.error('[Approval] Telegram notify failed:', e?.message || e));
 
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const response = await fetch(`https://api.telegram.org/bot${telegram.botToken}/getUpdates`, {
-        method: 'GET',
-      });
-
-      if (!response.ok) {
-        await new Promise((r) => setTimeout(r, 4000));
-        continue;
-      }
+      const response = await fetch(`https://api.telegram.org/bot${telegram.botToken}/getUpdates`, { method: 'GET' });
+      if (!response.ok) { await new Promise((r) => setTimeout(r, 4000)); continue; }
 
       const data = await response.json();
       const updates = Array.isArray(data?.result) ? data.result : [];
@@ -70,12 +64,10 @@ async function requestTelegramApproval({ telegram, platform, timeoutMs = 240000 
         if (msgTsMs && msgTsMs < startedAt - 10000) continue;
 
         const parsed = parseApprovalCommand(message.text);
-        if (parsed) {
-          return parsed;
-        }
+        if (parsed) return parsed;
       }
     } catch (e) {
-      console.error('[Approval] Polling Telegram failed:', e?.message || e);
+      console.error('[Approval] Polling failed:', e?.message || e);
     }
 
     await new Promise((r) => setTimeout(r, 4000));
@@ -93,6 +85,8 @@ async function tryFillVerificationCode(page, code) {
     'input[name*="code" i]',
     'input[id*="code" i]',
     'input[aria-label*="code" i]',
+    'input[name="verificationCode"]',
+    'input[name="security_code"]',
   ];
 
   let filled = false;
@@ -115,6 +109,7 @@ async function tryFillVerificationCode(page, code) {
     'button[type="submit"]',
     'button:has-text("Next")',
     'button:has-text("Verify")',
+    'button:has-text("Confirm")',
   ];
 
   for (const selector of nextSelectors) {
@@ -128,7 +123,4 @@ async function tryFillVerificationCode(page, code) {
   return true;
 }
 
-module.exports = {
-  requestTelegramApproval,
-  tryFillVerificationCode,
-};
+module.exports = { requestTelegramApproval, tryFillVerificationCode };
