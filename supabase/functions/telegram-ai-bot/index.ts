@@ -184,6 +184,21 @@ function extFromMime(mimeType: string): string {
   return 'bin';
 }
 
+function parseAudioDataUrl(dataUrl: string): { base64: string; format: 'wav' | 'mp3' | 'ogg' } | null {
+  const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/i);
+  if (!match) return null;
+
+  const mime = (match[1] || '').toLowerCase();
+  const base64 = match[2] || '';
+  if (!base64) return null;
+
+  let format: 'wav' | 'mp3' | 'ogg' = 'ogg';
+  if (mime.includes('wav')) format = 'wav';
+  else if (mime.includes('mpeg') || mime.includes('mp3')) format = 'mp3';
+
+  return { base64, format };
+}
+
 async function getAppContext(supabase: any): Promise<string> {
   const [
     { data: jobs },
@@ -521,15 +536,21 @@ serve(async (req) => {
         : '';
 
       if (audioDataUrl) {
+        const parsedAudio = parseAudioDataUrl(audioDataUrl);
         const parts: any[] = [];
         parts.push({
           type: 'text',
           text: (userText || 'Please transcribe this voice message and respond to what the person is saying. First show the transcription, then respond.') + fileContext,
         });
-        parts.push({
-          type: 'image_url',
-          image_url: { url: audioDataUrl },
-        });
+        if (parsedAudio) {
+          parts.push({
+            type: 'input_audio',
+            input_audio: {
+              data: parsedAudio.base64,
+              format: parsedAudio.format,
+            },
+          });
+        }
         currentAiMsg.content = parts;
       } else if (images.length > 0) {
         const parts: any[] = [];
@@ -556,7 +577,9 @@ serve(async (req) => {
       });
 
       const appContext = await getAppContext(supabase);
-      const model = (images.length > 0 || audioDataUrl) ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
+      const model = audioDataUrl
+        ? 'openai/gpt-5-mini'
+        : (images.length > 0 ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview');
 
       const systemPrompt = `You are a helpful AI assistant for the Video Uploader app. You have FULL ACCESS to the app's live data AND can perform actions.
 

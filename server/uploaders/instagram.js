@@ -2,9 +2,60 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
-const { smartClick, smartFill } = require('./smart-agent');
+const { smartClick, smartFill, analyzePage } = require('./smart-agent');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
+
+async function extractInstagramPostUrl(page) {
+  return page.evaluate(() => {
+    const links = Array.from(document.querySelectorAll('a[href]'))
+      .map((a) => a.getAttribute('href') || '')
+      .filter(Boolean);
+
+    for (const href of links) {
+      if (href.includes('/p/') || href.includes('/reel/')) {
+        if (href.startsWith('http')) return href;
+        return `https://www.instagram.com${href}`;
+      }
+    }
+    return '';
+  }).catch(() => '');
+}
+
+async function assessInstagramCompletion(page) {
+  const dom = await page.evaluate(() => {
+    const text = (document.body?.innerText || '').toLowerCase();
+    const success =
+      text.includes('your post has been shared') ||
+      text.includes('your reel has been shared') ||
+      text.includes('post shared') ||
+      text.includes('reel shared') ||
+      text.includes('processing');
+    const hardError =
+      text.includes('couldn\'t share') ||
+      text.includes('try again') ||
+      text.includes('upload failed');
+    return { success, hardError, summary: text.slice(0, 1200) };
+  }).catch(() => ({ success: false, hardError: false, summary: '' }));
+
+  if (dom.success) return { success: true, reason: 'Instagram UI confirms share/upload completion.' };
+  if (dom.hardError) return { success: false, needsHuman: true, reason: 'Instagram UI shows a blocking share/upload error.' };
+
+  try {
+    const ai = await analyzePage(page, 'Instagram post completion check. Decide whether posting succeeded or needs manual action.');
+    const state = String(ai?.state || '').toLowerCase();
+    if (['success', 'processing', 'uploading'].includes(state)) {
+      return { success: true, reason: ai?.description || 'AI detected successful/processing completion state.' };
+    }
+    return {
+      success: false,
+      needsHuman: Boolean(ai?.needs_human),
+      reason: ai?.description || 'No clear Instagram completion signal found.',
+    };
+  } catch {
+    return { success: false, needsHuman: false, reason: 'No clear Instagram completion signal found.' };
+  }
+}
 
 async function uploadToInstagram(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
@@ -162,9 +213,32 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     });
     await page.waitForTimeout(10000);
 
+    let completion = await assessInstagramCompletion(page);
+    let postUrl = await extractInstagramPostUrl(page);
+
+    if (!completion.success && completion.needsHuman) {
+      const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
+      await requestTelegramApproval({
+        telegram: credentials.telegram,
+        platform: 'Instagram',
+        backend: credentials.backend,
+        screenshotBuffer,
+        screenshotCaption: '📸 <b>Instagram obstacle screen</b> — reply APPROVED once the step is completed',
+        customMessage: `🚧 <b>Instagram uploader needs your help</b>\n${completion.reason}\n\nResolve the visible step and reply APPROVED.`,
+      });
+
+      await page.waitForTimeout(8000);
+      completion = await assessInstagramCompletion(page);
+      postUrl = postUrl || await extractInstagramPostUrl(page);
+    }
+
+    if (!completion.success) {
+      throw new Error(`Instagram publish was not confirmed. ${completion.reason}`);
+    }
+
     console.log('[Instagram] Upload complete!');
     await context.close();
-    return { url: 'https://www.instagram.com' };
+    return { url: postUrl || 'https://www.instagram.com' };
   } catch (err) {
     console.error('[Instagram] Upload failed:', err.message);
     await context.close();
