@@ -47,17 +47,24 @@ serve(async (req) => {
 
   // Send Telegram notification helper
   async function notifyTelegram(text: string) {
-    if (!telegramEnabled || !telegramChatId) return;
+    if (!telegramEnabled || !telegramChatId) {
+      console.log('[Telegram] Skipped notification — not configured. enabled:', telegramEnabled, 'chatId:', telegramChatId);
+      return;
+    }
     try {
-      await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
+      console.log('[Telegram] Sending notification to chat:', telegramChatId);
+      const numericChatId = Number(telegramChatId);
+      const resp = await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${LOVABLE_API_KEY}`,
           'X-Connection-Api-Key': TELEGRAM_API_KEY!,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ chat_id: telegramChatId, text, parse_mode: 'HTML' }),
+        body: JSON.stringify({ chat_id: numericChatId, text, parse_mode: 'HTML' }),
       });
+      const respData = await resp.json();
+      console.log('[Telegram] Response:', resp.status, JSON.stringify(respData));
     } catch (e) {
       console.error('Telegram notification failed:', e);
     }
