@@ -63,6 +63,20 @@ export default function UploadQueue() {
         )}
       </div>
 
+      {jobs.some((j) => j.platform_results.some((p: PlatformResult) => p.status === 'pending')) && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">
+          <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <p className="font-medium text-amber-800">Jobs waiting for local server</p>
+            <p className="text-amber-700 mt-0.5">
+              Pending jobs will be uploaded when you run the local Node.js server on your PC.
+              It uses browser automation to log into platforms and upload videos.
+              Clone the repo, run <code className="bg-amber-100 px-1 rounded">cd server &amp;&amp; npm install &amp;&amp; npm start</code>.
+            </p>
+          </div>
+        </div>
+      )}
+
       {jobs.length === 0 && !isLoading && (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <Inbox className="w-10 h-10 text-muted-foreground mb-4" />
