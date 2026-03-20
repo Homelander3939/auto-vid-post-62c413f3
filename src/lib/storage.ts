@@ -293,36 +293,53 @@ export async function clearQueue(): Promise<void> {
   await supabase.from('upload_jobs').delete().neq('id', '00000000-0000-0000-0000-000000000000');
 }
 
-// --- Schedule ---
-export async function getSchedule(): Promise<ScheduleConfig> {
+// --- Schedule (multiple configs) ---
+export async function getSchedules(): Promise<ScheduleConfig[]> {
   const { data, error } = await supabase
     .from('schedule_config')
     .select('*')
-    .eq('id', 1)
-    .single();
+    .order('id', { ascending: true });
 
-  if (error || !data) return { enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'], folderPath: '', endAt: null };
+  if (error || !data) return [];
 
-  return {
-    enabled: data.enabled,
-    cronExpression: data.cron_expression,
-    platforms: data.platforms,
-    folderPath: (data as any).folder_path || '',
-    endAt: (data as any).end_at || null,
-  };
+  return data.map((row: any) => ({
+    id: row.id,
+    name: row.name || 'Schedule',
+    enabled: row.enabled,
+    cronExpression: row.cron_expression,
+    platforms: row.platforms,
+    folderPath: row.folder_path || '',
+    endAt: row.end_at || null,
+  }));
 }
 
-export async function saveSchedule(config: ScheduleConfig): Promise<void> {
-  await supabase
-    .from('schedule_config')
-    .update({
-      enabled: config.enabled,
-      cron_expression: config.cronExpression,
-      platforms: config.platforms,
-      folder_path: config.folderPath,
-      end_at: config.endAt,
-    } as any)
-    .eq('id', 1);
+// Keep backward compat
+export async function getSchedule(): Promise<ScheduleConfig> {
+  const all = await getSchedules();
+  return all[0] || { name: 'Schedule', enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'], folderPath: '', endAt: null };
+}
+
+export async function saveSchedule(config: ScheduleConfig): Promise<ScheduleConfig> {
+  const payload = {
+    name: config.name || 'Schedule',
+    enabled: config.enabled,
+    cron_expression: config.cronExpression,
+    platforms: config.platforms,
+    folder_path: config.folderPath,
+    end_at: config.endAt,
+  } as any;
+
+  if (config.id) {
+    const { data } = await supabase.from('schedule_config').update(payload).eq('id', config.id).select().single();
+    return data ? { ...config, id: data.id } : config;
+  } else {
+    const { data } = await supabase.from('schedule_config').insert(payload).select().single();
+    return data ? { ...config, id: data.id } : config;
+  }
+}
+
+export async function deleteScheduleConfig(id: number): Promise<void> {
+  await supabase.from('schedule_config').delete().eq('id', id);
 }
 
 // --- Scheduled Uploads ---
