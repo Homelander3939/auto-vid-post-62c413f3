@@ -45,6 +45,20 @@ export interface ScheduleConfig {
   platforms: string[];
 }
 
+export interface ScheduledUpload {
+  id: string;
+  video_file_name: string;
+  video_storage_path: string | null;
+  title: string;
+  description: string;
+  tags: string[];
+  target_platforms: string[];
+  scheduled_at: string;
+  status: string;
+  upload_job_id: string | null;
+  created_at: string;
+}
+
 const defaultSettings: AppSettings = {
   folderPath: '',
   youtube: { email: '', password: '', enabled: false },
