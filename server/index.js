@@ -160,35 +160,91 @@ app.post('/api/process-pending', async (req, res) => {
   }
 });
 
-// --- Cron: poll for pending jobs ---
+// --- Cron: poll for pending jobs AND scheduled uploads ---
 let cronJob = null;
+
+async function processScheduledUploads() {
+  // Find scheduled uploads whose time has come
+  const now = new Date().toISOString();
+  const { data: dueUploads } = await supabase
+    .from('scheduled_uploads')
+    .select('*')
+    .eq('status', 'scheduled')
+    .lte('scheduled_at', now)
+    .order('scheduled_at', { ascending: true });
+
+  if (!dueUploads || dueUploads.length === 0) return;
+
+  console.log(`[Scheduler] ${dueUploads.length} scheduled upload(s) due`);
+
+  for (const item of dueUploads) {
+    try {
+      // Mark as processing
+      await supabase.from('scheduled_uploads').update({ status: 'processing' }).eq('id', item.id);
+
+      // Create an upload job from the scheduled item
+      const platformResults = item.target_platforms.map(name => ({
+        name,
+        status: 'pending',
+      }));
+
+      const { data: job, error } = await supabase
+        .from('upload_jobs')
+        .insert({
+          video_file_name: item.video_file_name,
+          video_storage_path: item.video_storage_path,
+          title: item.title,
+          description: item.description,
+          tags: item.tags,
+          target_platforms: item.target_platforms,
+          status: 'pending',
+          platform_results: platformResults,
+        })
+        .select()
+        .single();
+
+      if (error || !job) {
+        console.error('[Scheduler] Failed to create job for scheduled upload:', error);
+        await supabase.from('scheduled_uploads').update({ status: 'error' }).eq('id', item.id);
+        continue;
+      }
+
+      // Link the job and process it
+      await supabase.from('scheduled_uploads').update({ upload_job_id: job.id }).eq('id', item.id);
+      await processJob(job.id);
+
+      // Mark scheduled upload as completed
+      await supabase.from('scheduled_uploads').update({ status: 'completed' }).eq('id', item.id);
+    } catch (err) {
+      console.error('[Scheduler] Error processing scheduled upload:', err.message);
+      await supabase.from('scheduled_uploads').update({ status: 'error' }).eq('id', item.id);
+    }
+  }
+}
 
 async function setupCron() {
   if (cronJob) { cronJob.stop(); cronJob = null; }
 
-  const { data } = await supabase.from('schedule_config').select('*').eq('id', 1).single();
-  if (!data || !data.enabled) {
-    console.log('[Cron] Schedule disabled');
-    return;
-  }
+  // Always run a per-minute check for scheduled uploads
+  cronJob = cron.schedule('* * * * *', async () => {
+    console.log(`[Cron] Tick at ${new Date().toISOString()}`);
 
-  try {
-    cronJob = cron.schedule(data.cron_expression, async () => {
-      console.log(`[Cron] Running at ${new Date().toISOString()}`);
-      const { data: jobs } = await supabase
-        .from('upload_jobs')
-        .select('id')
-        .eq('status', 'pending')
-        .order('created_at', { ascending: true });
+    // Process scheduled uploads that are due
+    await processScheduledUploads();
 
-      for (const job of (jobs || [])) {
-        await processJob(job.id);
-      }
-    });
-    console.log(`[Cron] Active: ${data.cron_expression}`);
-  } catch (err) {
-    console.error('[Cron] Invalid expression:', data.cron_expression);
-  }
+    // Process any pending immediate jobs
+    const { data: jobs } = await supabase
+      .from('upload_jobs')
+      .select('id')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true });
+
+    for (const job of (jobs || [])) {
+      await processJob(job.id);
+    }
+  });
+
+  console.log('[Cron] Active: checking every minute for pending jobs and scheduled uploads');
 }
 
 // Refresh cron when schedule changes
