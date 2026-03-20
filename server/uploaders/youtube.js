@@ -8,6 +8,10 @@ const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'yo
 const YT_STUDIO_URL = 'https://studio.youtube.com';
 const YT_UPLOAD_URL = 'https://studio.youtube.com/upload';
 
+async function safeScreenshot(page) {
+  return page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
+}
+
 async function inspectGoogleAuthState(page) {
   return page.evaluate(() => {
     const text = (document.body?.innerText || '').toLowerCase();
@@ -44,8 +48,11 @@ async function inspectGoogleAuthState(page) {
     })();
 
     return {
+      urlPath: window.location.pathname || '',
       hasEmailInput: isVisible(emailInput),
       hasPasswordInput: isVisible(passwordInput),
+      isIdentifierStep: (window.location.pathname || '').includes('/identifier'),
+      isPasswordStep: (window.location.pathname || '').includes('/challenge/pwd') || text.includes('enter your password'),
       hasCodeInput: isVisible(codeInput),
       hasPhonePrompt: text.includes('check your phone') || text.includes('tap yes') || text.includes('confirm it') || text.includes('approve sign-in'),
       hasNumberMatchPrompt: text.includes('choose a number') || text.includes('match the number') || text.includes('try another way'),
@@ -91,6 +98,21 @@ async function chooseGoogleAccount(page, email) {
 
   if (clickedByData) return true;
   return clickByText(page, ['use another account', 'another account']);
+}
+
+async function chooseGoogleVerificationMethod(page, method) {
+  if (!method) return;
+
+  await clickByText(page, ['try another way', 'another way', 'choose another option', 'more ways to verify']);
+  await page.waitForTimeout(1200);
+
+  if (method === 'phone') {
+    await clickByText(page, ['use your phone', 'google prompt', 'tap yes on your phone', 'phone']);
+  } else if (method === 'code') {
+    await clickByText(page, ['verification code', 'use a verification code', 'authenticator app', 'text message', 'sms']);
+  }
+
+  await page.waitForTimeout(1500);
 }
 
 async function submitGoogleEmail(page, email) {
@@ -164,7 +186,7 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     await page.waitForTimeout(3000);
 
     let loginAttempts = 0;
-    const MAX_LOGIN_ATTEMPTS = 40;
+    const MAX_LOGIN_ATTEMPTS = 60;
     let verificationRequested = false;
     let lastStateKey = '';
     let repeatedStateCount = 0;
@@ -184,8 +206,11 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       if (url.includes('accounts.google.com')) {
         const auth = await inspectGoogleAuthState(page);
         const stateKey = [
+          auth.urlPath,
           auth.hasEmailInput ? 'email' : '',
+          auth.isIdentifierStep ? 'identifier-step' : '',
           auth.hasPasswordInput ? 'password' : '',
+          auth.isPasswordStep ? 'password-step' : '',
           auth.hasCodeInput ? 'code' : '',
           auth.hasPhonePrompt ? 'phone' : '',
           auth.isChooseAccount ? 'choose' : '',
@@ -196,15 +221,24 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
         else repeatedStateCount = 0;
         lastStateKey = stateKey;
 
-        if (auth.hasPasswordInput) {
+        if (auth.hasPasswordInput || auth.isPasswordStep) {
           verificationRequested = false;
-          await submitGooglePassword(page, credentials.password);
+          const submitted = await submitGooglePassword(page, credentials.password);
+          if (!submitted && auth.hasContinueButton) {
+            await clickByText(page, ['next', 'continue']);
+            await page.waitForTimeout(2200);
+          }
           continue;
         }
 
-        if (auth.hasEmailInput) {
+        if (auth.hasEmailInput || auth.isIdentifierStep) {
           verificationRequested = false;
-          await submitGoogleEmail(page, credentials.email);
+          if (auth.hasEmailInput) {
+            await submitGoogleEmail(page, credentials.email);
+          } else if (auth.hasContinueButton) {
+            await clickByText(page, ['next', 'continue']);
+            await page.waitForTimeout(2200);
+          }
           continue;
         }
 
@@ -235,22 +269,52 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
           console.log('[YouTube] Verification detected — requesting Telegram help...');
           verificationRequested = true;
 
+          const screenshotBuffer = await safeScreenshot(page);
           let verificationMessage = `🔐 <b>YouTube verification needed</b>\n`;
+          verificationMessage += `Reply with one of:\n`;
+          verificationMessage += `• <b>METHOD PHONE</b> (use phone approval)\n`;
+          verificationMessage += `• <b>METHOD CODE</b> (use one-time code)\n`;
+          verificationMessage += `• <b>APPROVED</b> (already approved)\n`;
+          verificationMessage += `• <b>CODE 123456</b>\n\n`;
           if (auth.matchNumber) {
-            verificationMessage += `Tap number <b>${auth.matchNumber}</b> on your phone.\nThen reply APPROVED`;
+            verificationMessage += `Google shows number <b>${auth.matchNumber}</b>. Choose that number on your phone.`;
           } else if (auth.hasPhonePrompt) {
-            verificationMessage += `Check your phone and approve the sign-in.\nThen reply APPROVED`;
+            verificationMessage += `Google is asking for phone/device approval.`;
           } else {
-            verificationMessage += `Enter the verification code.\nReply with: CODE 123456`;
+            verificationMessage += `Google is asking for a verification code.`;
           }
 
-          const approval = await requestTelegramApproval({
+          let approval = await requestTelegramApproval({
             telegram: credentials.telegram,
             platform: 'YouTube',
             customMessage: verificationMessage,
+            screenshotBuffer,
+            backend: credentials.backend,
           });
 
           if (!approval) throw new Error('Verification required but no response received. Check Telegram.');
+
+          if (approval.method) {
+            await chooseGoogleVerificationMethod(page, approval.method);
+          }
+
+          if (!approval.code && !approval.approved) {
+            approval = await requestTelegramApproval({
+              telegram: credentials.telegram,
+              platform: 'YouTube',
+              customMessage: approval.method === 'code'
+                ? '⌨️ <b>YouTube verification code mode selected</b>\nSend: CODE 123456'
+                : '📱 <b>YouTube phone approval mode selected</b>\nApprove on your phone, then reply: APPROVED',
+              screenshotBuffer: await safeScreenshot(page),
+              backend: credentials.backend,
+            });
+
+            if (!approval) throw new Error('Verification step timed out — no Telegram response received.');
+            if (approval.method) {
+              await chooseGoogleVerificationMethod(page, approval.method);
+            }
+          }
+
           if (approval.code) {
             await tryFillVerificationCode(page, approval.code);
             await page.waitForTimeout(6000);
@@ -258,8 +322,8 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
             await page.waitForTimeout(9000);
           }
 
-          await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => {});
-          await page.waitForTimeout(2000);
+          await waitForStateChange(page, url, 12000).catch(() => {});
+          await page.waitForTimeout(1500);
           continue;
         }
 
