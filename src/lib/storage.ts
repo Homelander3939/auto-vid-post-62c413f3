@@ -341,6 +341,10 @@ export async function createScheduledUpload(
   platforms: string[],
   scheduledAt: string
 ): Promise<ScheduledUpload> {
+  const normalizedScheduledAt = Number.isNaN(new Date(scheduledAt).getTime())
+    ? scheduledAt
+    : new Date(scheduledAt).toISOString();
+
   const { data, error } = await supabase
     .from('scheduled_uploads')
     .insert({
@@ -350,7 +354,7 @@ export async function createScheduledUpload(
       description: metadata.description,
       tags: metadata.tags,
       target_platforms: platforms,
-      scheduled_at: scheduledAt,
+      scheduled_at: normalizedScheduledAt,
       status: 'scheduled',
     })
     .select()
