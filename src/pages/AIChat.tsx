@@ -348,7 +348,7 @@ export default function AIChat() {
     let assistantSoFar = '';
     const upsert = (chunk: string) => {
       assistantSoFar += chunk;
-      setMessages((prev) => {
+      setAppMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === 'assistant' && last?.source === 'app' && !last?.timestamp) {
           return prev.map((m, i) => (i === prev.length - 1 ? { ...m, content: assistantSoFar } : m));
