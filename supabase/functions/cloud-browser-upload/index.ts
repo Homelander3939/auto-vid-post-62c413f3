@@ -451,8 +451,8 @@ async function askAI(
 
 // ========== Telegram Helpers ==========
 
-async function sendTelegramPrompt(
-  telegram: AutomationParams['telegram'], platform: string, jobId: string,
+async function sendTelegramMessage(
+  telegram: AutomationParams['telegram'], text: string,
 ): Promise<boolean> {
   if (!telegram.enabled || !telegram.chatId || !telegram.lovableApiKey || !telegram.telegramApiKey) return false;
   const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
@@ -464,11 +464,20 @@ async function sendTelegramPrompt(
     },
     body: JSON.stringify({
       chat_id: telegram.chatId,
-      text: `🔐 ${platform} login needs verification for job ${jobId}.\nPlease approve on your phone, then reply:\n• APPROVED\n• CODE 123456`,
+      text,
       parse_mode: 'HTML',
     }),
   });
   return response.ok;
+}
+
+async function sendTelegramPrompt(
+  telegram: AutomationParams['telegram'], platform: string, jobId: string, reason?: string,
+): Promise<boolean> {
+  const text = reason
+    ? `🔐 <b>${platform}</b> needs your attention!\n\n${reason}\n\nPlease reply:\n• <b>APPROVED</b> — if you approved on your phone\n• <b>CODE 123456</b> — with the verification code\n• Any text the agent needs`
+    : `🔐 ${platform} login needs verification for job ${jobId}.\nPlease approve on your phone, then reply:\n• APPROVED\n• CODE 123456`;
+  return sendTelegramMessage(telegram, text);
 }
 
 function parseApprovalText(text: string): { approved: boolean; code?: string } | null {
