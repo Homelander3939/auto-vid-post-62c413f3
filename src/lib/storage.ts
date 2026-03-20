@@ -94,6 +94,7 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
     .from('app_settings')
     .update({
       folder_path: settings.folderPath,
+      upload_mode: settings.uploadMode,
       youtube_email: settings.youtube.email,
       youtube_password: settings.youtube.password,
       youtube_enabled: settings.youtube.enabled,
@@ -106,7 +107,7 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
       telegram_bot_token: settings.telegram.botToken,
       telegram_chat_id: settings.telegram.chatId,
       telegram_enabled: settings.telegram.enabled,
-    })
+    } as any)
     .eq('id', 1);
 }
 
