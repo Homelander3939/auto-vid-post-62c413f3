@@ -302,7 +302,7 @@ serve(async (req) => {
       if (!message) continue;
 
       const chatId = message.chat.id;
-      const { text: userText, images, files, hasMedia } = await extractMessageContent(
+      const { text: userText, images, files, audioDataUrl, hasMedia } = await extractMessageContent(
         supabase,
         message,
         LOVABLE_API_KEY,
@@ -313,8 +313,9 @@ serve(async (req) => {
 
       const displayText = userText
         || (images.length > 0 ? '📷 [Photo]'
-          : files.some((f) => f.type.startsWith('audio/')) ? '🎤 [Voice message]'
-            : '📎 [File]');
+          : audioDataUrl ? '🎤 [Voice message]'
+            : files.length > 0 ? '📎 [File]'
+              : '');
 
       await supabase.from('telegram_messages').upsert({
         update_id: update.update_id,
@@ -339,12 +340,22 @@ serve(async (req) => {
         content: m.text || '',
       }));
 
-      const currentAiMsg: any = {
-        role: 'user',
-        content: userText || (images.length ? 'What do you see in this image?' : 'I sent a file.'),
-      };
+      // Build the AI message with multimodal content
+      const currentAiMsg: any = { role: 'user', content: '' };
 
-      if (images.length > 0) {
+      if (audioDataUrl) {
+        // Pass audio to Gemini for transcription + response
+        const parts: any[] = [];
+        parts.push({
+          type: 'text',
+          text: userText || 'Please transcribe this voice message and respond to what the person is saying. First show the transcription, then respond.',
+        });
+        parts.push({
+          type: 'image_url',
+          image_url: { url: audioDataUrl },
+        });
+        currentAiMsg.content = parts;
+      } else if (images.length > 0) {
         const parts: any[] = [];
         parts.push({ type: 'text', text: userText || 'Please analyze this image in detail.' });
         images.forEach((img) => parts.push({ type: 'image_url', image_url: { url: img.url } }));
@@ -353,6 +364,8 @@ serve(async (req) => {
         currentAiMsg.content = `${userText || 'I sent a file.'}\n\nAttached files:\n${files
           .map((f) => `- ${f.name} (${f.type}, ${Math.round((f.size || 0) / 1024)}KB)`)
           .join('\n')}`;
+      } else {
+        currentAiMsg.content = userText || '';
       }
 
       contextMessages.push(currentAiMsg);
@@ -369,7 +382,8 @@ serve(async (req) => {
       });
 
       const appContext = await getAppContext(supabase);
-      const model = images.length > 0 ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
+      // Use gemini-2.5-flash for any media (handles audio + images)
+      const model = (images.length > 0 || audioDataUrl) ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
 
       let aiReply = "Sorry, I couldn't process your message right now.";
       try {
