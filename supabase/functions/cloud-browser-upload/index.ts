@@ -936,12 +936,22 @@ async function agenticUpload(
       consecutiveSameAction = 0;
     }
 
-    console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — asking AI...`);
     let action: AgentAction;
+
     try {
-      action = await askAI(params.lovableApiKey, screenshot, pageInfo, taskPrompt, history);
+      const deterministicAction = platform === 'youtube'
+        ? await getDeterministicYouTubeAction(sendCmd, params, fileUploaded)
+        : null;
+
+      if (deterministicAction) {
+        action = deterministicAction;
+        console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — deterministic action selected.`);
+      } else {
+        console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — asking AI...`);
+        action = await askAI(params.lovableApiKey, screenshot, pageInfo, taskPrompt, history);
+      }
     } catch (e) {
-      console.error('[Agent] AI call failed:', e);
+      console.error('[Agent] AI/deterministic planning failed:', e);
       await wait(3000);
       continue;
     }
