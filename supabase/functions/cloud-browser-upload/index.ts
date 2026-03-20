@@ -451,8 +451,8 @@ async function askAI(
 
 // ========== Telegram Helpers ==========
 
-async function sendTelegramPrompt(
-  telegram: AutomationParams['telegram'], platform: string, jobId: string,
+async function sendTelegramMessage(
+  telegram: AutomationParams['telegram'], text: string,
 ): Promise<boolean> {
   if (!telegram.enabled || !telegram.chatId || !telegram.lovableApiKey || !telegram.telegramApiKey) return false;
   const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
@@ -464,11 +464,20 @@ async function sendTelegramPrompt(
     },
     body: JSON.stringify({
       chat_id: telegram.chatId,
-      text: `🔐 ${platform} login needs verification for job ${jobId}.\nPlease approve on your phone, then reply:\n• APPROVED\n• CODE 123456`,
+      text,
       parse_mode: 'HTML',
     }),
   });
   return response.ok;
+}
+
+async function sendTelegramPrompt(
+  telegram: AutomationParams['telegram'], platform: string, jobId: string, reason?: string,
+): Promise<boolean> {
+  const text = reason
+    ? `🔐 <b>${platform}</b> needs your attention!\n\n${reason}\n\nPlease reply:\n• <b>APPROVED</b> — if you approved on your phone\n• <b>CODE 123456</b> — with the verification code\n• Any text the agent needs`
+    : `🔐 ${platform} login needs verification for job ${jobId}.\nPlease approve on your phone, then reply:\n• APPROVED\n• CODE 123456`;
+  return sendTelegramMessage(telegram, text);
 }
 
 function parseApprovalText(text: string): { approved: boolean; code?: string } | null {
@@ -731,13 +740,15 @@ async function agenticUpload(
             throw new Error(`${platform} verification required but Telegram is not configured.`);
           }
           const sinceIso = new Date().toISOString();
-          await sendTelegramPrompt(params.telegram, platform, params.jobId);
+          const reason = action.reasoning || 'Login verification or 2FA required';
+          await sendTelegramPrompt(params.telegram, platform, params.jobId, reason);
           const approval = await waitForTelegramApproval(params.supabase, params.telegram.chatId, sinceIso);
           if (!approval) {
+            // Send timeout message
+            await sendTelegramMessage(params.telegram, `⏱ ${platform} verification timed out after 4 minutes. The upload has been cancelled.`);
             throw new Error(`${platform} verification timed out. Reply APPROVED or CODE 123456 in Telegram.`);
           }
           if (approval.code) {
-            // Type the code into whatever input is focused/visible
             const codeTyped = await evalJS(sendCmd, `
               const inputs = document.querySelectorAll('input[type="tel"], input[type="text"], input[autocomplete="one-time-code"], input[name*="code" i], input[name*="pin" i]');
               for (const inp of inputs) {
@@ -756,7 +767,7 @@ async function agenticUpload(
             await pressKey(sendCmd, 'Enter');
             await wait(5000);
           } else {
-            await wait(10000); // User approved externally
+            await wait(10000);
           }
           history.push({ action: 'system', reasoning: 'Verification handled via Telegram' });
           break;
@@ -768,21 +779,10 @@ async function agenticUpload(
           const resultUrl = urlMatch?.[0];
 
           // Telegram success notification
-          if (params.telegram.enabled && params.telegram.chatId && params.telegram.lovableApiKey && params.telegram.telegramApiKey) {
-            await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${params.telegram.lovableApiKey}`,
-                'X-Connection-Api-Key': params.telegram.telegramApiKey!,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                chat_id: params.telegram.chatId,
-                text: `✅ ${platform.toUpperCase()} upload complete!\n📹 ${params.title}\n${resultUrl ? `🔗 ${resultUrl}` : 'URL not captured'}`,
-                parse_mode: 'HTML',
-              }),
-            }).catch(() => {});
-          }
+          await sendTelegramMessage(
+            params.telegram,
+            `✅ <b>${platform.toUpperCase()}</b> upload complete!\n📹 ${params.title}\n${resultUrl ? `🔗 ${resultUrl}` : 'URL not captured'}`
+          );
 
           return { url: resultUrl, message: action.result || `${platform} upload completed.` };
         }
@@ -793,10 +793,24 @@ async function agenticUpload(
     } catch (actionErr: any) {
       console.error(`[Agent] Action ${action.action} failed:`, actionErr.message);
       history.push({ action: 'system', reasoning: `Action failed: ${actionErr.message}. Try a different approach.` });
+
+      // If we've had too many errors, notify via Telegram
+      const errorCount = history.filter(h => h.action === 'system' && h.reasoning.startsWith('Action failed')).length;
+      if (errorCount >= 5) {
+        await sendTelegramMessage(
+          params.telegram,
+          `⚠️ <b>${platform}</b> upload is having trouble.\n\nMultiple actions failed. The agent will keep trying but may need your attention.\n\nLast error: ${actionErr.message}`
+        );
+      }
       await wait(2000);
     }
   }
 
+  // Max steps reached — send failure notification
+  await sendTelegramMessage(
+    params.telegram,
+    `❌ <b>${platform}</b> upload did not complete within ${MAX_STEPS} steps.\n📹 ${params.title}\n\nPlease check the Browser Sessions page for details.`
+  );
   throw new Error(`${platform} upload did not complete within ${MAX_STEPS} steps.`);
 }
 

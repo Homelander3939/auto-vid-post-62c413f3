@@ -246,7 +246,28 @@ export async function retryJob(jobId: string): Promise<void> {
 }
 
 export async function deleteJob(jobId: string): Promise<void> {
+  // If the job has a browser session, stop it first
+  const { data: job } = await supabase.from('upload_jobs').select('browserbase_session_id, status').eq('id', jobId).single();
+  if (job?.browserbase_session_id && ['pending', 'processing', 'uploading'].includes(job.status)) {
+    try {
+      await supabase.functions.invoke('cloud-browser-status', {
+        body: { action: 'stop', sessionId: job.browserbase_session_id },
+      });
+    } catch {}
+  }
   await supabase.from('upload_jobs').delete().eq('id', jobId);
+}
+
+export async function stopJob(jobId: string): Promise<void> {
+  const { data: job } = await supabase.from('upload_jobs').select('browserbase_session_id').eq('id', jobId).single();
+  if (job?.browserbase_session_id) {
+    try {
+      await supabase.functions.invoke('cloud-browser-status', {
+        body: { action: 'stop', sessionId: job.browserbase_session_id },
+      });
+    } catch {}
+  }
+  await supabase.from('upload_jobs').update({ status: 'failed' }).eq('id', jobId);
 }
 
 export async function clearQueue(): Promise<void> {

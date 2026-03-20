@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getQueue, getSettings, retryJob, deleteJob, clearQueue, getVideoUrl, type UploadJob, type PlatformResult } from '@/lib/storage';
+import { getQueue, getSettings, retryJob, deleteJob, clearQueue, stopJob, getVideoUrl, type UploadJob, type PlatformResult } from '@/lib/storage';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,7 +8,8 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Cloud, Pencil, Save, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Cloud, Pencil, Save, X, ChevronDown, ChevronUp, StopCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 const statusColors: Record<string, string> = {
@@ -160,6 +161,14 @@ function JobCard({ job }: { job: UploadJob }) {
     toast({ title: 'Job deleted' });
   };
 
+  const handleStop = async () => {
+    await stopJob(job.id);
+    queryClient.invalidateQueries({ queryKey: ['queue'] });
+    toast({ title: 'Job stopped', description: 'Browser session terminated.' });
+  };
+
+  const isActive = ['pending', 'processing', 'uploading'].includes(overallStatus);
+
   const videoUrl = job.video_storage_path ? getVideoUrl(job.video_storage_path) : null;
   const isVideo = job.video_file_name?.match(/\.(mp4|mov|avi|mkv|webm)$/i);
 
@@ -194,10 +203,48 @@ function JobCard({ job }: { job: UploadJob }) {
                   <RefreshCw className="w-3 h-3" />
                 </Button>
               )}
-              <Button variant="ghost" size="sm" onClick={handleDelete}
-                className="h-7 px-1.5 text-muted-foreground hover:text-destructive">
-                <Trash2 className="w-3 h-3" />
-              </Button>
+              {isActive && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="ghost" size="sm"
+                      className="h-7 px-1.5 text-muted-foreground hover:text-amber-600">
+                      <StopCircle className="w-3 h-3" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Stop this upload?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will cancel the upload and terminate the browser session. Credits for the session will stop being used.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep Running</AlertDialogCancel>
+                      <AlertDialogAction onClick={handleStop} className="bg-amber-600 hover:bg-amber-700">Stop Upload</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="ghost" size="sm"
+                    className="h-7 px-1.5 text-muted-foreground hover:text-destructive">
+                    <Trash2 className="w-3 h-3" />
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete this job?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This action cannot be undone. {isActive && 'The active browser session will also be terminated.'}
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={handleDelete} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Delete</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           </div>
         </CardHeader>
@@ -307,6 +354,12 @@ export default function UploadQueue() {
   const isCloud = settings?.uploadMode === 'cloud';
 
   const handleClear = async () => {
+    // Stop all active browser sessions first
+    for (const job of jobs) {
+      if (['pending', 'processing', 'uploading'].includes(job.status)) {
+        await stopJob(job.id);
+      }
+    }
     await clearQueue();
     queryClient.invalidateQueries({ queryKey: ['queue'] });
     toast({ title: 'Queue cleared' });
@@ -324,10 +377,26 @@ export default function UploadQueue() {
           <p className="text-sm text-muted-foreground mt-1">Track and manage upload jobs</p>
         </div>
         {jobs.length > 0 && (
-          <Button variant="outline" size="sm" onClick={handleClear} className="gap-2 text-muted-foreground">
-            <Trash2 className="w-3.5 h-3.5" />
-            Clear All
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-2 text-muted-foreground">
+                <Trash2 className="w-3.5 h-3.5" />
+                Clear All
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Clear entire queue?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  All jobs will be deleted and any active browser sessions will be stopped. This cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={handleClear} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Clear All</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         )}
       </div>
 
