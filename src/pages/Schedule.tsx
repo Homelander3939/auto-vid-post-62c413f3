@@ -277,11 +277,16 @@ export default function Schedule() {
     queryFn: getSchedules,
   });
 
+  const { data: scheduledUploads = [] } = useQuery({
+    queryKey: ['scheduled-uploads'],
+    queryFn: getScheduledUploads,
+    refetchInterval: 5000,
+  });
+
   const [newSchedules, setNewSchedules] = useState<ScheduleConfig[]>([]);
 
   const handleSave = async (config: ScheduleConfig) => {
     const saved = await saveSchedule(config);
-    // If it was a new unsaved one, remove from newSchedules
     if (!config.id) {
       setNewSchedules(prev => prev.filter(s => s !== config));
     }
@@ -295,6 +300,12 @@ export default function Schedule() {
     toast({ title: 'Schedule deleted' });
   };
 
+  const handleDeleteScheduled = async (id: string) => {
+    await deleteScheduledUpload(id);
+    qc.invalidateQueries({ queryKey: ['scheduled-uploads'] });
+    toast({ title: 'Scheduled upload cancelled' });
+  };
+
   const addNew = () => {
     setNewSchedules(prev => [...prev, {
       name: `Schedule ${schedules.length + prev.length + 1}`,
@@ -305,6 +316,9 @@ export default function Schedule() {
       endAt: null,
     }]);
   };
+
+  const activeScheduled = scheduledUploads.filter(s => s.status === 'scheduled');
+  const pastScheduled = scheduledUploads.filter(s => s.status !== 'scheduled');
 
   return (
     <div className="space-y-8">
@@ -343,6 +357,68 @@ export default function Schedule() {
         <h2 className="text-lg font-medium">Individual Scheduled Uploads</h2>
         <CampaignScheduler />
       </div>
+
+      {/* Existing scheduled uploads list */}
+      {activeScheduled.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+            <CalendarClock className="w-4 h-4" /> Upcoming Scheduled Uploads ({activeScheduled.length})
+          </h2>
+          {activeScheduled.map(item => (
+            <Card key={item.id} className="border-dashed">
+              <CardContent className="py-3 px-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">{item.title || item.video_file_name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {new Date(item.scheduled_at).toLocaleString()} · {item.target_platforms.join(', ')}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Badge className="bg-violet-100 text-violet-700" variant="secondary">upcoming</Badge>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="ghost" size="sm" className="h-7 px-1.5 text-muted-foreground hover:text-destructive">
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Cancel this scheduled upload?</AlertDialogTitle>
+                          <AlertDialogDescription>This will permanently remove this scheduled upload.</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Keep</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => handleDeleteScheduled(item.id)} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Cancel</AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Past scheduled uploads */}
+      {pastScheduled.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-sm font-medium text-muted-foreground">Past Scheduled Uploads ({pastScheduled.length})</h2>
+          {pastScheduled.slice(0, 10).map(item => (
+            <Card key={item.id} className="opacity-60">
+              <CardContent className="py-2 px-4">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs truncate">{item.title || item.video_file_name}</p>
+                  <Badge className={item.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : 'bg-destructive/10 text-destructive'} variant="secondary">
+                    {item.status}
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

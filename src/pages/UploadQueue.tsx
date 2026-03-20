@@ -336,6 +336,55 @@ function JobCard({ job }: { job: UploadJob }) {
   );
 }
 
+/* ── Scheduled Upload Card ────────────────── */
+
+function ScheduledCard({ item, onDelete }: { item: ScheduledUpload; onDelete: () => void }) {
+  const scheduledDate = new Date(item.scheduled_at);
+  const now = new Date();
+  const isOverdue = scheduledDate < now;
+  const timeStr = scheduledDate.toLocaleString();
+
+  return (
+    <Card className="overflow-hidden border-dashed">
+      <CardContent className="py-3 px-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <CalendarClock className="w-4 h-4 text-primary shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-medium truncate">{item.title || item.video_file_name}</p>
+              <p className="text-xs text-muted-foreground">
+                {isOverdue ? 'Processing soon' : `Scheduled: ${timeStr}`} · {item.target_platforms.join(', ')}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <Badge className={isOverdue ? 'bg-blue-100 text-blue-700' : 'bg-violet-100 text-violet-700'} variant="secondary">
+              {isOverdue ? 'due' : 'upcoming'}
+            </Badge>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-7 px-1.5 text-muted-foreground hover:text-destructive">
+                  <Trash2 className="w-3 h-3" />
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Cancel this scheduled upload?</AlertDialogTitle>
+                  <AlertDialogDescription>This will remove the scheduled upload permanently.</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Keep</AlertDialogCancel>
+                  <AlertDialogAction onClick={onDelete} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Cancel Upload</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 /* ── Main Queue Page ──────────────────────── */
 
 export default function UploadQueue() {
@@ -348,15 +397,21 @@ export default function UploadQueue() {
     refetchInterval: 3000,
   });
 
+  const { data: scheduledUploads = [] } = useQuery({
+    queryKey: ['scheduled-uploads'],
+    queryFn: () => getScheduledUploads(),
+    refetchInterval: 5000,
+  });
+
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: () => getSettings(),
   });
 
   const isCloud = settings?.uploadMode === 'cloud';
+  const upcomingUploads = scheduledUploads.filter(s => s.status === 'scheduled');
 
   const handleClear = async () => {
-    // Stop all active browser sessions first
     for (const job of jobs) {
       if (['pending', 'processing', 'uploading'].includes(job.status)) {
         await stopJob(job.id);
@@ -365,6 +420,12 @@ export default function UploadQueue() {
     await clearQueue();
     queryClient.invalidateQueries({ queryKey: ['queue'] });
     toast({ title: 'Queue cleared' });
+  };
+
+  const handleDeleteScheduled = async (id: string) => {
+    await deleteScheduledUpload(id);
+    queryClient.invalidateQueries({ queryKey: ['scheduled-uploads'] });
+    toast({ title: 'Scheduled upload cancelled' });
   };
 
   const hasPending = jobs.some((j) =>
@@ -426,7 +487,19 @@ export default function UploadQueue() {
         </div>
       )}
 
-      {jobs.length === 0 && !isLoading && (
+      {/* Upcoming scheduled uploads */}
+      {upcomingUploads.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+            <CalendarClock className="w-4 h-4" /> Upcoming Scheduled ({upcomingUploads.length})
+          </h2>
+          {upcomingUploads.map((item) => (
+            <ScheduledCard key={item.id} item={item} onDelete={() => handleDeleteScheduled(item.id)} />
+          ))}
+        </div>
+      )}
+
+      {jobs.length === 0 && upcomingUploads.length === 0 && !isLoading && (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <Inbox className="w-10 h-10 text-muted-foreground mb-4" />
           <h2 className="text-lg font-semibold mb-1">Queue is empty</h2>
