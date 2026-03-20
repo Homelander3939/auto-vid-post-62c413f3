@@ -5,6 +5,7 @@ import { supabase } from '@/integrations/supabase/client';
 
 export interface AppSettings {
   folderPath: string;
+  uploadMode: 'local' | 'cloud';
   youtube: { email: string; password: string; enabled: boolean };
   tiktok: { email: string; password: string; enabled: boolean };
   instagram: { email: string; password: string; enabled: boolean };
