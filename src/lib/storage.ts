@@ -276,3 +276,44 @@ export async function saveSchedule(config: ScheduleConfig): Promise<void> {
     })
     .eq('id', 1);
 }
+
+// --- Scheduled Uploads ---
+export async function getScheduledUploads(): Promise<ScheduledUpload[]> {
+  const { data, error } = await supabase
+    .from('scheduled_uploads')
+    .select('*')
+    .order('scheduled_at', { ascending: true });
+
+  if (error || !data) return [];
+  return data as ScheduledUpload[];
+}
+
+export async function createScheduledUpload(
+  videoFileName: string,
+  videoStoragePath: string | null,
+  metadata: VideoMetadata,
+  platforms: string[],
+  scheduledAt: string
+): Promise<ScheduledUpload> {
+  const { data, error } = await supabase
+    .from('scheduled_uploads')
+    .insert({
+      video_file_name: videoFileName,
+      video_storage_path: videoStoragePath,
+      title: metadata.title,
+      description: metadata.description,
+      tags: metadata.tags,
+      target_platforms: platforms,
+      scheduled_at: scheduledAt,
+      status: 'scheduled',
+    })
+    .select()
+    .single();
+
+  if (error || !data) throw new Error(error?.message || 'Failed to create scheduled upload');
+  return data as ScheduledUpload;
+}
+
+export async function deleteScheduledUpload(id: string): Promise<void> {
+  await supabase.from('scheduled_uploads').delete().eq('id', id);
+}
