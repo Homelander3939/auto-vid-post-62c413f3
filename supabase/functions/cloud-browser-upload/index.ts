@@ -288,12 +288,10 @@ type Wait = (ms: number) => Promise<void>;
 
 async function navigateTo(sendCmd: SendCmd, wait: Wait, url: string): Promise<void> {
   await sendCmd('Page.navigate', { url });
-  // Wait for load event
   await wait(5000);
 }
 
 async function evaluateJS(sendCmd: SendCmd, expression: string): Promise<any> {
-  // Wrap in IIFE to avoid variable redeclaration errors in page context
   const wrapped = `(() => { ${expression} })()`;
   const result = await sendCmd('Runtime.evaluate', {
     expression: wrapped,
@@ -306,7 +304,22 @@ async function evaluateJS(sendCmd: SendCmd, expression: string): Promise<any> {
   return result?.result?.value;
 }
 
-// Helper to safely escape strings for JS injection
+async function waitForCondition(
+  sendCmd: SendCmd,
+  wait: Wait,
+  conditionExpression: string,
+  timeoutMs = 30000,
+  stepMs = 1500,
+): Promise<boolean> {
+  const attempts = Math.ceil(timeoutMs / stepMs);
+  for (let i = 0; i < attempts; i++) {
+    const ok = await evaluateJS(sendCmd, `return !!(${conditionExpression});`);
+    if (ok) return true;
+    await wait(stepMs);
+  }
+  return false;
+}
+
 function escJS(str: string): string {
   return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '');
 }
@@ -317,117 +330,112 @@ async function automateYouTube(
   wait: Wait,
   params: { videoUrl: string; title: string; description: string; tags: string[]; email: string; password: string }
 ): Promise<{ url?: string; message: string }> {
-  console.log('[YouTube] Navigating to YouTube Studio...');
-  await navigateTo(sendCmd, wait, 'https://studio.youtube.com');
+  console.log('[YouTube] Navigating to upload page...');
+  await navigateTo(sendCmd, wait, 'https://studio.youtube.com/channel/UC/videos/upload');
   await wait(3000);
 
-  // Check if we need to log in
-  const currentUrl = await evaluateJS(sendCmd, 'window.location.href');
+  let currentUrl = await evaluateJS(sendCmd, 'return window.location.href;');
   console.log('[YouTube] Current URL:', currentUrl);
 
   if (currentUrl && (currentUrl.includes('accounts.google.com') || currentUrl.includes('signin'))) {
     if (!params.email || !params.password) {
-      throw new Error('YouTube login required but no credentials provided. Add YouTube email and password in Settings.');
+      throw new Error('YouTube login required. Open Browser Sessions → Watch Live, log in once, then retry upload.');
     }
 
-    console.log('[YouTube] Logging in...');
-    // Type email
+    console.log('[YouTube] Attempting login...');
+    const hasEmailInput = await waitForCondition(sendCmd, wait, "document.querySelector('input[type=\"email\"]')", 15000);
+    if (!hasEmailInput) {
+      throw new Error('YouTube login page did not load properly. Open Watch Live and log in manually.');
+    }
+
     await evaluateJS(sendCmd, `
-      const emailInput = document.querySelector('input[type="email"]');
+      var emailInput = document.querySelector('input[type="email"]');
       if (emailInput) {
         emailInput.focus();
         emailInput.value = '${escJS(params.email)}';
-        emailInput.dispatchEvent(new Event('input', {bubbles: true}));
-        emailInput.dispatchEvent(new Event('change', {bubbles: true}));
+        emailInput.dispatchEvent(new Event('input', { bubbles: true }));
       }
-    `);
-    await wait(1000);
-    await evaluateJS(sendCmd, `
-      const nextBtn = document.querySelector('#identifierNext button');
+      var nextBtn = document.querySelector('#identifierNext button');
       if (nextBtn) nextBtn.click();
     `);
-    await wait(4000);
 
-    // Type password
+    const hasPasswordInput = await waitForCondition(sendCmd, wait, "document.querySelector('input[type=\"password\"]')", 20000);
+    if (!hasPasswordInput) {
+      throw new Error('YouTube requested additional verification. Complete login manually in Watch Live, then retry.');
+    }
+
     await evaluateJS(sendCmd, `
-      const passInput = document.querySelector('input[type="password"]');
+      var passInput = document.querySelector('input[type="password"]');
       if (passInput) {
         passInput.focus();
         passInput.value = '${escJS(params.password)}';
-        passInput.dispatchEvent(new Event('input', {bubbles: true}));
-        passInput.dispatchEvent(new Event('change', {bubbles: true}));
+        passInput.dispatchEvent(new Event('input', { bubbles: true }));
       }
-    `);
-    await wait(1000);
-    await evaluateJS(sendCmd, `
-      const passNext = document.querySelector('#passwordNext button');
+      var passNext = document.querySelector('#passwordNext button');
       if (passNext) passNext.click();
     `);
-    await wait(6000);
 
-    // Navigate to studio after login
-    await navigateTo(sendCmd, wait, 'https://studio.youtube.com');
+    await wait(7000);
+    await navigateTo(sendCmd, wait, 'https://studio.youtube.com/channel/UC/videos/upload');
     await wait(3000);
+
+    currentUrl = await evaluateJS(sendCmd, 'return window.location.href;');
+    if (currentUrl && currentUrl.includes('accounts.google.com')) {
+      throw new Error('Still on Google login page. Please use Watch Live to finish sign-in/2FA manually, then retry.');
+    }
   }
 
-  // Click "Create" button
-  console.log('[YouTube] Clicking Create button...');
-  await evaluateJS(sendCmd, `
-    const createBtn = document.querySelector('#create-icon, ytcp-button#create-icon');
-    if (createBtn) createBtn.click();
-  `);
-  await wait(2000);
+  const hasFileInput = await waitForCondition(sendCmd, wait, "document.querySelector('input[type=\"file\"]')", 20000);
+  if (!hasFileInput) {
+    throw new Error('YouTube upload form not available. Please ensure channel is accessible and retry.');
+  }
 
-  // Click "Upload videos"
-  await evaluateJS(sendCmd, `
-    const uploadItem = document.querySelector('#text-item-0, tp-yt-paper-item#text-item-0');
-    if (uploadItem) uploadItem.click();
-  `);
-  await wait(3000);
-
-  // Download video and trigger file input
   console.log('[YouTube] Uploading video file...');
-  await evaluateJS(sendCmd, `
-    (async () => {
+  const uploadResult = await evaluateJS(sendCmd, `
+    return (async () => {
       try {
-        const resp = await fetch('${escJS(params.videoUrl)}');
-        const blob = await resp.blob();
-        const file = new File([blob], 'video.mp4', { type: 'video/mp4' });
-        const dt = new DataTransfer();
+        var resp = await fetch('${escJS(params.videoUrl)}');
+        if (!resp.ok) return 'download-failed-' + resp.status;
+        var blob = await resp.blob();
+        var file = new File([blob], 'video.mp4', { type: 'video/mp4' });
+        var dt = new DataTransfer();
         dt.items.add(file);
-        const input = document.querySelector('input[type="file"]');
-        if (input) {
-          input.files = dt.files;
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          return 'file-set';
-        }
-        return 'no-input-found';
-      } catch(e) {
-        return 'error: ' + e.message;
+        var input = document.querySelector('input[type="file"]');
+        if (!input) return 'no-input-found';
+        input.files = dt.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'file-set';
+      } catch (e) {
+        return 'error:' + (e?.message || e);
       }
-    })()
+    })();
   `);
-  await wait(10000);
 
-  // Fill title
-  console.log('[YouTube] Filling title...');
+  if (uploadResult !== 'file-set') {
+    throw new Error(`YouTube upload failed before processing: ${uploadResult}`);
+  }
+
+  const uploadWizardReady = await waitForCondition(sendCmd, wait, "document.querySelector('#next-button')", 60000, 2000);
+  if (!uploadWizardReady) {
+    throw new Error('YouTube did not start processing the video. Check format/size or account restrictions.');
+  }
+
+  console.log('[YouTube] Filling metadata...');
   await evaluateJS(sendCmd, `
-    const titleBox = document.querySelector('#textbox[aria-label*="title" i], ytcp-social-suggestions-textbox #textbox, #title-textarea #textbox');
+    var titleBox = document.querySelector('#textbox[aria-label*="title" i], ytcp-social-suggestions-textbox #textbox, #title-textarea #textbox');
     if (titleBox) {
       titleBox.focus();
       titleBox.textContent = '';
       document.execCommand('selectAll');
-      document.execCommand('insertText', false, '${escJS(params.title)}');
+      document.execCommand('insertText', false, '${escJS(params.title || 'Untitled Video')}');
     }
   `);
   await wait(1000);
 
-  // Fill description
   if (params.description) {
-    console.log('[YouTube] Filling description...');
     await evaluateJS(sendCmd, `
-      const descBoxes = document.querySelectorAll('#textbox');
-      const descBox = descBoxes.length > 1 ? descBoxes[1] : null;
+      var descBoxes = document.querySelectorAll('#textbox');
+      var descBox = descBoxes.length > 1 ? descBoxes[1] : null;
       if (descBox) {
         descBox.focus();
         descBox.textContent = '';
@@ -435,49 +443,50 @@ async function automateYouTube(
       }
     `);
   }
-  await wait(2000);
+  await wait(1500);
 
-  // Click through wizard: Next x3
   console.log('[YouTube] Clicking through wizard...');
   for (let i = 0; i < 3; i++) {
     await evaluateJS(sendCmd, `
-      const nextBtn = document.querySelector('#next-button button, ytcp-button#next-button');
+      var nextBtn = document.querySelector('#next-button button, ytcp-button#next-button');
       if (nextBtn) nextBtn.click();
     `);
-    await wait(2500);
+    await wait(2200);
   }
 
-  // Set to Public visibility
-  console.log('[YouTube] Setting visibility to Public...');
   await evaluateJS(sendCmd, `
-    const publicRadio = document.querySelector('tp-yt-paper-radio-button[name="PUBLIC"]');
+    var publicRadio = document.querySelector('tp-yt-paper-radio-button[name="PUBLIC"]');
     if (publicRadio) publicRadio.click();
   `);
-  await wait(1500);
+  await wait(1200);
 
-  // Click Done/Publish
-  console.log('[YouTube] Publishing...');
   await evaluateJS(sendCmd, `
-    const doneBtn = document.querySelector('#done-button button, ytcp-button#done-button');
+    var doneBtn = document.querySelector('#done-button button, ytcp-button#done-button');
     if (doneBtn) doneBtn.click();
   `);
-  await wait(8000);
+  await wait(7000);
 
-  // Try to grab the video URL from the success dialog
   const videoLink = await evaluateJS(sendCmd, `
-    const link = document.querySelector('a.style-scope.ytcp-video-info[href*="youtu"]');
-    if (link) link.href;
-    else {
-      const anyLink = document.querySelector('.video-url-fadeable a');
-      anyLink ? anyLink.href : '';
-    }
+    var link = document.querySelector('a.style-scope.ytcp-video-info[href*="youtu"]');
+    if (link && link.href) return link.href;
+
+    var anyLink = document.querySelector('.video-url-fadeable a');
+    if (anyLink && anyLink.href) return anyLink.href;
+
+    var href = window.location.href || '';
+    var m = href.match(/\/video\/([a-zA-Z0-9_-]{6,})\//);
+    if (m && m[1]) return 'https://www.youtube.com/watch?v=' + m[1];
+
+    return '';
   `);
 
-  console.log('[YouTube] Upload complete, link:', videoLink);
+  console.log('[YouTube] Upload complete, link:', videoLink || 'not captured');
 
   return {
     url: videoLink || undefined,
-    message: videoLink ? `YouTube upload complete: ${videoLink}` : 'YouTube upload initiated — check Studio for status.',
+    message: videoLink
+      ? `YouTube upload complete: ${videoLink}`
+      : 'YouTube upload submitted, but URL was not captured. Please confirm in YouTube Studio.',
   };
 }
 
