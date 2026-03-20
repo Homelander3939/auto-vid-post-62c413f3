@@ -77,7 +77,14 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
 
         if (pageState.hasCode) {
           console.log('[TikTok] Verification code needed...');
-          const approval = await requestTelegramApproval({ telegram: credentials.telegram, platform: 'TikTok' });
+          const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
+          const approval = await requestTelegramApproval({
+            telegram: credentials.telegram,
+            platform: 'TikTok',
+            backend: credentials.backend,
+            screenshotBuffer,
+            customMessage: '🔐 <b>TikTok verification needed</b>\nReply with APPROVED after device confirmation or CODE 123456 if a code is required.',
+          });
           if (approval?.code) {
             await tryFillVerificationCode(page, approval.code);
             await page.waitForTimeout(5000);

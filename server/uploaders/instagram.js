@@ -76,7 +76,14 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
         if (pageState.hasCode) {
           console.log('[Instagram] Verification code needed...');
-          const approval = await requestTelegramApproval({ telegram: credentials.telegram, platform: 'Instagram' });
+          const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
+          const approval = await requestTelegramApproval({
+            telegram: credentials.telegram,
+            platform: 'Instagram',
+            backend: credentials.backend,
+            screenshotBuffer,
+            customMessage: '🔐 <b>Instagram verification needed</b>\nReply with APPROVED after device confirmation or CODE 123456 if a code is required.',
+          });
           if (approval?.code) {
             await tryFillVerificationCode(page, approval.code);
             await page.waitForTimeout(5000);
