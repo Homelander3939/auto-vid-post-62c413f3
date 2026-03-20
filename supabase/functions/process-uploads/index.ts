@@ -131,6 +131,10 @@ serve(async (req) => {
     // Update job status to uploading
     await supabase.from('upload_jobs').update({ status: 'uploading' }).eq('id', job.id);
 
+    // Notify user that job is starting
+    const platformNames = platformResults.filter((p: any) => p.status === 'pending').map((p: any) => p.name).join(', ');
+    await notifyTelegram(`🚀 <b>Starting upload</b>\n📹 ${job.title || job.video_file_name}\n📱 Platforms: ${platformNames}`);
+
     for (const pr of platformResults) {
       if (pr.status !== 'pending') continue;
 
