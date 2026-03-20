@@ -95,6 +95,56 @@ export type Database = {
         }
         Relationships: []
       }
+      scheduled_uploads: {
+        Row: {
+          created_at: string
+          description: string
+          id: string
+          scheduled_at: string
+          status: string
+          tags: string[]
+          target_platforms: string[]
+          title: string
+          upload_job_id: string | null
+          video_file_name: string
+          video_storage_path: string | null
+        }
+        Insert: {
+          created_at?: string
+          description?: string
+          id?: string
+          scheduled_at: string
+          status?: string
+          tags?: string[]
+          target_platforms?: string[]
+          title?: string
+          upload_job_id?: string | null
+          video_file_name: string
+          video_storage_path?: string | null
+        }
+        Update: {
+          created_at?: string
+          description?: string
+          id?: string
+          scheduled_at?: string
+          status?: string
+          tags?: string[]
+          target_platforms?: string[]
+          title?: string
+          upload_job_id?: string | null
+          video_file_name?: string
+          video_storage_path?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scheduled_uploads_upload_job_id_fkey"
+            columns: ["upload_job_id"]
+            isOneToOne: false
+            referencedRelation: "upload_jobs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       upload_jobs: {
         Row: {
           completed_at: string | null
