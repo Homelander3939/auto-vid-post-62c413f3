@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
   Send, Bot, User, Loader2, MessageCircle, Paperclip,
-  Mic, MicOff, Image as ImageIcon, File as FileIcon, X, Download,
+  Mic, MicOff, Image as ImageIcon, File as FileIcon, X, Download, Video,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
