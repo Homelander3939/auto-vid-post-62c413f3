@@ -293,8 +293,10 @@ async function navigateTo(sendCmd: SendCmd, wait: Wait, url: string): Promise<vo
 }
 
 async function evaluateJS(sendCmd: SendCmd, expression: string): Promise<any> {
+  // Wrap in IIFE to avoid variable redeclaration errors in page context
+  const wrapped = `(() => { ${expression} })()`;
   const result = await sendCmd('Runtime.evaluate', {
-    expression,
+    expression: wrapped,
     awaitPromise: true,
     returnByValue: true,
   });
