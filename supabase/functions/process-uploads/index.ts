@@ -63,6 +63,44 @@ serve(async (req) => {
     }
   }
 
+  // Fix stale "uploading" jobs (stuck for >10 minutes = likely crashed session)
+  const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const { data: staleJobs } = await supabase
+    .from('upload_jobs')
+    .select('*')
+    .eq('status', 'uploading')
+    .lt('created_at', staleThreshold);
+
+  if (staleJobs && staleJobs.length > 0) {
+    for (const stale of staleJobs) {
+      const pr = (stale.platform_results as any[]) || [];
+      let changed = false;
+      for (const p of pr) {
+        if (p.status === 'uploading') {
+          p.status = 'error';
+          p.error = 'Upload timed out or session crashed.';
+          changed = true;
+        }
+      }
+      if (changed) {
+        const allDone = pr.every((p: any) => p.status === 'success' || p.status === 'error');
+        const finalStatus = allDone
+          ? (pr.every((p: any) => p.status === 'success') ? 'completed' : (pr.some((p: any) => p.status === 'success') ? 'partial' : 'failed'))
+          : 'failed';
+        await supabase.from('upload_jobs').update({
+          platform_results: pr,
+          status: finalStatus,
+          completed_at: new Date().toISOString(),
+        }).eq('id', stale.id);
+
+        await notifyTelegram(
+          `⏱ <b>Job timed out</b>\n📹 ${stale.title || stale.video_file_name}\n` +
+          pr.map((p: any) => `${p.name}: ${p.status === 'success' ? '✅' : '❌'} ${p.error || ''}`).join('\n')
+        );
+      }
+    }
+  }
+
   // Fetch pending jobs
   const { data: jobs, error: jobsErr } = await supabase
     .from('upload_jobs')
@@ -81,7 +119,6 @@ serve(async (req) => {
 
   for (const job of jobs) {
     const platformResults = (job.platform_results as any[]) || [];
-    let allDone = true;
     let hasError = false;
 
     // Update job status to uploading
@@ -118,28 +155,41 @@ serve(async (req) => {
         let uploadUrl = '';
 
         if (uploadMode === 'cloud') {
-          // Use Browserbase cloud browser
-          const cloudResp = await fetch(`${supabaseUrl}/functions/v1/cloud-browser-upload`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${supabaseKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              job_id: job.id,
-              platform: pr.name,
-              credentials: {
-                email: settings[`${pr.name}_email`] || '',
-                password: settings[`${pr.name}_password`] || '',
-              },
-            }),
-          });
+          // Use Browserbase cloud browser with timeout
+          const controller = new AbortController();
+          const fetchTimeout = setTimeout(() => controller.abort(), 540000); // 9 min timeout
 
-          const cloudData = await cloudResp.json();
-          if (!cloudData.success) {
-            throw new Error(cloudData.error || 'Cloud browser upload failed');
+          try {
+            const cloudResp = await fetch(`${supabaseUrl}/functions/v1/cloud-browser-upload`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${supabaseKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                job_id: job.id,
+                platform: pr.name,
+                credentials: {
+                  email: settings[`${pr.name}_email`] || '',
+                  password: settings[`${pr.name}_password`] || '',
+                },
+              }),
+              signal: controller.signal,
+            });
+            clearTimeout(fetchTimeout);
+
+            const cloudData = await cloudResp.json();
+            if (!cloudData.success) {
+              throw new Error(cloudData.error || 'Cloud browser upload failed');
+            }
+            uploadUrl = cloudData.url || '';
+          } catch (fetchErr: any) {
+            clearTimeout(fetchTimeout);
+            if (fetchErr.name === 'AbortError') {
+              throw new Error('Cloud browser session timed out (9 min). The upload may still be running — check Browser Sessions.');
+            }
+            throw fetchErr;
           }
-          uploadUrl = cloudData.url || '';
         } else {
           // Local mode — use API-based uploads
           if (pr.name === 'youtube' && settings.youtube_enabled) {
@@ -164,28 +214,22 @@ serve(async (req) => {
 
         pr.status = 'success';
         pr.url = uploadUrl;
-
-        await notifyTelegram(
-          `✅ <b>${pr.name.toUpperCase()}</b> upload complete!\n` +
-          `📹 <b>${job.title || job.video_file_name}</b>\n` +
-          (uploadUrl ? `🔗 ${uploadUrl}` : '')
-        );
       } catch (e: any) {
         pr.status = 'error';
         pr.error = e.message || 'Upload failed';
         hasError = true;
-
-        await notifyTelegram(
-          `❌ <b>${pr.name.toUpperCase()}</b> upload failed!\n` +
-          `📹 <b>${job.title || job.video_file_name}</b>\n` +
-          `⚠️ ${pr.error}`
-        );
       }
+
+      // Always persist after each platform attempt
+      await supabase.from('upload_jobs').update({ platform_results: platformResults }).eq('id', job.id);
     }
 
-    allDone = platformResults.every((p: any) => p.status === 'success' || p.status === 'error');
+    // Compute final status
+    const allDone = platformResults.every((p: any) => p.status === 'success' || p.status === 'error');
+    const allSuccess = platformResults.every((p: any) => p.status === 'success');
+    const anySuccess = platformResults.some((p: any) => p.status === 'success');
     const finalStatus = allDone
-      ? (platformResults.every((p: any) => p.status === 'success') ? 'completed' : 'partial')
+      ? (allSuccess ? 'completed' : (anySuccess ? 'partial' : 'failed'))
       : 'pending';
 
     await supabase.from('upload_jobs').update({
@@ -193,6 +237,18 @@ serve(async (req) => {
       status: finalStatus,
       completed_at: allDone ? new Date().toISOString() : null,
     }).eq('id', job.id);
+
+    // Send final summary on Telegram
+    if (allDone) {
+      const summary = platformResults.map((p: any) => {
+        if (p.status === 'success') return `✅ ${p.name}: uploaded${p.url ? ` — ${p.url}` : ''}`;
+        return `❌ ${p.name}: ${p.error || 'failed'}`;
+      }).join('\n');
+
+      await notifyTelegram(
+        `📋 <b>Upload Summary</b>\n📹 ${job.title || job.video_file_name}\n\n${summary}`
+      );
+    }
 
     totalProcessed++;
   }
