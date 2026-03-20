@@ -81,6 +81,7 @@ export type Database = {
           end_at: string | null
           folder_path: string
           id: number
+          name: string
           platforms: string[]
           updated_at: string
         }
@@ -90,6 +91,7 @@ export type Database = {
           end_at?: string | null
           folder_path?: string
           id?: number
+          name?: string
           platforms?: string[]
           updated_at?: string
         }
@@ -99,6 +101,7 @@ export type Database = {
           end_at?: string | null
           folder_path?: string
           id?: number
+          name?: string
           platforms?: string[]
           updated_at?: string
         }
