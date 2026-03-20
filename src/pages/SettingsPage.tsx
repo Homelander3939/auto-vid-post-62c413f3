@@ -174,16 +174,6 @@ export default function SettingsPage() {
         {settings.telegram.enabled && (
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label>Bot Token</Label>
-              <PasswordInput
-                value={settings.telegram.botToken}
-                onChange={(v) =>
-                  setSettings((p) => ({ ...p, telegram: { ...p.telegram, botToken: v } }))
-                }
-                placeholder="123456:ABC-DEF..."
-              />
-            </div>
-            <div className="space-y-2">
               <Label>Chat ID</Label>
               <Input
                 value={settings.telegram.chatId}
@@ -195,7 +185,37 @@ export default function SettingsPage() {
                 }
                 placeholder="Your Telegram chat ID"
               />
+              <p className="text-xs text-muted-foreground">
+                Message @userinfobot on Telegram to get your chat ID. Notifications are sent via cloud — works online without the local server.
+              </p>
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              disabled={!settings.telegram.chatId}
+              onClick={async () => {
+                try {
+                  const { data, error } = await supabase.functions.invoke('send-telegram', {
+                    body: {
+                      chat_id: settings.telegram.chatId,
+                      text: '✅ <b>Video Uploader</b> — Telegram notifications are working!',
+                    },
+                  });
+                  if (error) throw error;
+                  if (data?.success) {
+                    toast({ title: 'Test message sent to Telegram!' });
+                  } else {
+                    toast({ title: 'Telegram error', description: data?.error || 'Unknown error', variant: 'destructive' });
+                  }
+                } catch (err: any) {
+                  toast({ title: 'Failed to send', description: err.message, variant: 'destructive' });
+                }
+              }}
+            >
+              <Send className="w-3.5 h-3.5" />
+              Send Test Message
+            </Button>
           </CardContent>
         )}
       </Card>
