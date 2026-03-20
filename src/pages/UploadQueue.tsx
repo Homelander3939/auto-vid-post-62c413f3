@@ -403,6 +403,12 @@ export default function UploadQueue() {
     refetchInterval: 5000,
   });
 
+  const { data: recurringSchedules = [] } = useQuery({
+    queryKey: ['schedules'],
+    queryFn: () => getSchedules(),
+    refetchInterval: 10000,
+  });
+
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: () => getSettings(),
