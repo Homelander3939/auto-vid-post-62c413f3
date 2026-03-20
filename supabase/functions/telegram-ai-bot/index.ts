@@ -84,13 +84,16 @@ const tools = [
 async function executeTool(supabase: any, name: string, args: any): Promise<string> {
   switch (name) {
     case 'create_upload_job': {
+      const platforms = args.target_platforms || [];
+      const platformResults = platforms.map((p: string) => ({ name: p, status: 'pending' }));
       const { data, error } = await supabase.from('upload_jobs').insert({
         video_file_name: args.video_file_name, title: args.title || '', description: args.description || '',
-        tags: args.tags || [], target_platforms: args.target_platforms || [], status: 'pending',
+        tags: args.tags || [], target_platforms: platforms, status: 'pending',
         video_storage_path: args.video_storage_path || null,
+        platform_results: platformResults,
       }).select().single();
-      if (error) return `❌ Failed: ${error.message}`;
-      return `✅ Job created: "${data.title}" → ${data.target_platforms.join(', ')} [pending]`;
+      if (error) return `Failed: ${error.message}`;
+      return `Done! Queued "${data.title}" for instant upload to ${data.target_platforms.join(', ')}.\nTitle: ${data.title}\nPlatforms: ${data.target_platforms.join(', ')}\nStatus: Pending`;
     }
     case 'schedule_upload': {
       const { data, error } = await supabase.from('scheduled_uploads').insert({
