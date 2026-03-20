@@ -532,7 +532,7 @@ serve(async (req) => {
       });
 
       const appContext = await getAppContext(supabase);
-      const model = (images.length > 0 || audioDataUrl) ? 'google/gemini-2.5-flash' : 'google/gemini-2.5-flash';
+      const model = (images.length > 0 || audioDataUrl) ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
 
       const systemPrompt = `You are a helpful AI assistant for the Video Uploader app. You have FULL ACCESS to the app's live data AND can perform actions.
 

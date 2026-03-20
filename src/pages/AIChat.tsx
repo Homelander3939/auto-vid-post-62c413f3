@@ -206,7 +206,7 @@ export default function AIChat() {
       if (error) console.error('Telegram fetch error:', error);
       return data || [];
     },
-    refetchInterval: 4000,
+    refetchInterval: 2000,
   });
 
   const telegramSynced = telegramEnabled && (telegramMessages?.length ?? 0) > 0;
