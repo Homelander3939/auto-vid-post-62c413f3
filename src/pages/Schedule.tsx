@@ -445,7 +445,7 @@ export default function Schedule() {
               Platforms: {config.platforms.join(', ')} · Cron: <code className="font-mono bg-muted px-1 rounded">{config.cronExpression}</code>
               {config.folderPath && <> · Folder: <code className="font-mono bg-muted px-1 rounded">{config.folderPath}</code></>}
               {config.endAt && <> · Ends: {new Date(config.endAt).toLocaleDateString()}</>}
-              <> · Time zone: {localTimeZone}</>
+              {` · Time zone: ${localTimeZone}`}
             </p>
             <Button onClick={handleSave} className="w-full gap-2" size="lg">
               <Save className="w-4 h-4" />
