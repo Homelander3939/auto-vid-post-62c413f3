@@ -1,6 +1,7 @@
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
+const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
 
@@ -32,11 +33,41 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     // Check if login needed
     const loginForm = await page.$('input[name="username"]');
     if (loginForm) {
+      if (!credentials?.email || !credentials?.password) {
+        throw new Error('Instagram credentials missing in Settings. Add email and password first.');
+      }
+
       console.log('[Instagram] Logging in...');
       await page.fill('input[name="username"]', credentials.email);
       await page.fill('input[name="password"]', credentials.password);
       await page.click('button[type="submit"]');
       await page.waitForTimeout(8000);
+
+      const needsVerification = await page.evaluate(() => {
+        const text = (document.body?.innerText || '').toLowerCase();
+        return (
+          text.includes('security code') ||
+          text.includes('confirmation code') ||
+          text.includes('verify your account') ||
+          text.includes('suspicious login')
+        );
+      });
+
+      if (needsVerification) {
+        const approval = await requestTelegramApproval({
+          telegram: credentials.telegram,
+          platform: 'Instagram',
+        });
+
+        if (!approval) {
+          throw new Error('Instagram verification required, but no Telegram approval/code was received in time.');
+        }
+
+        if (approval.code) {
+          await tryFillVerificationCode(page, approval.code);
+          await page.waitForTimeout(5000);
+        }
+      }
 
       // Handle "Save Your Login Info?" dialog
       const notNow = await page.$('button:has-text("Not Now"), button:has-text("Not now")');
