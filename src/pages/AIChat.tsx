@@ -340,7 +340,7 @@ export default function AIChat() {
       images: imageFiles.length > 0 ? imageFiles.map((f) => ({ url: f.url })) : undefined,
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    setAppMessages((prev) => [...prev, userMsg]);
     setInput('');
     setPendingFiles([]);
     setIsLoading(true);
