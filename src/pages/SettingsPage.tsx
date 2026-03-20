@@ -1,23 +1,32 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, AppSettings } from '@/lib/api';
+import {
+  getSettings,
+  saveSettings,
+  getDemoFiles,
+  setDemoFiles,
+  clearDemoFiles,
+  type AppSettings,
+  type DemoFiles,
+} from '@/lib/storage';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { useState, useEffect } from 'react';
-import { AlertCircle, FolderOpen, Eye, EyeOff } from 'lucide-react';
+import { FolderOpen, Eye, EyeOff, FlaskConical, Trash2 } from 'lucide-react';
 
-const defaultSettings: AppSettings = {
-  folderPath: '',
-  youtube: { email: '', password: '', enabled: false },
-  tiktok: { email: '', password: '', enabled: false },
-  instagram: { email: '', password: '', enabled: false },
-  telegram: { botToken: '', chatId: '', enabled: false },
-};
-
-function PasswordInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+function PasswordInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
   const [show, setShow] = useState(false);
   return (
     <div className="relative">
@@ -38,56 +47,136 @@ function PasswordInput({ value, onChange, placeholder }: { value: string; onChan
   );
 }
 
+const defaultSettings: AppSettings = {
+  folderPath: '',
+  youtube: { email: '', password: '', enabled: false },
+  tiktok: { email: '', password: '', enabled: false },
+  instagram: { email: '', password: '', enabled: false },
+  telegram: { botToken: '', chatId: '', enabled: false },
+};
+
+const sampleTextContent = `Title: My Amazing Video
+Description: Check out this awesome content I made!
+Tags: vlog, tutorial, howto, trending
+Platforms: youtube, tiktok, instagram`;
+
 export default function SettingsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data, isError } = useQuery({
+  const { data: savedSettings } = useQuery({
     queryKey: ['settings'],
-    queryFn: () => api.getSettings(),
-    retry: false,
+    queryFn: () => getSettings(),
   });
 
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [demoVideoName, setDemoVideoName] = useState('');
+  const [demoTextContent, setDemoTextContent] = useState('');
 
   useEffect(() => {
-    if (data) setSettings(data);
-  }, [data]);
+    if (savedSettings) setSettings(savedSettings);
+    const demo = getDemoFiles();
+    if (demo) {
+      setDemoVideoName(demo.videoFileName);
+      setDemoTextContent(demo.textContent);
+    }
+  }, [savedSettings]);
 
-  const saveMutation = useMutation({
-    mutationFn: (s: AppSettings) => api.saveSettings(s),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
-      toast({ title: 'Settings saved' });
-    },
-    onError: (err: Error) => {
-      toast({ title: 'Error saving', description: err.message, variant: 'destructive' });
-    },
-  });
+  const handleSaveSettings = () => {
+    saveSettings(settings);
+    queryClient.invalidateQueries({ queryKey: ['settings'] });
+    toast({ title: 'Settings saved' });
+  };
 
-  const updatePlatform = (platform: 'youtube' | 'tiktok' | 'instagram', field: string, value: any) => {
+  const handleSaveDemo = () => {
+    if (!demoVideoName.trim()) {
+      toast({ title: 'Enter a video filename', variant: 'destructive' });
+      return;
+    }
+    setDemoFiles({ videoFileName: demoVideoName, textContent: demoTextContent });
+    queryClient.invalidateQueries({ queryKey: ['scan'] });
+    toast({ title: 'Demo files saved', description: 'Go to Dashboard to see detected files.' });
+  };
+
+  const handleClearDemo = () => {
+    clearDemoFiles();
+    setDemoVideoName('');
+    setDemoTextContent('');
+    queryClient.invalidateQueries({ queryKey: ['scan'] });
+    toast({ title: 'Demo files cleared' });
+  };
+
+  const handleLoadSample = () => {
+    setDemoVideoName('my_awesome_video.mp4');
+    setDemoTextContent(sampleTextContent);
+  };
+
+  const updatePlatform = (
+    platform: 'youtube' | 'tiktok' | 'instagram',
+    field: string,
+    value: any
+  ) => {
     setSettings((prev) => ({
       ...prev,
       [platform]: { ...prev[platform], [field]: value },
     }));
   };
 
-  if (isError) {
-    return (
-      <div className="flex flex-col items-center justify-center py-24 text-center">
-        <AlertCircle className="w-10 h-10 text-destructive mb-4" />
-        <h2 className="text-lg font-semibold">Server not reachable</h2>
-        <p className="text-sm text-muted-foreground mt-1">Start the local server to configure settings.</p>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground mt-1">Configure folder path, platform credentials, and notifications</p>
+        <p className="text-sm text-muted-foreground mt-1">
+          Configure folder, credentials, notifications, and demo files
+        </p>
       </div>
+
+      {/* Demo Files — show first since this is needed for preview testing */}
+      <Card className="border-primary/20">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <FlaskConical className="w-4 h-4 text-primary" />
+            Demo Files (Preview Mode)
+          </CardTitle>
+          <CardDescription>
+            Simulate video and text files to test the full flow without a local server
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label>Video Filename</Label>
+            <Input
+              value={demoVideoName}
+              onChange={(e) => setDemoVideoName(e.target.value)}
+              placeholder="my_video.mp4"
+              className="font-mono"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Text File Content</Label>
+            <Textarea
+              value={demoTextContent}
+              onChange={(e) => setDemoTextContent(e.target.value)}
+              placeholder={`Title: My Video\nDescription: ...\nTags: tag1, tag2\nPlatforms: youtube, tiktok, instagram`}
+              className="font-mono text-sm min-h-[120px]"
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={handleSaveDemo} size="sm">
+              Save Demo Files
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleLoadSample}>
+              Load Sample
+            </Button>
+            {getDemoFiles() && (
+              <Button variant="ghost" size="sm" onClick={handleClearDemo} className="text-destructive">
+                <Trash2 className="w-3.5 h-3.5 mr-1" />
+                Clear
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Folder Path */}
       <Card>
@@ -96,7 +185,9 @@ export default function SettingsPage() {
             <FolderOpen className="w-4 h-4" />
             Video Folder
           </CardTitle>
-          <CardDescription>Path to the folder where videos and text files are placed</CardDescription>
+          <CardDescription>
+            Path to the folder where videos and text files are placed (used when running locally)
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <Input
@@ -179,7 +270,10 @@ export default function SettingsPage() {
               <Input
                 value={settings.telegram.chatId}
                 onChange={(e) =>
-                  setSettings((p) => ({ ...p, telegram: { ...p.telegram, chatId: e.target.value } }))
+                  setSettings((p) => ({
+                    ...p,
+                    telegram: { ...p.telegram, chatId: e.target.value },
+                  }))
                 }
                 placeholder="Your Telegram chat ID"
               />
@@ -188,12 +282,8 @@ export default function SettingsPage() {
         )}
       </Card>
 
-      <Button
-        onClick={() => saveMutation.mutate(settings)}
-        disabled={saveMutation.isPending}
-        size="lg"
-      >
-        {saveMutation.isPending ? 'Saving…' : 'Save All Settings'}
+      <Button onClick={handleSaveSettings} size="lg">
+        Save All Settings
       </Button>
     </div>
   );

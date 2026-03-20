@@ -1,5 +1,5 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, ScheduleConfig } from '@/lib/api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getSchedule, saveSchedule, type ScheduleConfig } from '@/lib/storage';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { useState, useEffect } from 'react';
-import { Clock, AlertCircle } from 'lucide-react';
+import { Clock } from 'lucide-react';
 
 const presets = [
   { label: 'Every hour', cron: '0 * * * *' },
@@ -20,10 +20,9 @@ export default function Schedule() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data, isError } = useQuery({
+  const { data } = useQuery({
     queryKey: ['schedule'],
-    queryFn: () => api.getSchedule(),
-    retry: false,
+    queryFn: () => getSchedule(),
   });
 
   const [config, setConfig] = useState<ScheduleConfig>({
@@ -36,16 +35,11 @@ export default function Schedule() {
     if (data) setConfig(data);
   }, [data]);
 
-  const saveMutation = useMutation({
-    mutationFn: (c: ScheduleConfig) => api.saveSchedule(c),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['schedule'] });
-      toast({ title: 'Schedule saved' });
-    },
-    onError: (err: Error) => {
-      toast({ title: 'Error', description: err.message, variant: 'destructive' });
-    },
-  });
+  const handleSave = () => {
+    saveSchedule(config);
+    queryClient.invalidateQueries({ queryKey: ['schedule'] });
+    toast({ title: 'Schedule saved', description: config.enabled ? `Cron: ${config.cronExpression}` : 'Schedule disabled' });
+  };
 
   const togglePlatform = (p: string) => {
     setConfig((prev) => ({
@@ -56,20 +50,13 @@ export default function Schedule() {
     }));
   };
 
-  if (isError) {
-    return (
-      <div className="flex flex-col items-center justify-center py-24 text-center">
-        <AlertCircle className="w-10 h-10 text-destructive mb-4" />
-        <h2 className="text-lg font-semibold">Server not reachable</h2>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Scheduled Uploads</h1>
-        <p className="text-sm text-muted-foreground mt-1">Auto-upload videos on a schedule</p>
+        <p className="text-sm text-muted-foreground mt-1">
+          Auto-upload videos on a schedule (active when running locally)
+        </p>
       </div>
 
       <Card>
@@ -127,12 +114,7 @@ export default function Schedule() {
             </div>
           </div>
 
-          <Button
-            onClick={() => saveMutation.mutate(config)}
-            disabled={saveMutation.isPending}
-          >
-            {saveMutation.isPending ? 'Saving…' : 'Save Schedule'}
-          </Button>
+          <Button onClick={handleSave}>Save Schedule</Button>
         </CardContent>
       </Card>
     </div>

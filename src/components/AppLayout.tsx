@@ -1,6 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Settings, LayoutDashboard, Upload, Clock, Wifi, WifiOff } from 'lucide-react';
-import { useServerStatus } from '@/hooks/useServerStatus';
+import { Settings, LayoutDashboard, Upload, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const navItems = [
@@ -11,9 +10,6 @@ const navItems = [
 ];
 
 export default function AppLayout() {
-  const { data, isError } = useServerStatus();
-  const connected = !!data && !isError;
-
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
@@ -22,7 +18,9 @@ export default function AppLayout() {
           <h1 className="text-lg font-semibold tracking-tight text-foreground">
             Video Uploader
           </h1>
-          <p className="text-xs text-muted-foreground mt-1">Upload to YouTube · TikTok · Instagram</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            YouTube · TikTok · Instagram
+          </p>
         </div>
 
         <nav className="flex-1 px-3 space-y-1">
@@ -47,19 +45,9 @@ export default function AppLayout() {
         </nav>
 
         <div className="p-4 border-t">
-          <div className="flex items-center gap-2 text-xs">
-            {connected ? (
-              <>
-                <Wifi className="w-3.5 h-3.5 text-[hsl(var(--success))]" />
-                <span className="text-muted-foreground">Server connected</span>
-              </>
-            ) : (
-              <>
-                <WifiOff className="w-3.5 h-3.5 text-destructive" />
-                <span className="text-muted-foreground">Server offline</span>
-              </>
-            )}
-          </div>
+          <p className="text-xs text-muted-foreground">
+            Preview mode — data stored in browser
+          </p>
         </div>
       </aside>
 
