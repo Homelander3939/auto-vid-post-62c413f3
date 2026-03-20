@@ -481,7 +481,7 @@ export default function CampaignScheduler() {
             ))}
             <Button onClick={saveAll} disabled={saving} className="w-full gap-2 mt-2">
               <CalendarClock className="w-4 h-4" />
-              {saving ? 'Saving…' : `Schedule ${entries.length} Upload${entries.length > 1 ? 's' : ''}`}
+              {saving ? (saveProgress || 'Saving…') : `Schedule ${entries.length} Upload${entries.length > 1 ? 's' : ''}`}
             </Button>
           </CardContent>
         </Card>
