@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Cloud, Pencil, Save, X, ChevronDown, ChevronUp, StopCircle, CalendarClock } from 'lucide-react';
+import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Cloud, Pencil, Save, X, ChevronDown, ChevronUp, StopCircle, CalendarClock, Repeat } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 const statusColors: Record<string, string> = {
