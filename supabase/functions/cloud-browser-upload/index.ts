@@ -728,11 +728,12 @@ async function getYouTubeSignals(sendCmd: SendCmd): Promise<YouTubeSignals> {
         const a = (el.getAttribute('aria-label') || '').toLowerCase();
         return t === 'create' || a.includes('create') || el.id === 'create-icon';
       });
+    const isGoogleLogin = window.location.href.includes('accounts.google.com');
     return {
       url: window.location.href,
       hasEmailInput: !!document.querySelector('input[type="email"]'),
       hasPasswordInput: !!document.querySelector('input[type="password"]'),
-      hasVerificationChallenge: text.includes('2-step verification') || text.includes('verify it\\'s you') || text.includes('try another way') || text.includes('check your phone') || text.includes('confirm your identity'),
+      hasVerificationChallenge: isGoogleLogin && (text.includes('2-step verification') || text.includes('verify it\\'s you') || text.includes('try another way') || text.includes('check your phone') || text.includes('confirm your identity')),
       hasCreateButton: !!document.querySelector('#create-icon') || hasCreateByText,
       hasUploadVideosMenu: !!document.querySelector('#text-item-0') || [...document.querySelectorAll('tp-yt-paper-item, [role="menuitem"]')].some((el) => (el.textContent || '').toLowerCase().includes('upload')),
       hasVideoFileInput: !!document.querySelector('input[type="file"]'),
