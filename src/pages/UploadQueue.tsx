@@ -18,6 +18,7 @@ const statusColors: Record<string, string> = {
   processing: 'bg-blue-100 text-blue-700',
   success: 'bg-emerald-100 text-emerald-700',
   completed: 'bg-emerald-100 text-emerald-700',
+  partial: 'bg-orange-100 text-orange-700',
   error: 'bg-destructive/10 text-destructive',
   failed: 'bg-destructive/10 text-destructive',
 };
@@ -28,6 +29,7 @@ const statusLabels: Record<string, string> = {
   processing: 'processing…',
   success: 'uploaded',
   completed: 'completed',
+  partial: 'partial',
   error: 'failed',
   failed: 'failed',
 };
