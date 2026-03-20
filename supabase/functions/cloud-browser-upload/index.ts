@@ -15,6 +15,8 @@ serve(async (req) => {
 
   const BROWSERBASE_API_KEY = Deno.env.get('BROWSERBASE_API_KEY');
   const BROWSERBASE_PROJECT_ID = Deno.env.get('BROWSERBASE_PROJECT_ID');
+  const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
+  const TELEGRAM_API_KEY = Deno.env.get('TELEGRAM_API_KEY');
 
   if (!BROWSERBASE_API_KEY) {
     return new Response(JSON.stringify({ success: false, error: 'BROWSERBASE_API_KEY not configured' }), {
@@ -46,6 +48,12 @@ serve(async (req) => {
       .from('upload_jobs')
       .select('*')
       .eq('id', job_id)
+      .single();
+
+    const { data: appSettings } = await supabase
+      .from('app_settings')
+      .select('telegram_enabled, telegram_chat_id')
+      .eq('id', 1)
       .single();
 
     if (jobErr || !job) {
@@ -105,6 +113,14 @@ serve(async (req) => {
       tags: job.tags || [],
       email: credentials?.email || '',
       password: credentials?.password || '',
+      jobId: job_id,
+      supabase,
+      telegram: {
+        enabled: Boolean(appSettings?.telegram_enabled && appSettings?.telegram_chat_id && LOVABLE_API_KEY && TELEGRAM_API_KEY),
+        chatId: appSettings?.telegram_chat_id || null,
+        lovableApiKey: LOVABLE_API_KEY || undefined,
+        telegramApiKey: TELEGRAM_API_KEY || undefined,
+      },
     });
 
     // Release the session
@@ -144,6 +160,14 @@ async function runBrowserAutomation(
     tags: string[];
     email: string;
     password: string;
+    jobId: string;
+    supabase: any;
+    telegram: {
+      enabled: boolean;
+      chatId: string | number | null;
+      lovableApiKey?: string;
+      telegramApiKey?: string;
+    };
   }
 ): Promise<{ url?: string; message: string }> {
   return new Promise((resolve, reject) => {
@@ -324,6 +348,166 @@ function escJS(str: string): string {
   return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '');
 }
 
+type ApprovalResult = { approved: boolean; code?: string };
+
+function parseApprovalText(text: string): ApprovalResult | null {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  const normalized = raw.toLowerCase();
+  if (['approve', 'approved', 'ok', 'done', 'yes', 'continue'].some((word) => normalized === word || normalized.startsWith(`${word} `))) {
+    return { approved: true };
+  }
+
+  const codePatterns = [
+    /\bcode\s*[:=\-]?\s*([a-zA-Z0-9\-]{4,12})\b/i,
+    /\botp\s*[:=\-]?\s*([0-9]{4,8})\b/i,
+    /\b([0-9]{4,8})\b/,
+  ];
+
+  for (const pattern of codePatterns) {
+    const match = raw.match(pattern);
+    if (match?.[1]) return { approved: true, code: match[1] };
+  }
+
+  return null;
+}
+
+async function sendTelegramPrompt(
+  telegram: { enabled: boolean; chatId: string | number | null; lovableApiKey?: string; telegramApiKey?: string },
+  platform: string,
+  jobId: string,
+): Promise<boolean> {
+  if (!telegram.enabled || !telegram.chatId || !telegram.lovableApiKey || !telegram.telegramApiKey) return false;
+
+  const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${telegram.lovableApiKey}`,
+      'X-Connection-Api-Key': telegram.telegramApiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      chat_id: telegram.chatId,
+      text:
+        `🔐 ${platform} login needs verification for job ${jobId}.\n` +
+        `Please approve sign-in on your phone.\n` +
+        `Then reply with:\n` +
+        `• APPROVED\n` +
+        `or\n` +
+        `• CODE 123456`,
+      parse_mode: 'HTML',
+    }),
+  });
+
+  return response.ok;
+}
+
+async function waitForTelegramApproval(
+  supabase: any,
+  chatId: string | number,
+  sinceIso: string,
+  timeoutMs = 240000,
+): Promise<ApprovalResult | null> {
+  const start = Date.now();
+  const normalizedChat = Number.isFinite(Number(chatId)) ? Number(chatId) : String(chatId);
+
+  while (Date.now() - start < timeoutMs) {
+    let query = supabase
+      .from('telegram_messages')
+      .select('text, created_at')
+      .eq('is_bot', false)
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: false })
+      .limit(30);
+
+    query = query.eq('chat_id', normalizedChat as any);
+
+    const { data } = await query;
+    const rows = Array.isArray(data) ? data : [];
+    for (const row of rows) {
+      const parsed = parseApprovalText(row.text || '');
+      if (parsed) return parsed;
+    }
+
+    await new Promise((r) => setTimeout(r, 4000));
+  }
+
+  return null;
+}
+
+async function trySubmitVerificationCode(sendCmd: SendCmd, wait: Wait, code: string): Promise<boolean> {
+  if (!code) return false;
+
+  const filled = await evaluateJS(sendCmd, `
+    const selectors = [
+      'input[type="tel"]',
+      'input[autocomplete="one-time-code"]',
+      'input[name*="code" i]',
+      'input[id*="code" i]',
+      'input[aria-label*="code" i]'
+    ];
+    let target = null;
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el) { target = el; break; }
+    }
+    if (!target) return false;
+    target.focus();
+    target.value = '${escJS(code)}';
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  `);
+
+  if (!filled) return false;
+
+  await evaluateJS(sendCmd, `
+    const nextBtn =
+      document.querySelector('#totpNext button') ||
+      document.querySelector('#idvPreregisteredPhoneNext button') ||
+      document.querySelector('#idvAnyPhonePinNext button') ||
+      document.querySelector('#next button') ||
+      document.querySelector('button[type="submit"]') ||
+      Array.from(document.querySelectorAll('button')).find((b) => /next|verify|continue/i.test(b.textContent || ''));
+    if (nextBtn) nextBtn.click();
+  `);
+  await wait(6000);
+
+  return true;
+}
+
+async function requestVerificationHelp(
+  sendCmd: SendCmd,
+  wait: Wait,
+  params: {
+    jobId: string;
+    supabase: any;
+    telegram: {
+      enabled: boolean;
+      chatId: string | number | null;
+      lovableApiKey?: string;
+      telegramApiKey?: string;
+    };
+  },
+  platform: string,
+) {
+  if (!params.telegram.enabled || !params.telegram.chatId) {
+    throw new Error(`${platform} verification is required, but Telegram approval is not configured.`);
+  }
+
+  const sinceIso = new Date().toISOString();
+  await sendTelegramPrompt(params.telegram, platform, params.jobId);
+  const approval = await waitForTelegramApproval(params.supabase, params.telegram.chatId, sinceIso);
+
+  if (!approval) {
+    throw new Error(`${platform} verification timed out. Reply APPROVED or CODE 123456 in Telegram, then retry.`);
+  }
+
+  if (approval.code) {
+    await trySubmitVerificationCode(sendCmd, wait, approval.code);
+  }
+}
+
 // --- YouTube Studio Automation ---
 async function automateYouTube(
   sendCmd: SendCmd,
@@ -361,27 +545,37 @@ async function automateYouTube(
 
     const hasPasswordInput = await waitForCondition(sendCmd, wait, "document.querySelector('input[type=\"password\"]')", 20000);
     if (!hasPasswordInput) {
-      throw new Error('YouTube requested additional verification. Complete login manually in Watch Live, then retry.');
+      await requestVerificationHelp(sendCmd, wait, params, 'YouTube');
+    } else {
+      await evaluateJS(sendCmd, `
+        var passInput = document.querySelector('input[type="password"]');
+        if (passInput) {
+          passInput.focus();
+          passInput.value = '${escJS(params.password)}';
+          passInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        var passNext = document.querySelector('#passwordNext button');
+        if (passNext) passNext.click();
+      `);
+      await wait(7000);
     }
 
-    await evaluateJS(sendCmd, `
-      var passInput = document.querySelector('input[type="password"]');
-      if (passInput) {
-        passInput.focus();
-        passInput.value = '${escJS(params.password)}';
-        passInput.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-      var passNext = document.querySelector('#passwordNext button');
-      if (passNext) passNext.click();
+    const stillOnGoogle = await evaluateJS(sendCmd, `
+      var href = window.location.href || '';
+      var hasCodeInput = !!document.querySelector('input[type="tel"], input[autocomplete="one-time-code"], input[name*="code" i]');
+      return href.includes('accounts.google.com') || href.includes('signin') || hasCodeInput;
     `);
 
-    await wait(7000);
+    if (stillOnGoogle) {
+      await requestVerificationHelp(sendCmd, wait, params, 'YouTube');
+    }
+
     await navigateTo(sendCmd, wait, 'https://studio.youtube.com/channel/UC/videos/upload');
     await wait(3000);
 
     currentUrl = await evaluateJS(sendCmd, 'return window.location.href;');
     if (currentUrl && currentUrl.includes('accounts.google.com')) {
-      throw new Error('Still on Google login page. Please use Watch Live to finish sign-in/2FA manually, then retry.');
+      throw new Error('Still on Google login page after Telegram approval. Open Watch Live, finish verification, then retry.');
     }
   }
 
@@ -500,7 +694,7 @@ async function automateTikTok(
   await navigateTo(sendCmd, wait, 'https://www.tiktok.com/creator#/upload?scene=creator_center');
   await wait(5000);
 
-  const currentUrl = await evaluateJS(sendCmd, 'window.location.href');
+  const currentUrl = await evaluateJS(sendCmd, 'return window.location.href;');
   console.log('[TikTok] Current URL:', currentUrl);
 
   // Check if login is needed
@@ -544,6 +738,16 @@ async function automateTikTok(
       if (loginBtn) loginBtn.click();
     `);
     await wait(8000);
+
+    const needsVerification = await evaluateJS(sendCmd, `
+      var href = (window.location.href || '').toLowerCase();
+      var text = (document.body?.innerText || '').toLowerCase();
+      return href.includes('login') || text.includes('verification code') || text.includes('security check') || text.includes('verify');
+    `);
+    if (needsVerification) {
+      await requestVerificationHelp(sendCmd, wait, params, 'TikTok');
+      await wait(5000);
+    }
 
     // Navigate to upload after login
     await navigateTo(sendCmd, wait, 'https://www.tiktok.com/creator#/upload?scene=creator_center');
@@ -625,7 +829,7 @@ async function automateInstagram(
   `);
   await wait(1000);
 
-  const currentUrl = await evaluateJS(sendCmd, 'window.location.href');
+  const currentUrl = await evaluateJS(sendCmd, 'return window.location.href;');
   console.log('[Instagram] Current URL:', currentUrl);
 
   // Check for login
@@ -651,6 +855,15 @@ async function automateInstagram(
       if (btn) btn.click();
     `);
     await wait(8000);
+
+    const needsVerification = await evaluateJS(sendCmd, `
+      var text = (document.body?.innerText || '').toLowerCase();
+      return text.includes('security code') || text.includes('confirmation code') || text.includes('verify your account') || text.includes('suspicious login');
+    `);
+    if (needsVerification) {
+      await requestVerificationHelp(sendCmd, wait, params, 'Instagram');
+      await wait(5000);
+    }
 
     // Dismiss "Not Now" dialogs
     await evaluateJS(sendCmd, `
