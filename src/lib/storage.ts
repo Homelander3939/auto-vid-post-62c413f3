@@ -90,7 +90,7 @@ export async function getSettings(): Promise<AppSettings> {
 }
 
 export async function saveSettings(settings: AppSettings): Promise<void> {
-  await supabase
+  const { error } = await supabase
     .from('app_settings')
     .update({
       folder_path: settings.folderPath,
@@ -105,10 +105,14 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
       instagram_password: settings.instagram.password,
       instagram_enabled: settings.instagram.enabled,
       telegram_bot_token: settings.telegram.botToken,
-      telegram_chat_id: settings.telegram.chatId,
+      telegram_chat_id: settings.telegram.chatId.trim(),
       telegram_enabled: settings.telegram.enabled,
     } as any)
     .eq('id', 1);
+
+  if (error) {
+    throw new Error(error.message || 'Failed to save settings');
+  }
 }
 
 // --- Video file upload to storage ---

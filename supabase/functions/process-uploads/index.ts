@@ -42,18 +42,43 @@ serve(async (req) => {
   // The refresh token for YouTube is stored via secrets
   const YOUTUBE_REFRESH_TOKEN = Deno.env.get('YOUTUBE_REFRESH_TOKEN');
 
-  const telegramChatId = settings?.telegram_chat_id;
-  const telegramEnabled = settings?.telegram_enabled && TELEGRAM_API_KEY && LOVABLE_API_KEY;
+  const configuredTelegramChatId = settings?.telegram_chat_id;
+
+  async function resolveTelegramChatId(): Promise<number | null> {
+    if (configuredTelegramChatId && Number.isFinite(Number(configuredTelegramChatId))) {
+      return Number(configuredTelegramChatId);
+    }
+
+    const { data: latestMessage } = await supabase
+      .from('telegram_messages')
+      .select('chat_id')
+      .eq('is_bot', false)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    const fallbackId = latestMessage?.[0]?.chat_id;
+    if (!fallbackId || !Number.isFinite(Number(fallbackId))) return null;
+
+    const numericFallbackId = Number(fallbackId);
+    await supabase
+      .from('app_settings')
+      .update({ telegram_chat_id: String(numericFallbackId) })
+      .eq('id', 1);
+
+    return numericFallbackId;
+  }
+
+  const resolvedTelegramChatId = await resolveTelegramChatId();
+  const telegramEnabled = Boolean(settings?.telegram_enabled && TELEGRAM_API_KEY && LOVABLE_API_KEY && resolvedTelegramChatId);
 
   // Send Telegram notification helper
   async function notifyTelegram(text: string) {
-    if (!telegramEnabled || !telegramChatId) {
-      console.log('[Telegram] Skipped notification — not configured. enabled:', telegramEnabled, 'chatId:', telegramChatId);
+    if (!telegramEnabled || !resolvedTelegramChatId) {
+      console.log('[Telegram] Skipped notification — not configured. enabled:', telegramEnabled, 'chatId:', configuredTelegramChatId);
       return;
     }
+
     try {
-      console.log('[Telegram] Sending notification to chat:', telegramChatId);
-      const numericChatId = Number(telegramChatId);
       const resp = await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
         method: 'POST',
         headers: {
@@ -61,7 +86,7 @@ serve(async (req) => {
           'X-Connection-Api-Key': TELEGRAM_API_KEY!,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ chat_id: numericChatId, text, parse_mode: 'HTML' }),
+        body: JSON.stringify({ chat_id: resolvedTelegramChatId, text, parse_mode: 'HTML' }),
       });
       const respData = await resp.json();
       console.log('[Telegram] Response:', resp.status, JSON.stringify(respData));
