@@ -382,99 +382,126 @@ async function processScheduledUploads() {
   }
 }
 
-// --- Recurring schedule: auto-pick from folder ---
-let lastRecurringRunKey = '';
+// --- Recurring schedule: process ALL schedule configs ---
+const lastRecurringRunKeys = {};
+
+function generateMetadataFromFilename(filename) {
+  // Strip extension
+  let name = filename.replace(/\.[^.]+$/, '');
+  // Remove common prefixes like dates, numbers
+  name = name.replace(/^\d{4}[-_]\d{2}[-_]\d{2}[-_]?/, '');
+  name = name.replace(/^\d+[-_\s]?/, '');
+  // Replace separators with spaces
+  const title = name.replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  // Generate tags from words
+  const words = title.toLowerCase().split(' ').filter(w => w.length > 2);
+  const tags = [...new Set(words)].slice(0, 10).map(w => `#${w}`);
+  // Generate description
+  const description = `${title}\n\n${tags.join(' ')}\n\n#video #content`;
+  return { title: title || filename, description, tags };
+}
 
 async function processRecurringSchedule() {
   try {
-    const { data: config } = await supabase.from('schedule_config').select('*').eq('id', 1).single();
-    if (!config || !config.enabled) return;
+    const { data: configs } = await supabase.from('schedule_config').select('*').eq('enabled', true);
+    if (!configs || configs.length === 0) return;
     const settings = await getSettings();
-
-    // Check end_at expiry
-    if (config.end_at && new Date(config.end_at) < new Date()) {
-      console.log('[Recurring] Schedule expired, disabling');
-      await supabase.from('schedule_config').update({ enabled: false }).eq('id', 1);
-      return;
-    }
-
-    const folderPath = normalizeFolderPath(config.folder_path);
-    if (!folderPath) return;
-
-    // Parse cron to check if NOW matches
     const now = new Date();
     const currentMinute = now.getMinutes();
     const currentHour = now.getHours();
     const currentDow = now.getDay();
-    const [cronMin, cronHr, , , cronDow] = config.cron_expression.split(' ');
 
-    const minuteMatch = cronMin === '*' || parseInt(cronMin) === currentMinute;
-    const hourMatch = cronHr === '*'
-      || (cronHr.startsWith('*/') ? currentHour % parseInt(cronHr.replace('*/', '')) === 0 : parseInt(cronHr) === currentHour);
-    const dowMatch = cronDow === '*' || cronDow.split(',').map(Number).includes(currentDow);
+    for (const config of configs) {
+      try {
+        // Check end_at expiry
+        if (config.end_at && new Date(config.end_at) < now) {
+          console.log(`[Recurring] Schedule ${config.id} expired, disabling`);
+          await supabase.from('schedule_config').update({ enabled: false }).eq('id', config.id);
+          continue;
+        }
 
-    if (!minuteMatch || !hourMatch || !dowMatch) return;
+        const folderPath = normalizeFolderPath(config.folder_path);
+        if (!folderPath) continue;
 
-    // Prevent running multiple times in the same minute
-    const runKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()} ${currentHour}:${currentMinute}`;
-    if (lastRecurringRunKey === runKey) return;
-    lastRecurringRunKey = runKey;
+        // Parse cron to check if NOW matches
+        const [cronMin, cronHr, , , cronDow] = config.cron_expression.split(' ');
+        const minuteMatch = cronMin === '*' || parseInt(cronMin) === currentMinute;
+        const hourMatch = cronHr === '*'
+          || (cronHr.startsWith('*/') ? currentHour % parseInt(cronHr.replace('*/', '')) === 0 : parseInt(cronHr) === currentHour);
+        const dowMatch = cronDow === '*' || cronDow.split(',').map(Number).includes(currentDow);
 
-    console.log(`[Recurring] Cron matched at ${now.toISOString()}, scanning folder: ${folderPath}`);
+        if (!minuteMatch || !hourMatch || !dowMatch) continue;
 
-    const { videoFile, textFile } = scanFolder(folderPath);
-    if (!videoFile) {
-      console.log('[Recurring] No video file found in folder');
-      await notifyTelegram(settings, `⚠️ Recurring schedule: no video found in folder ${folderPath}`);
-      return;
+        // Prevent running multiple times in the same minute
+        const runKey = `${config.id}-${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()} ${currentHour}:${currentMinute}`;
+        if (lastRecurringRunKeys[config.id] === runKey) continue;
+        lastRecurringRunKeys[config.id] = runKey;
+
+        console.log(`[Recurring] Schedule ${config.id} (${config.name}) matched at ${now.toISOString()}, scanning: ${folderPath}`);
+
+        const { videoFile, textFile } = scanFolder(folderPath);
+        if (!videoFile) {
+          console.log(`[Recurring] No video found in ${folderPath}`);
+          await notifyTelegram(settings, `⚠️ Schedule "${config.name}": no video found in ${folderPath}`);
+          continue;
+        }
+
+        let title, description, tags;
+
+        if (textFile) {
+          const meta = parseTextFile(path.join(folderPath, textFile));
+          title = meta.title || videoFile;
+          description = meta.description || '';
+          tags = meta.tags?.length ? meta.tags : [];
+        }
+
+        // Auto-generate metadata from filename if no .txt or empty metadata
+        if (!title || !description || !tags?.length) {
+          const generated = generateMetadataFromFilename(videoFile);
+          if (!title) title = generated.title;
+          if (!description) description = generated.description;
+          if (!tags?.length) tags = generated.tags;
+        }
+
+        const requestedPlatforms = Array.isArray(config.platforms) && config.platforms.length
+          ? config.platforms
+          : ['youtube', 'tiktok', 'instagram'];
+        const platforms = getReadyPlatforms(settings, requestedPlatforms);
+
+        if (platforms.length === 0) {
+          console.log(`[Recurring] Schedule "${config.name}": no enabled platforms with credentials`);
+          await notifyTelegram(settings, `⚠️ Schedule "${config.name}" skipped: no enabled platforms with credentials`);
+          continue;
+        }
+
+        const platformResults = platforms.map(name => ({ name, status: 'pending' }));
+
+        const { data: job, error } = await supabase
+          .from('upload_jobs')
+          .insert({
+            video_file_name: videoFile,
+            video_storage_path: null,
+            title,
+            description,
+            tags,
+            target_platforms: platforms,
+            status: 'pending',
+            platform_results: platformResults,
+          })
+          .select()
+          .single();
+
+        if (error || !job) {
+          console.error(`[Recurring] Failed to create job for schedule ${config.id}:`, error);
+          continue;
+        }
+
+        console.log(`[Recurring] Created job ${job.id} for ${videoFile} (schedule: ${config.name})`);
+        await processJob(job.id, { folderPath });
+      } catch (e) {
+        console.error(`[Recurring] Error processing schedule ${config.id}:`, e.message);
+      }
     }
-
-    let title = videoFile;
-    let description = '';
-    let tags = [];
-
-    if (textFile) {
-      const meta = parseTextFile(path.join(folderPath, textFile));
-      if (meta.title) title = meta.title;
-      if (meta.description) description = meta.description;
-      if (meta.tags?.length) tags = meta.tags;
-    }
-
-    const requestedPlatforms = Array.isArray(config.platforms) && config.platforms.length
-      ? config.platforms
-      : ['youtube', 'tiktok', 'instagram'];
-    const platforms = getReadyPlatforms(settings, requestedPlatforms);
-
-    if (platforms.length === 0) {
-      console.log('[Recurring] No enabled platforms with credentials');
-      await notifyTelegram(settings, `⚠️ Recurring schedule skipped: no enabled platforms with credentials`);
-      return;
-    }
-
-    const platformResults = platforms.map(name => ({ name, status: 'pending' }));
-
-    const { data: job, error } = await supabase
-      .from('upload_jobs')
-      .insert({
-        video_file_name: videoFile,
-        video_storage_path: null,
-        title,
-        description,
-        tags,
-        target_platforms: platforms,
-        status: 'pending',
-        platform_results: platformResults,
-      })
-      .select()
-      .single();
-
-    if (error || !job) {
-      console.error('[Recurring] Failed to create job:', error);
-      return;
-    }
-
-    console.log(`[Recurring] Created job ${job.id} for ${videoFile}`);
-    await processJob(job.id, { folderPath });
   } catch (e) {
     console.error('[Recurring] Error:', e.message);
   }
