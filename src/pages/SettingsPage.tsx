@@ -255,18 +255,50 @@ export default function SettingsPage() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label>Chat ID</Label>
-              <Input
-                value={settings.telegram.chatId}
-                onChange={(e) =>
-                  setSettings((p) => ({
-                    ...p,
-                    telegram: { ...p.telegram, chatId: e.target.value },
-                  }))
-                }
-                placeholder="Your Telegram chat ID"
-              />
+              <div className="flex gap-2">
+                <Input
+                  value={settings.telegram.chatId}
+                  onChange={(e) =>
+                    setSettings((p) => ({
+                      ...p,
+                      telegram: { ...p.telegram, chatId: e.target.value },
+                    }))
+                  }
+                  placeholder="Your numeric chat ID (e.g. 848868115)"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const { data, error } = await supabase
+                        .from('telegram_messages')
+                        .select('chat_id')
+                        .eq('is_bot', false)
+                        .order('created_at', { ascending: false })
+                        .limit(1);
+                      if (error) throw error;
+                      if (data && data.length > 0) {
+                        const detectedId = String(data[0].chat_id);
+                        setSettings((p) => ({
+                          ...p,
+                          telegram: { ...p.telegram, chatId: detectedId },
+                        }));
+                        toast({ title: `Chat ID detected: ${detectedId}` });
+                      } else {
+                        toast({ title: 'No messages found', description: 'Send a message to your bot first, then try again.', variant: 'destructive' });
+                      }
+                    } catch (err: any) {
+                      toast({ title: 'Detection failed', description: err.message, variant: 'destructive' });
+                    }
+                  }}
+                >
+                  Auto-detect
+                </Button>
+              </div>
               <p className="text-xs text-muted-foreground">
-                Message @userinfobot on Telegram to get your chat ID.
+                Enter your <b>numeric</b> chat ID (not bot username). Send any message to your bot, then click "Auto-detect", or message @userinfobot on Telegram to find it.
               </p>
             </div>
             <Button
@@ -278,7 +310,7 @@ export default function SettingsPage() {
                 try {
                   const { data, error } = await supabase.functions.invoke('send-telegram', {
                     body: {
-                      chat_id: settings.telegram.chatId,
+                      chat_id: Number(settings.telegram.chatId),
                       text: '✅ <b>Video Uploader</b> — Telegram notifications are working!',
                     },
                   });
