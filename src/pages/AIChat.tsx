@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
   Send, Bot, User, Loader2, MessageCircle, Paperclip,
-  Mic, MicOff, Image as ImageIcon, File as FileIcon, X, Download,
+  Mic, MicOff, Image as ImageIcon, File as FileIcon, X, Download, Video,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
@@ -489,7 +489,19 @@ export default function AIChat() {
                           <img src={f.url} alt={f.name} className="w-full h-auto max-h-48 object-cover" />
                         </a>
                       ))}
-                      {msg.files.filter((f) => !f.isImage).map((f) => (
+                      {msg.files.filter((f) => !f.isImage && f.type?.startsWith('video/')).map((f) => (
+                        <div key={f.id} className="rounded-xl overflow-hidden border shadow-sm max-w-[320px]">
+                          <video src={f.url} controls preload="metadata" className="w-full max-h-52 rounded-t-xl" />
+                          <div className="flex items-center gap-2 px-3 py-1.5 bg-secondary/50">
+                            <Video className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                            <p className="text-xs font-medium truncate flex-1">{f.name}</p>
+                            <a href={f.url} target="_blank" rel="noopener noreferrer">
+                              <Download className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+                            </a>
+                          </div>
+                        </div>
+                      ))}
+                      {msg.files.filter((f) => !f.isImage && !f.type?.startsWith('video/')).map((f) => (
                         <a key={f.id} href={f.url} target="_blank" rel="noopener noreferrer"
                           className="flex items-center gap-2 px-3 py-2 rounded-lg border bg-secondary/50 hover:bg-secondary transition-colors">
                           <FileIcon className="w-4 h-4 text-muted-foreground shrink-0" />

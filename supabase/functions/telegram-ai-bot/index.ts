@@ -503,12 +503,28 @@ serve(async (req) => {
       // Build the AI message with multimodal content
       const currentAiMsg: any = { role: 'user', content: '' };
 
+      // Collect any video/file storage paths so AI can pass them to tools
+      const attachedVideoPaths = files
+        .filter((f) => f.type?.startsWith('video/') || f.name?.match(/\.(mp4|mov|avi|mkv|webm)$/i))
+        .map((f) => {
+          // Extract storage path from public URL
+          const urlParts = f.url?.split('/storage/v1/object/public/videos/');
+          return urlParts?.[1] || f.url;
+        });
+
+      const fileContext = files.length > 0
+        ? `\n\nAttached files:\n${files.map((f) => `- ${f.name} (${f.type}, ${Math.round((f.size || 0) / 1024)}KB, url: ${f.url}${
+            attachedVideoPaths.includes(f.url?.split('/storage/v1/object/public/videos/')?.[1] || f.url)
+              ? `, storage_path: ${f.url?.split('/storage/v1/object/public/videos/')?.[1] || ''}`
+              : ''
+          })`).join('\n')}`
+        : '';
+
       if (audioDataUrl) {
-        // Pass audio to Gemini for transcription + response
         const parts: any[] = [];
         parts.push({
           type: 'text',
-          text: userText || 'Please transcribe this voice message and respond to what the person is saying. First show the transcription, then respond.',
+          text: (userText || 'Please transcribe this voice message and respond to what the person is saying. First show the transcription, then respond.') + fileContext,
         });
         parts.push({
           type: 'image_url',
@@ -517,13 +533,11 @@ serve(async (req) => {
         currentAiMsg.content = parts;
       } else if (images.length > 0) {
         const parts: any[] = [];
-        parts.push({ type: 'text', text: userText || 'Please analyze this image in detail.' });
+        parts.push({ type: 'text', text: (userText || 'Please analyze this image in detail.') + fileContext });
         images.forEach((img) => parts.push({ type: 'image_url', image_url: { url: img.url } }));
         currentAiMsg.content = parts;
       } else if (files.length > 0) {
-        currentAiMsg.content = `${userText || 'I sent a file.'}\n\nAttached files:\n${files
-          .map((f) => `- ${f.name} (${f.type}, ${Math.round((f.size || 0) / 1024)}KB)`)
-          .join('\n')}`;
+        currentAiMsg.content = `${userText || 'I sent a file.'}${fileContext}`;
       } else {
         currentAiMsg.content = userText || '';
       }
@@ -556,6 +570,7 @@ YOU CAN PERFORM ACTIONS via tool calls:
 5. retry_failed_job — Retry a failed upload
 
 When users ask you to do something (upload, schedule, retry, delete, change cron), use the tools.
+When users send a video and ask to upload it, use the video's storage_path as video_storage_path and the video filename as video_file_name in create_upload_job.
 When users send images, analyze them in detail.
 When users send voice messages, transcribe them first, then respond.
 NEVER say you can't do something. You CAN perform actions and access data.
