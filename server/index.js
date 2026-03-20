@@ -433,6 +433,7 @@ function setupCron() {
     try {
       await fixStaleJobs();
       await processScheduledUploads();
+      await processRecurringSchedule();
       const { data: jobs } = await supabase
         .from('upload_jobs')
         .select('id')
