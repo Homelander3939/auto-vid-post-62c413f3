@@ -14,30 +14,64 @@ serve(async (req) => {
 
   const BROWSERBASE_API_KEY = Deno.env.get('BROWSERBASE_API_KEY');
   if (!BROWSERBASE_API_KEY) {
-    return new Response(JSON.stringify({ sessions: [] }), {
+    return new Response(JSON.stringify({ sessions: [], debugUrls: {} }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
 
   try {
+    // Fetch running sessions
     const resp = await fetch(`${BB_API}/sessions?status=RUNNING`, {
       headers: { 'x-bb-api-key': BROWSERBASE_API_KEY },
     });
 
     if (!resp.ok) {
-      console.error('Browserbase API error:', await resp.text());
-      return new Response(JSON.stringify({ sessions: [] }), {
+      console.error('Browserbase API error:', resp.status, await resp.text());
+      return new Response(JSON.stringify({ sessions: [], debugUrls: {} }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    const data = await resp.json();
-    return new Response(JSON.stringify({ sessions: data || [] }), {
+    const sessions = await resp.json();
+    const debugUrls: Record<string, string> = {};
+
+    // For each running session, get the debug connection info
+    for (const session of (sessions || [])) {
+      try {
+        const debugResp = await fetch(`${BB_API}/sessions/${session.id}/debug`, {
+          headers: { 'x-bb-api-key': BROWSERBASE_API_KEY },
+        });
+        if (debugResp.ok) {
+          const debugData = await debugResp.json();
+          // Construct the devtools inspector URL
+          if (debugData.debuggerFullscreenUrl) {
+            debugUrls[session.id] = debugData.debuggerFullscreenUrl;
+          } else if (debugData.debuggerUrl) {
+            debugUrls[session.id] = debugData.debuggerUrl;
+          } else if (debugData.wsUrl || debugData.pages?.[0]) {
+            // Construct from page info
+            const page = debugData.pages?.[0];
+            if (page?.debuggerUrl) {
+              debugUrls[session.id] = page.debuggerUrl;
+            } else {
+              // Fallback: construct devtools URL
+              const wsUrl = debugData.wsUrl || `wss://connect.browserbase.com/debug/${session.id}`;
+              debugUrls[session.id] = `https://www.browserbase.com/devtools/inspector.html?${wsUrl}`;
+            }
+          }
+          console.log(`Debug info for ${session.id}:`, JSON.stringify(debugData).slice(0, 500));
+        }
+      } catch (e) {
+        console.error(`Failed to get debug info for session ${session.id}:`, e);
+      }
+    }
+
+    return new Response(JSON.stringify({ sessions: sessions || [], debugUrls }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (e: any) {
     console.error('Error fetching sessions:', e);
-    return new Response(JSON.stringify({ sessions: [], error: e.message }), {
+    return new Response(JSON.stringify({ sessions: [], debugUrls: {}, error: e.message }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
