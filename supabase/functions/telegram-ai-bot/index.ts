@@ -532,44 +532,32 @@ serve(async (req) => {
       });
 
       const appContext = await getAppContext(supabase);
-      // Use gemini-2.5-flash for any media (handles audio + images)
-      const model = (images.length > 0 || audioDataUrl) ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
+      const model = (images.length > 0 || audioDataUrl) ? 'google/gemini-2.5-flash' : 'google/gemini-2.5-flash';
 
-      let aiReply = "Sorry, I couldn't process your message right now.";
-      try {
-        const aiResp = await fetch(AI_GATEWAY, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${LOVABLE_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: 'system',
-                content: `You are a helpful AI assistant for the Video Uploader app. You have FULL ACCESS to the app's live data.
+      const systemPrompt = `You are a helpful AI assistant for the Video Uploader app. You have FULL ACCESS to the app's live data AND can perform actions.
 
 ${appContext}
 
-You help users manage video uploads to YouTube, TikTok, and Instagram. Be concise for Telegram format.
-When users ask about queued jobs, scheduled uploads, or settings — USE THE LIVE DATA ABOVE to answer accurately.
-When users send images, analyze what is ACTUALLY in the image in detail.
-When users send voice messages, transcribe them first (show the transcription clearly), then respond to the content.
-NEVER say you don't have access to the data or can't transcribe audio. You CAN do both.
-Keep responses short and readable for Telegram.`,
-              },
-              ...contextMessages,
-            ],
-          }),
-        });
+YOU CAN PERFORM ACTIONS via tool calls:
+1. create_upload_job — Queue a video for upload
+2. schedule_upload — Schedule a video upload for a specific time
+3. update_cron_schedule — Change the automatic cron schedule
+4. delete_upload_job — Delete/cancel a queued job
+5. retry_failed_job — Retry a failed upload
 
-        if (aiResp.ok) {
-          const aiData = await aiResp.json();
-          aiReply = aiData.choices?.[0]?.message?.content || aiReply;
-        } else {
-          console.error('AI response error:', aiResp.status, await aiResp.text());
-        }
+When users ask you to do something (upload, schedule, retry, delete, change cron), use the tools.
+When users send images, analyze them in detail.
+When users send voice messages, transcribe them first, then respond.
+NEVER say you can't do something. You CAN perform actions and access data.
+Keep responses concise for Telegram.`;
+
+      let aiReply = "Sorry, I couldn't process your message right now.";
+      try {
+        const aiMessages = [
+          { role: 'system', content: systemPrompt },
+          ...contextMessages,
+        ];
+        aiReply = await callAIWithTools(LOVABLE_API_KEY, model, aiMessages, supabase);
       } catch (e) {
         console.error('AI call failed:', e);
       }
