@@ -115,7 +115,7 @@ export default function UploadQueue() {
                     <div className="flex items-center gap-2.5">
                       <span className="capitalize text-sm font-medium w-20">{p.name}</span>
                       <Badge className={statusColors[p.status] || ''} variant="secondary">
-                        {p.status}
+                        {statusLabels[p.status] || p.status}
                       </Badge>
                     </div>
                     <div className="flex items-center gap-2">
