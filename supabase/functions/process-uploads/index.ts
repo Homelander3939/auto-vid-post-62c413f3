@@ -20,24 +20,25 @@ serve(async (req) => {
   const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
   const TELEGRAM_API_KEY = Deno.env.get('TELEGRAM_API_KEY');
 
-  // Get API keys for platforms
-  const YOUTUBE_API_KEY = Deno.env.get('YOUTUBE_API_KEY');
-  const YOUTUBE_REFRESH_TOKEN = Deno.env.get('YOUTUBE_REFRESH_TOKEN');
-  const YOUTUBE_CLIENT_ID = Deno.env.get('YOUTUBE_CLIENT_ID');
-  const YOUTUBE_CLIENT_SECRET = Deno.env.get('YOUTUBE_CLIENT_SECRET');
-
-  const TIKTOK_ACCESS_TOKEN = Deno.env.get('TIKTOK_ACCESS_TOKEN');
-  const TIKTOK_OPEN_ID = Deno.env.get('TIKTOK_OPEN_ID');
-
-  const INSTAGRAM_ACCESS_TOKEN = Deno.env.get('INSTAGRAM_ACCESS_TOKEN');
-  const INSTAGRAM_BUSINESS_ID = Deno.env.get('INSTAGRAM_BUSINESS_ID');
-
-  // Get settings for Telegram chat ID
+  // Get settings (includes platform credentials and Telegram config)
   const { data: settings } = await supabase
     .from('app_settings')
     .select('*')
     .eq('id', 1)
     .single();
+
+  if (!settings) {
+    return new Response(JSON.stringify({ ok: false, error: 'No settings found' }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+
+  // In cloud mode, platform credentials are stored in app_settings:
+  // YouTube: email = client_id, password = client_secret
+  // TikTok: email = access_token
+  // Instagram: email = access_token, password = business_account_id
+  // The refresh token for YouTube is stored via secrets
+  const YOUTUBE_REFRESH_TOKEN = Deno.env.get('YOUTUBE_REFRESH_TOKEN');
 
   const telegramChatId = settings?.telegram_chat_id;
   const telegramEnabled = settings?.telegram_enabled && TELEGRAM_API_KEY && LOVABLE_API_KEY;
