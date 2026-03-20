@@ -7,6 +7,7 @@ const corsHeaders = {
 };
 
 const BB_API = 'https://api.browserbase.com/v1';
+const AI_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -28,6 +29,11 @@ serve(async (req) => {
       status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
+  if (!LOVABLE_API_KEY) {
+    return new Response(JSON.stringify({ success: false, error: 'LOVABLE_API_KEY not configured' }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -43,7 +49,6 @@ serve(async (req) => {
       });
     }
 
-    // Get the job details
     const { data: job, error: jobErr } = await supabase
       .from('upload_jobs')
       .select('*')
@@ -62,7 +67,6 @@ serve(async (req) => {
       });
     }
 
-    // Get video public URL
     const videoUrl = job.video_storage_path
       ? supabase.storage.from('videos').getPublicUrl(job.video_storage_path).data.publicUrl
       : null;
@@ -83,9 +87,7 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         projectId: BROWSERBASE_PROJECT_ID,
-        browserSettings: {
-          blockAds: true,
-        },
+        browserSettings: { blockAds: true },
         keepAlive: true,
       }),
     });
@@ -97,13 +99,10 @@ serve(async (req) => {
 
     const session = await sessionResp.json();
     const sessionId = session.id;
-
     console.log(`Session created: ${sessionId}`);
 
-    // Store session ID on the job
     await supabase.from('upload_jobs').update({ browserbase_session_id: sessionId }).eq('id', job_id);
 
-    // Connect via Playwright-style CDP using the connect URL
     const connectWsUrl = `wss://connect.browserbase.com?apiKey=${BROWSERBASE_API_KEY}&sessionId=${sessionId}`;
 
     const result = await runBrowserAutomation(connectWsUrl, platform, {
@@ -115,6 +114,7 @@ serve(async (req) => {
       password: credentials?.password || '',
       jobId: job_id,
       supabase,
+      lovableApiKey: LOVABLE_API_KEY,
       telegram: {
         enabled: Boolean(appSettings?.telegram_enabled && appSettings?.telegram_chat_id && LOVABLE_API_KEY && TELEGRAM_API_KEY),
         chatId: appSettings?.telegram_chat_id || null,
@@ -149,7 +149,621 @@ serve(async (req) => {
   }
 });
 
-// CDP WebSocket automation with proper Target management
+// ========== Types ==========
+
+type SendCmd = (method: string, params?: any) => Promise<any>;
+type Wait = (ms: number) => Promise<void>;
+type AutomationParams = {
+  videoUrl: string;
+  title: string;
+  description: string;
+  tags: string[];
+  email: string;
+  password: string;
+  jobId: string;
+  supabase: any;
+  lovableApiKey: string;
+  telegram: {
+    enabled: boolean;
+    chatId: string | number | null;
+    lovableApiKey?: string;
+    telegramApiKey?: string;
+  };
+};
+
+type AgentAction = {
+  action: 'click' | 'type' | 'navigate' | 'wait' | 'scroll' | 'done' | 'need_verification' | 'upload_file';
+  x?: number;
+  y?: number;
+  text?: string;
+  url?: string;
+  ms?: number;
+  scrollY?: number;
+  reasoning: string;
+  result?: string;
+};
+
+// ========== AI Agent Core ==========
+
+async function askAI(
+  lovableApiKey: string,
+  screenshot: string,
+  taskPrompt: string,
+  history: { action: string; reasoning: string }[],
+): Promise<AgentAction> {
+  const historyText = history.length > 0
+    ? `\n\nPrevious actions taken:\n${history.map((h, i) => `${i + 1}. [${h.action}] ${h.reasoning}`).join('\n')}`
+    : '';
+
+  const response = await fetch(AI_GATEWAY, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${lovableApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'google/gemini-2.5-pro',
+      messages: [
+        {
+          role: 'system',
+          content: `You are a browser automation agent. You look at screenshots and decide what action to take next to complete a task.
+
+You MUST respond with a JSON object (no markdown, no code fences) with these fields:
+- action: one of "click", "type", "navigate", "wait", "scroll", "done", "need_verification", "upload_file"
+- reasoning: brief explanation of what you see and why you chose this action
+- For "click": include "x" and "y" (pixel coordinates on the 1280x900 viewport)
+- For "type": include "text" (the text to type). The text will be typed into the currently focused element.
+- For "navigate": include "url"
+- For "wait": include "ms" (milliseconds to wait, max 10000)
+- For "scroll": include "scrollY" (positive = down, negative = up, in pixels)
+- For "done": include "result" (summary of what was accomplished, include any URLs)
+- For "need_verification": the platform is asking for 2FA/verification, we need to ask user via Telegram
+- For "upload_file": the file upload input is visible and ready (we will handle the file programmatically)
+
+IMPORTANT RULES:
+- Look carefully at the screenshot to identify UI elements, buttons, text fields, etc.
+- If you see a login page and have credentials, type them in the appropriate fields
+- Click coordinates should be the CENTER of the element you want to click
+- After typing text, you often need to click a button to submit
+- If the page seems stuck or nothing changed after an action, try a different approach
+- Maximum 40 actions before you must return "done"
+- If you see a success message or confirmation, return "done" with the result`,
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `TASK: ${taskPrompt}${historyText}\n\nWhat action should I take next based on this screenshot?`,
+            },
+            {
+              type: 'image_url',
+              image_url: { url: `data:image/png;base64,${screenshot}` },
+            },
+          ],
+        },
+      ],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'browser_action',
+            description: 'Execute a browser action based on the screenshot',
+            parameters: {
+              type: 'object',
+              properties: {
+                action: {
+                  type: 'string',
+                  enum: ['click', 'type', 'navigate', 'wait', 'scroll', 'done', 'need_verification', 'upload_file'],
+                },
+                x: { type: 'number', description: 'X coordinate for click' },
+                y: { type: 'number', description: 'Y coordinate for click' },
+                text: { type: 'string', description: 'Text to type' },
+                url: { type: 'string', description: 'URL to navigate to' },
+                ms: { type: 'number', description: 'Milliseconds to wait' },
+                scrollY: { type: 'number', description: 'Pixels to scroll (positive=down)' },
+                reasoning: { type: 'string', description: 'Why this action' },
+                result: { type: 'string', description: 'Result summary for done action' },
+              },
+              required: ['action', 'reasoning'],
+              additionalProperties: false,
+            },
+          },
+        },
+      ],
+      tool_choice: { type: 'function', function: { name: 'browser_action' } },
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('AI Gateway error:', response.status, errText);
+    throw new Error(`AI Gateway error [${response.status}]: ${errText}`);
+  }
+
+  const data = await response.json();
+
+  // Extract tool call result
+  const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
+  if (toolCall?.function?.arguments) {
+    try {
+      return JSON.parse(toolCall.function.arguments) as AgentAction;
+    } catch {
+      console.error('Failed to parse AI tool call:', toolCall.function.arguments);
+    }
+  }
+
+  // Fallback: try parsing message content as JSON
+  const content = data.choices?.[0]?.message?.content || '';
+  try {
+    const cleaned = content.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
+    return JSON.parse(cleaned) as AgentAction;
+  } catch {
+    console.error('Failed to parse AI response:', content);
+    return { action: 'wait', ms: 3000, reasoning: 'Could not parse AI response, waiting...' };
+  }
+}
+
+// ========== CDP Helpers ==========
+
+async function captureScreenshot(sendCmd: SendCmd): Promise<string> {
+  const result = await sendCmd('Page.captureScreenshot', {
+    format: 'png',
+    quality: 80,
+    clip: { x: 0, y: 0, width: 1280, height: 900, scale: 1 },
+  });
+  return result?.data || '';
+}
+
+async function cdpClick(sendCmd: SendCmd, x: number, y: number): Promise<void> {
+  await sendCmd('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x, y,
+    button: 'left',
+    clickCount: 1,
+  });
+  await sendCmd('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x, y,
+    button: 'left',
+    clickCount: 1,
+  });
+}
+
+async function cdpType(sendCmd: SendCmd, text: string): Promise<void> {
+  for (const char of text) {
+    await sendCmd('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      text: char,
+      key: char,
+      code: `Key${char.toUpperCase()}`,
+      unmodifiedText: char,
+    });
+    await sendCmd('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      text: char,
+      key: char,
+      code: `Key${char.toUpperCase()}`,
+    });
+  }
+}
+
+async function cdpNavigate(sendCmd: SendCmd, url: string): Promise<void> {
+  await sendCmd('Page.navigate', { url });
+}
+
+async function cdpScroll(sendCmd: SendCmd, deltaY: number): Promise<void> {
+  await sendCmd('Input.dispatchMouseEvent', {
+    type: 'mouseWheel',
+    x: 640,
+    y: 450,
+    deltaX: 0,
+    deltaY,
+  });
+}
+
+async function evaluateJS(sendCmd: SendCmd, expression: string): Promise<any> {
+  const wrapped = `(() => { ${expression} })()`;
+  const result = await sendCmd('Runtime.evaluate', {
+    expression: wrapped,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  return result?.result?.value;
+}
+
+function escJS(str: string): string {
+  return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '');
+}
+
+// ========== Telegram Helpers ==========
+
+async function sendTelegramPrompt(
+  telegram: { enabled: boolean; chatId: string | number | null; lovableApiKey?: string; telegramApiKey?: string },
+  platform: string,
+  jobId: string,
+): Promise<boolean> {
+  if (!telegram.enabled || !telegram.chatId || !telegram.lovableApiKey || !telegram.telegramApiKey) return false;
+
+  const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${telegram.lovableApiKey}`,
+      'X-Connection-Api-Key': telegram.telegramApiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      chat_id: telegram.chatId,
+      text:
+        `🔐 ${platform} login needs verification for job ${jobId}.\n` +
+        `Please approve sign-in on your phone.\n` +
+        `Then reply with:\n` +
+        `• APPROVED\n` +
+        `or\n` +
+        `• CODE 123456`,
+      parse_mode: 'HTML',
+    }),
+  });
+  return response.ok;
+}
+
+type ApprovalResult = { approved: boolean; code?: string };
+
+function parseApprovalText(text: string): ApprovalResult | null {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  const normalized = raw.toLowerCase();
+  if (['approve', 'approved', 'ok', 'done', 'yes', 'continue'].some((word) => normalized === word || normalized.startsWith(`${word} `))) {
+    return { approved: true };
+  }
+
+  const codePatterns = [
+    /\bcode\s*[:=\-]?\s*([a-zA-Z0-9\-]{4,12})\b/i,
+    /\botp\s*[:=\-]?\s*([0-9]{4,8})\b/i,
+    /\b([0-9]{4,8})\b/,
+  ];
+
+  for (const pattern of codePatterns) {
+    const match = raw.match(pattern);
+    if (match?.[1]) return { approved: true, code: match[1] };
+  }
+
+  return null;
+}
+
+async function waitForTelegramApproval(
+  supabase: any,
+  chatId: string | number,
+  sinceIso: string,
+  timeoutMs = 240000,
+): Promise<ApprovalResult | null> {
+  const start = Date.now();
+  const normalizedChat = Number.isFinite(Number(chatId)) ? Number(chatId) : String(chatId);
+
+  while (Date.now() - start < timeoutMs) {
+    let query = supabase
+      .from('telegram_messages')
+      .select('text, created_at')
+      .eq('is_bot', false)
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: false })
+      .limit(30);
+
+    query = query.eq('chat_id', normalizedChat as any);
+
+    const { data } = await query;
+    const rows = Array.isArray(data) ? data : [];
+    for (const row of rows) {
+      const parsed = parseApprovalText(row.text || '');
+      if (parsed) return parsed;
+    }
+
+    await new Promise((r) => setTimeout(r, 4000));
+  }
+
+  return null;
+}
+
+// ========== File Upload via CDP ==========
+
+async function uploadVideoFile(sendCmd: SendCmd, wait: Wait, videoUrl: string): Promise<boolean> {
+  // Use JavaScript in the browser to fetch the video and set it on the file input
+  const result = await evaluateJS(sendCmd, `
+    return (async () => {
+      try {
+        var resp = await fetch('${escJS(videoUrl)}');
+        if (!resp.ok) return 'download-failed-' + resp.status;
+        var blob = await resp.blob();
+        var file = new File([blob], 'video.mp4', { type: 'video/mp4' });
+        var dt = new DataTransfer();
+        dt.items.add(file);
+        var input = document.querySelector('input[type="file"][accept*="video"]') ||
+                    document.querySelector('input[type="file"]');
+        if (!input) return 'no-input-found';
+        input.files = dt.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'file-set';
+      } catch (e) {
+        return 'error:' + (e?.message || e);
+      }
+    })();
+  `);
+
+  console.log('[Upload] File upload result:', result);
+  return result === 'file-set';
+}
+
+// ========== Log AI Steps to DB ==========
+
+async function logAgentStep(
+  supabase: any,
+  jobId: string,
+  step: number,
+  action: AgentAction,
+) {
+  try {
+    // Store AI decision log as part of platform_results metadata
+    const { data: job } = await supabase
+      .from('upload_jobs')
+      .select('platform_results')
+      .eq('id', jobId)
+      .single();
+
+    const results = (job?.platform_results as any[]) || [];
+    // Find or create an ai_log entry
+    let aiLog = results.find((r: any) => r.name === '_ai_log');
+    if (!aiLog) {
+      aiLog = { name: '_ai_log', steps: [] };
+      results.push(aiLog);
+    }
+    aiLog.steps = aiLog.steps || [];
+    aiLog.steps.push({
+      step,
+      action: action.action,
+      reasoning: action.reasoning,
+      timestamp: new Date().toISOString(),
+    });
+
+    await supabase.from('upload_jobs').update({ platform_results: results }).eq('id', jobId);
+  } catch (e) {
+    console.error('Failed to log agent step:', e);
+  }
+}
+
+// ========== Main Agentic Loop ==========
+
+function buildTaskPrompt(platform: string, params: AutomationParams): string {
+  const credInfo = params.email && params.password
+    ? `\n\nLogin credentials if needed:\n- Email: ${params.email}\n- Password: ${params.password}`
+    : '\n\nNo login credentials provided. If login is required, return need_verification.';
+
+  const metaInfo = `\n\nVideo metadata:\n- Title: ${params.title}\n- Description: ${params.description}\n- Tags: ${params.tags.join(', ')}`;
+
+  switch (platform) {
+    case 'youtube':
+      return `Upload a video to YouTube Studio.
+
+Steps:
+1. You should be on YouTube Studio (studio.youtube.com). If you see a Google login page, enter the email and password.
+2. If Google asks for verification/2FA, return "need_verification" so we can ask the user via Telegram.
+3. Once logged in to YouTube Studio, click the "Create" button (camera icon with +) in the top right area.
+4. Click "Upload videos" from the dropdown menu.
+5. When you see the upload dialog with a file input, return "upload_file" so we can programmatically set the video file.
+6. Wait for the video to process. Fill in the title field with the provided title.
+7. Fill in the description field.
+8. Click "Next" through the wizard steps (3 times).
+9. On the visibility page, select "Public".
+10. Click "Publish" or "Done".
+11. After publishing, look for the video URL/link and return "done" with the URL.${credInfo}${metaInfo}`;
+
+    case 'tiktok':
+      return `Upload a video to TikTok Creator Center.
+
+Steps:
+1. Navigate to TikTok creator upload page. If you see a login page, enter email/password.
+2. If TikTok asks for verification, return "need_verification".
+3. When you see the upload area/button, return "upload_file" so we can set the video file.
+4. After upload, fill the caption/description with the title and tags as hashtags.
+5. Click "Post" to publish.
+6. Return "done" when complete.${credInfo}${metaInfo}`;
+
+    case 'instagram':
+      return `Upload a video as a Reel on Instagram.
+
+Steps:
+1. Go to Instagram. If you see a login page, enter username/email and password.
+2. If Instagram asks for verification or security code, return "need_verification".
+3. Dismiss any "Not Now" dialogs (notifications, save login info).
+4. Click the "Create" or "New post" button (+ icon in the sidebar/nav).
+5. When the file input appears, return "upload_file" so we can set the video file.
+6. Click "Next" through crop and filter steps.
+7. Fill in the caption with title, description, and hashtags.
+8. Click "Share" to publish.
+9. Return "done" when complete.${credInfo}${metaInfo}`;
+
+    default:
+      return `Navigate ${platform} and upload a video.${credInfo}${metaInfo}`;
+  }
+}
+
+async function agenticUpload(
+  sendCmd: SendCmd,
+  wait: Wait,
+  platform: string,
+  params: AutomationParams,
+): Promise<{ url?: string; message: string }> {
+  const taskPrompt = buildTaskPrompt(platform, params);
+  const history: { action: string; reasoning: string }[] = [];
+  const MAX_STEPS = 40;
+  let fileUploaded = false;
+
+  // Navigate to initial URL
+  const startUrls: Record<string, string> = {
+    youtube: 'https://studio.youtube.com',
+    tiktok: 'https://www.tiktok.com/creator#/upload?scene=creator_center',
+    instagram: 'https://www.instagram.com/',
+  };
+
+  const startUrl = startUrls[platform] || `https://www.${platform}.com`;
+  console.log(`[Agent] Starting ${platform} upload, navigating to ${startUrl}...`);
+  await cdpNavigate(sendCmd, startUrl);
+  await wait(5000);
+
+  for (let step = 0; step < MAX_STEPS; step++) {
+    console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — capturing screenshot...`);
+
+    let screenshot: string;
+    try {
+      screenshot = await captureScreenshot(sendCmd);
+    } catch (e) {
+      console.error('[Agent] Screenshot failed:', e);
+      await wait(3000);
+      continue;
+    }
+
+    if (!screenshot) {
+      console.error('[Agent] Empty screenshot, waiting...');
+      await wait(3000);
+      continue;
+    }
+
+    console.log(`[Agent] Asking AI for next action...`);
+    let action: AgentAction;
+    try {
+      action = await askAI(params.lovableApiKey, screenshot, taskPrompt, history);
+    } catch (e) {
+      console.error('[Agent] AI call failed:', e);
+      await wait(5000);
+      continue;
+    }
+
+    console.log(`[Agent] Step ${step + 1}: ${action.action} — ${action.reasoning}`);
+    await logAgentStep(params.supabase, params.jobId, step + 1, action);
+    history.push({ action: action.action, reasoning: action.reasoning });
+
+    switch (action.action) {
+      case 'click':
+        if (action.x != null && action.y != null) {
+          await cdpClick(sendCmd, action.x, action.y);
+          await wait(2000);
+        }
+        break;
+
+      case 'type':
+        if (action.text) {
+          await cdpType(sendCmd, action.text);
+          await wait(1000);
+        }
+        break;
+
+      case 'navigate':
+        if (action.url) {
+          await cdpNavigate(sendCmd, action.url);
+          await wait(5000);
+        }
+        break;
+
+      case 'wait':
+        await wait(Math.min(action.ms || 3000, 10000));
+        break;
+
+      case 'scroll':
+        await cdpScroll(sendCmd, action.scrollY || 300);
+        await wait(1500);
+        break;
+
+      case 'upload_file':
+        if (!fileUploaded) {
+          console.log('[Agent] Uploading video file...');
+          const uploaded = await uploadVideoFile(sendCmd, wait, params.videoUrl);
+          if (uploaded) {
+            fileUploaded = true;
+            history.push({ action: 'upload_file', reasoning: 'Video file successfully set on file input' });
+            await wait(10000); // Wait for upload to start processing
+          } else {
+            history.push({ action: 'upload_file', reasoning: 'Failed to find file input, will retry' });
+            await wait(3000);
+          }
+        } else {
+          history.push({ action: 'upload_file', reasoning: 'File already uploaded, skipping' });
+        }
+        break;
+
+      case 'need_verification':
+        console.log('[Agent] Verification needed, asking via Telegram...');
+        if (!params.telegram.enabled || !params.telegram.chatId) {
+          throw new Error(`${platform} verification required but Telegram is not configured.`);
+        }
+
+        const sinceIso = new Date().toISOString();
+        await sendTelegramPrompt(params.telegram, platform, params.jobId);
+        const approval = await waitForTelegramApproval(params.supabase, params.telegram.chatId, sinceIso);
+
+        if (!approval) {
+          throw new Error(`${platform} verification timed out. Reply APPROVED or CODE 123456 in Telegram.`);
+        }
+
+        if (approval.code) {
+          // Type the verification code
+          await cdpType(sendCmd, approval.code);
+          await wait(2000);
+          // Try to click a submit/verify/next button
+          const nextScreenshot = await captureScreenshot(sendCmd);
+          const nextAction = await askAI(params.lovableApiKey, nextScreenshot,
+            'A verification code was just typed. Click the submit/verify/next button to proceed.',
+            history);
+          if (nextAction.action === 'click' && nextAction.x != null && nextAction.y != null) {
+            await cdpClick(sendCmd, nextAction.x, nextAction.y);
+          }
+          await wait(5000);
+        } else {
+          // User approved externally (e.g., phone), just wait
+          await wait(10000);
+        }
+        history.push({ action: 'need_verification', reasoning: 'Verification handled via Telegram' });
+        break;
+
+      case 'done':
+        console.log(`[Agent] Done: ${action.result || action.reasoning}`);
+
+        // Try to extract URL from the result
+        const urlMatch = action.result?.match(/https?:\/\/[^\s"'<>]+/);
+        const resultUrl = urlMatch?.[0];
+
+        // Send success notification via Telegram
+        if (params.telegram.enabled && params.telegram.chatId && params.telegram.lovableApiKey && params.telegram.telegramApiKey) {
+          await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${params.telegram.lovableApiKey}`,
+              'X-Connection-Api-Key': params.telegram.telegramApiKey!,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              chat_id: params.telegram.chatId,
+              text: `✅ ${platform.toUpperCase()} upload complete!\n📹 ${params.title}\n${resultUrl ? `🔗 ${resultUrl}` : 'URL not captured'}`,
+              parse_mode: 'HTML',
+            }),
+          });
+        }
+
+        return {
+          url: resultUrl,
+          message: action.result || `${platform} upload completed successfully.`,
+        };
+
+      default:
+        console.log(`[Agent] Unknown action: ${action.action}`);
+        await wait(2000);
+    }
+  }
+
+  throw new Error(`${platform} upload did not complete within ${MAX_STEPS} steps. Check Browser Sessions for details.`);
+}
+
+// ========== WebSocket CDP Runner ==========
+
 async function runBrowserAutomation(
   connectUrl: string,
   platform: string,
@@ -163,7 +777,6 @@ async function runBrowserAutomation(
 
     const ws = new WebSocket(connectUrl);
 
-    // Send CDP command — if we have a sessionId from Target.attachToTarget, include it
     const sendCmd = (method: string, cmdParams?: any): Promise<any> => {
       return new Promise((res, rej) => {
         const id = cmdId++;
@@ -176,7 +789,6 @@ async function runBrowserAutomation(
       });
     };
 
-    // Send browser-level command (no sessionId)
     const sendBrowserCmd = (method: string, cmdParams?: any): Promise<any> => {
       return new Promise((res, rej) => {
         const id = cmdId++;
@@ -191,35 +803,25 @@ async function runBrowserAutomation(
       try {
         console.log('WebSocket connected, discovering targets...');
 
-        // Set global timeout (5 min for video uploads)
+        // 8 min timeout for AI-driven automation (needs more time)
         timeoutHandle = setTimeout(() => {
           ws.close();
-          reject(new Error('Browser automation timed out after 300s'));
-        }, 300000);
+          reject(new Error('Browser automation timed out after 480s'));
+        }, 480000);
 
-        // Get available targets
         const targetsResult = await sendBrowserCmd('Target.getTargets');
-        console.log('Targets:', JSON.stringify(targetsResult));
-
         let pageTargetId: string | null = null;
 
         if (targetsResult?.targetInfos) {
           const pageTarget = targetsResult.targetInfos.find((t: any) => t.type === 'page');
-          if (pageTarget) {
-            pageTargetId = pageTarget.targetId;
-            console.log(`Found existing page target: ${pageTargetId}`);
-          }
+          if (pageTarget) pageTargetId = pageTarget.targetId;
         }
 
         if (!pageTargetId) {
-          // Create a new page target
-          console.log('Creating new page target...');
           const newTarget = await sendBrowserCmd('Target.createTarget', { url: 'about:blank' });
           pageTargetId = newTarget.targetId;
-          console.log(`Created page target: ${pageTargetId}`);
         }
 
-        // Attach to the target in flatten mode to get a sessionId
         const attachResult = await sendBrowserCmd('Target.attachToTarget', {
           targetId: pageTargetId,
           flatten: true,
@@ -227,28 +829,12 @@ async function runBrowserAutomation(
         cdpSessionId = attachResult.sessionId;
         console.log(`Attached to target, sessionId: ${cdpSessionId}`);
 
-        // Now enable Page and Runtime on the attached session
         await sendCmd('Page.enable');
         await sendCmd('Runtime.enable');
         await sendCmd('Network.enable');
 
-        console.log(`Starting ${platform} automation...`);
-
-        let result: { url?: string; message: string };
-
-        switch (platform) {
-          case 'youtube':
-            result = await automateYouTube(sendCmd, wait, params);
-            break;
-          case 'tiktok':
-            result = await automateTikTok(sendCmd, wait, params);
-            break;
-          case 'instagram':
-            result = await automateInstagram(sendCmd, wait, params);
-            break;
-          default:
-            throw new Error(`Unsupported platform: ${platform}`);
-        }
+        // Run the AI agentic loop
+        const result = await agenticUpload(sendCmd, wait, platform, params);
 
         clearTimeout(timeoutHandle);
         ws.close();
@@ -290,649 +876,4 @@ async function runBrowserAutomation(
       pending.clear();
     };
   });
-}
-
-type SendCmd = (method: string, params?: any) => Promise<any>;
-type Wait = (ms: number) => Promise<void>;
-type AutomationParams = {
-  videoUrl: string;
-  title: string;
-  description: string;
-  tags: string[];
-  email: string;
-  password: string;
-  jobId: string;
-  supabase: any;
-  telegram: {
-    enabled: boolean;
-    chatId: string | number | null;
-    lovableApiKey?: string;
-    telegramApiKey?: string;
-  };
-};
-
-async function navigateTo(sendCmd: SendCmd, wait: Wait, url: string): Promise<void> {
-  await sendCmd('Page.navigate', { url });
-  await wait(5000);
-}
-
-async function evaluateJS(sendCmd: SendCmd, expression: string): Promise<any> {
-  const wrapped = `(() => { ${expression} })()`;
-  const result = await sendCmd('Runtime.evaluate', {
-    expression: wrapped,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  if (result?.exceptionDetails) {
-    console.error('JS eval error:', JSON.stringify(result.exceptionDetails));
-  }
-  return result?.result?.value;
-}
-
-async function waitForCondition(
-  sendCmd: SendCmd,
-  wait: Wait,
-  conditionExpression: string,
-  timeoutMs = 30000,
-  stepMs = 1500,
-): Promise<boolean> {
-  const attempts = Math.ceil(timeoutMs / stepMs);
-  for (let i = 0; i < attempts; i++) {
-    const ok = await evaluateJS(sendCmd, `return !!(${conditionExpression});`);
-    if (ok) return true;
-    await wait(stepMs);
-  }
-  return false;
-}
-
-function escJS(str: string): string {
-  return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '');
-}
-
-type ApprovalResult = { approved: boolean; code?: string };
-
-function parseApprovalText(text: string): ApprovalResult | null {
-  const raw = String(text || '').trim();
-  if (!raw) return null;
-
-  const normalized = raw.toLowerCase();
-  if (['approve', 'approved', 'ok', 'done', 'yes', 'continue'].some((word) => normalized === word || normalized.startsWith(`${word} `))) {
-    return { approved: true };
-  }
-
-  const codePatterns = [
-    /\bcode\s*[:=\-]?\s*([a-zA-Z0-9\-]{4,12})\b/i,
-    /\botp\s*[:=\-]?\s*([0-9]{4,8})\b/i,
-    /\b([0-9]{4,8})\b/,
-  ];
-
-  for (const pattern of codePatterns) {
-    const match = raw.match(pattern);
-    if (match?.[1]) return { approved: true, code: match[1] };
-  }
-
-  return null;
-}
-
-async function sendTelegramPrompt(
-  telegram: { enabled: boolean; chatId: string | number | null; lovableApiKey?: string; telegramApiKey?: string },
-  platform: string,
-  jobId: string,
-): Promise<boolean> {
-  if (!telegram.enabled || !telegram.chatId || !telegram.lovableApiKey || !telegram.telegramApiKey) return false;
-
-  const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${telegram.lovableApiKey}`,
-      'X-Connection-Api-Key': telegram.telegramApiKey,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      chat_id: telegram.chatId,
-      text:
-        `🔐 ${platform} login needs verification for job ${jobId}.\n` +
-        `Please approve sign-in on your phone.\n` +
-        `Then reply with:\n` +
-        `• APPROVED\n` +
-        `or\n` +
-        `• CODE 123456`,
-      parse_mode: 'HTML',
-    }),
-  });
-
-  return response.ok;
-}
-
-async function waitForTelegramApproval(
-  supabase: any,
-  chatId: string | number,
-  sinceIso: string,
-  timeoutMs = 240000,
-): Promise<ApprovalResult | null> {
-  const start = Date.now();
-  const normalizedChat = Number.isFinite(Number(chatId)) ? Number(chatId) : String(chatId);
-
-  while (Date.now() - start < timeoutMs) {
-    let query = supabase
-      .from('telegram_messages')
-      .select('text, created_at')
-      .eq('is_bot', false)
-      .gte('created_at', sinceIso)
-      .order('created_at', { ascending: false })
-      .limit(30);
-
-    query = query.eq('chat_id', normalizedChat as any);
-
-    const { data } = await query;
-    const rows = Array.isArray(data) ? data : [];
-    for (const row of rows) {
-      const parsed = parseApprovalText(row.text || '');
-      if (parsed) return parsed;
-    }
-
-    await new Promise((r) => setTimeout(r, 4000));
-  }
-
-  return null;
-}
-
-async function trySubmitVerificationCode(sendCmd: SendCmd, wait: Wait, code: string): Promise<boolean> {
-  if (!code) return false;
-
-  const filled = await evaluateJS(sendCmd, `
-    const selectors = [
-      'input[type="tel"]',
-      'input[autocomplete="one-time-code"]',
-      'input[name*="code" i]',
-      'input[id*="code" i]',
-      'input[aria-label*="code" i]'
-    ];
-    let target = null;
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el) { target = el; break; }
-    }
-    if (!target) return false;
-    target.focus();
-    target.value = '${escJS(code)}';
-    target.dispatchEvent(new Event('input', { bubbles: true }));
-    return true;
-  `);
-
-  if (!filled) return false;
-
-  await evaluateJS(sendCmd, `
-    const nextBtn =
-      document.querySelector('#totpNext button') ||
-      document.querySelector('#idvPreregisteredPhoneNext button') ||
-      document.querySelector('#idvAnyPhonePinNext button') ||
-      document.querySelector('#next button') ||
-      document.querySelector('button[type="submit"]') ||
-      Array.from(document.querySelectorAll('button')).find((b) => /next|verify|continue/i.test(b.textContent || ''));
-    if (nextBtn) nextBtn.click();
-  `);
-  await wait(6000);
-
-  return true;
-}
-
-async function requestVerificationHelp(
-  sendCmd: SendCmd,
-  wait: Wait,
-  params: AutomationParams,
-  platform: string,
-) {
-  if (!params.telegram.enabled || !params.telegram.chatId) {
-    throw new Error(`${platform} verification is required, but Telegram approval is not configured.`);
-  }
-
-  const sinceIso = new Date().toISOString();
-  await sendTelegramPrompt(params.telegram, platform, params.jobId);
-  const approval = await waitForTelegramApproval(params.supabase, params.telegram.chatId, sinceIso);
-
-  if (!approval) {
-    throw new Error(`${platform} verification timed out. Reply APPROVED or CODE 123456 in Telegram, then retry.`);
-  }
-
-  if (approval.code) {
-    await trySubmitVerificationCode(sendCmd, wait, approval.code);
-  }
-}
-
-// --- YouTube Studio Automation ---
-async function automateYouTube(
-  sendCmd: SendCmd,
-  wait: Wait,
-  params: AutomationParams,
-): Promise<{ url?: string; message: string }> {
-  console.log('[YouTube] Navigating to upload page...');
-  await navigateTo(sendCmd, wait, 'https://studio.youtube.com/channel/UC/videos/upload');
-  await wait(3000);
-
-  let currentUrl = await evaluateJS(sendCmd, 'return window.location.href;');
-  console.log('[YouTube] Current URL:', currentUrl);
-
-  if (currentUrl && (currentUrl.includes('accounts.google.com') || currentUrl.includes('signin'))) {
-    if (!params.email || !params.password) {
-      throw new Error('YouTube login required. Open Browser Sessions → Watch Live, log in once, then retry upload.');
-    }
-
-    console.log('[YouTube] Attempting login...');
-    const hasEmailInput = await waitForCondition(sendCmd, wait, "document.querySelector('input[type=\"email\"]')", 15000);
-    if (!hasEmailInput) {
-      throw new Error('YouTube login page did not load properly. Open Watch Live and log in manually.');
-    }
-
-    await evaluateJS(sendCmd, `
-      var emailInput = document.querySelector('input[type="email"]');
-      if (emailInput) {
-        emailInput.focus();
-        emailInput.value = '${escJS(params.email)}';
-        emailInput.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-      var nextBtn = document.querySelector('#identifierNext button');
-      if (nextBtn) nextBtn.click();
-    `);
-
-    const hasPasswordInput = await waitForCondition(sendCmd, wait, "document.querySelector('input[type=\"password\"]')", 20000);
-    if (!hasPasswordInput) {
-      await requestVerificationHelp(sendCmd, wait, params, 'YouTube');
-    } else {
-      await evaluateJS(sendCmd, `
-        var passInput = document.querySelector('input[type="password"]');
-        if (passInput) {
-          passInput.focus();
-          passInput.value = '${escJS(params.password)}';
-          passInput.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        var passNext = document.querySelector('#passwordNext button');
-        if (passNext) passNext.click();
-      `);
-      await wait(7000);
-    }
-
-    const stillOnGoogle = await evaluateJS(sendCmd, `
-      var href = window.location.href || '';
-      var hasCodeInput = !!document.querySelector('input[type="tel"], input[autocomplete="one-time-code"], input[name*="code" i]');
-      return href.includes('accounts.google.com') || href.includes('signin') || hasCodeInput;
-    `);
-
-    if (stillOnGoogle) {
-      await requestVerificationHelp(sendCmd, wait, params, 'YouTube');
-    }
-
-    await navigateTo(sendCmd, wait, 'https://studio.youtube.com/channel/UC/videos/upload');
-    await wait(3000);
-
-    currentUrl = await evaluateJS(sendCmd, 'return window.location.href;');
-    if (currentUrl && currentUrl.includes('accounts.google.com')) {
-      throw new Error('Still on Google login page after Telegram approval. Open Watch Live, finish verification, then retry.');
-    }
-  }
-
-  const hasFileInput = await waitForCondition(sendCmd, wait, "document.querySelector('input[type=\"file\"]')", 20000);
-  if (!hasFileInput) {
-    throw new Error('YouTube upload form not available. Please ensure channel is accessible and retry.');
-  }
-
-  console.log('[YouTube] Uploading video file...');
-  const uploadResult = await evaluateJS(sendCmd, `
-    return (async () => {
-      try {
-        var resp = await fetch('${escJS(params.videoUrl)}');
-        if (!resp.ok) return 'download-failed-' + resp.status;
-        var blob = await resp.blob();
-        var file = new File([blob], 'video.mp4', { type: 'video/mp4' });
-        var dt = new DataTransfer();
-        dt.items.add(file);
-        var input = document.querySelector('input[type="file"]');
-        if (!input) return 'no-input-found';
-        input.files = dt.files;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        return 'file-set';
-      } catch (e) {
-        return 'error:' + (e?.message || e);
-      }
-    })();
-  `);
-
-  if (uploadResult !== 'file-set') {
-    throw new Error(`YouTube upload failed before processing: ${uploadResult}`);
-  }
-
-  const uploadWizardReady = await waitForCondition(sendCmd, wait, "document.querySelector('#next-button')", 60000, 2000);
-  if (!uploadWizardReady) {
-    throw new Error('YouTube did not start processing the video. Check format/size or account restrictions.');
-  }
-
-  console.log('[YouTube] Filling metadata...');
-  await evaluateJS(sendCmd, `
-    var titleBox = document.querySelector('#textbox[aria-label*="title" i], ytcp-social-suggestions-textbox #textbox, #title-textarea #textbox');
-    if (titleBox) {
-      titleBox.focus();
-      titleBox.textContent = '';
-      document.execCommand('selectAll');
-      document.execCommand('insertText', false, '${escJS(params.title || 'Untitled Video')}');
-    }
-  `);
-  await wait(1000);
-
-  if (params.description) {
-    await evaluateJS(sendCmd, `
-      var descBoxes = document.querySelectorAll('#textbox');
-      var descBox = descBoxes.length > 1 ? descBoxes[1] : null;
-      if (descBox) {
-        descBox.focus();
-        descBox.textContent = '';
-        document.execCommand('insertText', false, '${escJS(params.description)}');
-      }
-    `);
-  }
-  await wait(1500);
-
-  console.log('[YouTube] Clicking through wizard...');
-  for (let i = 0; i < 3; i++) {
-    await evaluateJS(sendCmd, `
-      var nextBtn = document.querySelector('#next-button button, ytcp-button#next-button');
-      if (nextBtn) nextBtn.click();
-    `);
-    await wait(2200);
-  }
-
-  await evaluateJS(sendCmd, `
-    var publicRadio = document.querySelector('tp-yt-paper-radio-button[name="PUBLIC"]');
-    if (publicRadio) publicRadio.click();
-  `);
-  await wait(1200);
-
-  await evaluateJS(sendCmd, `
-    var doneBtn = document.querySelector('#done-button button, ytcp-button#done-button');
-    if (doneBtn) doneBtn.click();
-  `);
-  await wait(7000);
-
-  const videoLink = await evaluateJS(sendCmd, `
-    var link = document.querySelector('a.style-scope.ytcp-video-info[href*="youtu"]');
-    if (link && link.href) return link.href;
-
-    var anyLink = document.querySelector('.video-url-fadeable a');
-    if (anyLink && anyLink.href) return anyLink.href;
-
-    var href = window.location.href || '';
-    var m = href.match(/\/video\/([a-zA-Z0-9_-]{6,})\//);
-    if (m && m[1]) return 'https://www.youtube.com/watch?v=' + m[1];
-
-    return '';
-  `);
-
-  console.log('[YouTube] Upload complete, link:', videoLink || 'not captured');
-
-  return {
-    url: videoLink || undefined,
-    message: videoLink
-      ? `YouTube upload complete: ${videoLink}`
-      : 'YouTube upload submitted, but URL was not captured. Please confirm in YouTube Studio.',
-  };
-}
-
-// --- TikTok Automation ---
-async function automateTikTok(
-  sendCmd: SendCmd,
-  wait: Wait,
-  params: AutomationParams,
-): Promise<{ url?: string; message: string }> {
-  console.log('[TikTok] Navigating to TikTok Creator Center...');
-  await navigateTo(sendCmd, wait, 'https://www.tiktok.com/creator#/upload?scene=creator_center');
-  await wait(5000);
-
-  const currentUrl = await evaluateJS(sendCmd, 'return window.location.href;');
-  console.log('[TikTok] Current URL:', currentUrl);
-
-  // Check if login is needed
-  if (currentUrl && (currentUrl.includes('login') || currentUrl.includes('signin'))) {
-    if (!params.email || !params.password) {
-      throw new Error('TikTok login required but no credentials provided. Add TikTok email and password in Settings.');
-    }
-
-    console.log('[TikTok] Logging in...');
-    // Click email/password login option
-    await evaluateJS(sendCmd, `
-      const emailOpt = document.querySelector('div[data-e2e="channel-item"]:has(div:contains("email"))') ||
-        Array.from(document.querySelectorAll('a, div[role="link"]')).find(el => el.textContent?.toLowerCase().includes('email'));
-      if (emailOpt) emailOpt.click();
-    `);
-    await wait(2000);
-
-    await evaluateJS(sendCmd, `
-      const userInput = document.querySelector('input[name="username"], input[placeholder*="email" i], input[type="text"]');
-      if (userInput) {
-        userInput.focus();
-        userInput.value = '${escJS(params.email)}';
-        userInput.dispatchEvent(new Event('input', {bubbles: true}));
-      }
-    `);
-    await wait(500);
-
-    await evaluateJS(sendCmd, `
-      const passInput = document.querySelector('input[type="password"]');
-      if (passInput) {
-        passInput.focus();
-        passInput.value = '${escJS(params.password)}';
-        passInput.dispatchEvent(new Event('input', {bubbles: true}));
-      }
-    `);
-    await wait(500);
-
-    await evaluateJS(sendCmd, `
-      const loginBtn = document.querySelector('button[type="submit"]') ||
-        Array.from(document.querySelectorAll('button')).find(b => b.textContent?.toLowerCase().includes('log in'));
-      if (loginBtn) loginBtn.click();
-    `);
-    await wait(8000);
-
-    const needsVerification = await evaluateJS(sendCmd, `
-      var href = (window.location.href || '').toLowerCase();
-      var text = (document.body?.innerText || '').toLowerCase();
-      return href.includes('login') || text.includes('verification code') || text.includes('security check') || text.includes('verify');
-    `);
-    if (needsVerification) {
-      await requestVerificationHelp(sendCmd, wait, params, 'TikTok');
-      await wait(5000);
-    }
-
-    // Navigate to upload after login
-    await navigateTo(sendCmd, wait, 'https://www.tiktok.com/creator#/upload?scene=creator_center');
-    await wait(5000);
-  }
-
-  // Upload video file
-  console.log('[TikTok] Uploading video...');
-  const uploadResult = await evaluateJS(sendCmd, `
-    (async () => {
-      try {
-        const resp = await fetch('${escJS(params.videoUrl)}');
-        const blob = await resp.blob();
-        const file = new File([blob], 'video.mp4', { type: 'video/mp4' });
-        const dt = new DataTransfer();
-        dt.items.add(file);
-        let input = document.querySelector('input[type="file"][accept*="video"]');
-        if (!input) {
-          const iframe = document.querySelector('iframe');
-          if (iframe && iframe.contentDocument) {
-            input = iframe.contentDocument.querySelector('input[type="file"]');
-          }
-        }
-        if (!input) input = document.querySelector('input[type="file"]');
-        if (input) {
-          input.files = dt.files;
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          return 'file-set';
-        }
-        return 'no-input-found';
-      } catch(e) {
-        return 'error: ' + e.message;
-      }
-    })()
-  `);
-  console.log('[TikTok] Upload result:', uploadResult);
-  await wait(12000);
-
-  // Fill caption
-  const caption = `${params.title} ${params.description} ${params.tags.map(t => `#${t}`).join(' ')}`.trim();
-  console.log('[TikTok] Filling caption...');
-  await evaluateJS(sendCmd, `
-    const editor = document.querySelector('[contenteditable="true"]') || document.querySelector('.DraftEditor-root [contenteditable]');
-    if (editor) {
-      editor.focus();
-      document.execCommand('selectAll');
-      document.execCommand('insertText', false, '${escJS(caption.slice(0, 2200))}');
-    }
-  `);
-  await wait(3000);
-
-  // Click post
-  console.log('[TikTok] Clicking Post...');
-  await evaluateJS(sendCmd, `
-    const postBtn = document.querySelector('button[data-e2e="post_video_button"]') ||
-      Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Post');
-    if (postBtn) postBtn.click();
-  `);
-  await wait(8000);
-
-  return { message: 'TikTok upload initiated — check your TikTok profile for the new video.' };
-}
-
-// --- Instagram Automation ---
-async function automateInstagram(
-  sendCmd: SendCmd,
-  wait: Wait,
-  params: AutomationParams,
-): Promise<{ url?: string; message: string }> {
-  console.log('[Instagram] Navigating to Instagram...');
-  await navigateTo(sendCmd, wait, 'https://www.instagram.com/');
-  await wait(4000);
-
-  // Dismiss cookie banner
-  await evaluateJS(sendCmd, `
-    const cookieBtn = Array.from(document.querySelectorAll('button')).find(b =>
-      b.textContent?.includes('Allow') || b.textContent?.includes('Accept'));
-    if (cookieBtn) cookieBtn.click();
-  `);
-  await wait(1000);
-
-  const currentUrl = await evaluateJS(sendCmd, 'return window.location.href;');
-  console.log('[Instagram] Current URL:', currentUrl);
-
-  // Check for login
-  const hasLoginForm = await evaluateJS(sendCmd, `!!document.querySelector('input[name="username"]')`);
-  if (hasLoginForm) {
-    if (!params.email || !params.password) {
-      throw new Error('Instagram login required but no credentials provided. Add Instagram email and password in Settings.');
-    }
-
-    console.log('[Instagram] Logging in...');
-    await evaluateJS(sendCmd, `
-      const u = document.querySelector('input[name="username"]');
-      if (u) { u.focus(); u.value = '${escJS(params.email)}'; u.dispatchEvent(new Event('input', {bubbles: true})); }
-    `);
-    await wait(500);
-    await evaluateJS(sendCmd, `
-      const p = document.querySelector('input[name="password"]');
-      if (p) { p.focus(); p.value = '${escJS(params.password)}'; p.dispatchEvent(new Event('input', {bubbles: true})); }
-    `);
-    await wait(500);
-    await evaluateJS(sendCmd, `
-      const btn = document.querySelector('button[type="submit"]');
-      if (btn) btn.click();
-    `);
-    await wait(8000);
-
-    const needsVerification = await evaluateJS(sendCmd, `
-      var text = (document.body?.innerText || '').toLowerCase();
-      return text.includes('security code') || text.includes('confirmation code') || text.includes('verify your account') || text.includes('suspicious login');
-    `);
-    if (needsVerification) {
-      await requestVerificationHelp(sendCmd, wait, params, 'Instagram');
-      await wait(5000);
-    }
-
-    // Dismiss "Not Now" dialogs
-    await evaluateJS(sendCmd, `
-      const notNow = Array.from(document.querySelectorAll('button')).find(b => b.textContent?.includes('Not Now') || b.textContent?.includes('Not now'));
-      if (notNow) notNow.click();
-    `);
-    await wait(2000);
-    await evaluateJS(sendCmd, `
-      const notNow = Array.from(document.querySelectorAll('button')).find(b => b.textContent?.includes('Not Now') || b.textContent?.includes('Not now'));
-      if (notNow) notNow.click();
-    `);
-    await wait(1000);
-  }
-
-  // Click Create / New Post button
-  console.log('[Instagram] Clicking New Post...');
-  await evaluateJS(sendCmd, `
-    const createBtn = document.querySelector('[aria-label="New post"]') ||
-      document.querySelector('svg[aria-label="New post"]')?.closest('a, div[role="button"]') ||
-      document.querySelector('svg[aria-label="New Post"]')?.closest('a, div[role="button"]');
-    if (createBtn) createBtn.click();
-  `);
-  await wait(3000);
-
-  // Upload file
-  console.log('[Instagram] Uploading video...');
-  await evaluateJS(sendCmd, `
-    (async () => {
-      const resp = await fetch('${escJS(params.videoUrl)}');
-      const blob = await resp.blob();
-      const file = new File([blob], 'video.mp4', { type: 'video/mp4' });
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      const input = document.querySelector('input[type="file"][accept*="video"]') || document.querySelector('input[type="file"]');
-      if (input) {
-        input.files = dt.files;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-    })()
-  `);
-  await wait(10000);
-
-  // Click Next (crop)
-  console.log('[Instagram] Clicking Next (crop)...');
-  await evaluateJS(sendCmd, `
-    const nextBtn = Array.from(document.querySelectorAll('button, div[role="button"]')).find(b => b.textContent?.trim() === 'Next');
-    if (nextBtn) nextBtn.click();
-  `);
-  await wait(3000);
-
-  // Click Next (filter)
-  console.log('[Instagram] Clicking Next (filter)...');
-  await evaluateJS(sendCmd, `
-    const nextBtn = Array.from(document.querySelectorAll('button, div[role="button"]')).find(b => b.textContent?.trim() === 'Next');
-    if (nextBtn) nextBtn.click();
-  `);
-  await wait(3000);
-
-  // Fill caption
-  const caption = `${params.title}\n\n${params.description}\n\n${params.tags.map(t => `#${t}`).join(' ')}`.trim();
-  console.log('[Instagram] Filling caption...');
-  await evaluateJS(sendCmd, `
-    const captionArea = document.querySelector('textarea[aria-label*="caption" i], div[contenteditable="true"][role="textbox"]');
-    if (captionArea) {
-      captionArea.focus();
-      document.execCommand('insertText', false, '${escJS(caption.slice(0, 2200))}');
-    }
-  `);
-  await wait(2000);
-
-  // Click Share
-  console.log('[Instagram] Clicking Share...');
-  await evaluateJS(sendCmd, `
-    const shareBtn = Array.from(document.querySelectorAll('button, div[role="button"]')).find(b => b.textContent?.trim() === 'Share');
-    if (shareBtn) shareBtn.click();
-  `);
-  await wait(10000);
-
-  return { message: 'Instagram upload initiated — check your Instagram profile for the new reel.' };
 }
