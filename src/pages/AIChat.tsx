@@ -231,13 +231,48 @@ export default function AIChat() {
   }, [telegramEnabled, resolvedChatId]);
 
   /* ── Merge app + telegram messages by timestamp ── */
-  const messages = useMemo(() => {
-    const tgMsgs: Msg[] = (telegramMessages || []).map((m: any) => ({
-      role: m.is_bot ? 'assistant' as const : 'user' as const,
-      content: m.text || '',
-      source: 'telegram' as const,
-      timestamp: m.created_at,
+  const mapTelegramMediaToFiles = useCallback((rawUpdate: any): FileAttachment[] => {
+    const media = rawUpdate?.media;
+    if (!media) return [];
+
+    const imageFiles: FileAttachment[] = (media.images || []).map((img: any, idx: number) => ({
+      id: `${rawUpdate?.update_id || Date.now()}-img-${idx}`,
+      name: img.name || `telegram-image-${idx + 1}.jpg`,
+      type: img.type || 'image/jpeg',
+      size: img.size ? `${Math.max(1, Math.round(img.size / 1024))} KB` : 'image',
+      url: img.url,
+      isImage: true,
     }));
+
+    const otherFiles: FileAttachment[] = (media.files || [])
+      .filter((f: any) => f.url)
+      .map((f: any, idx: number) => ({
+        id: `${rawUpdate?.update_id || Date.now()}-file-${idx}`,
+        name: f.name || `telegram-file-${idx + 1}`,
+        type: f.type || 'application/octet-stream',
+        size: f.size ? `${Math.max(1, Math.round(f.size / 1024))} KB` : 'file',
+        url: f.url,
+        isImage: (f.type || '').startsWith('image/'),
+      }));
+
+    return [...imageFiles, ...otherFiles];
+  }, []);
+
+  const messages = useMemo(() => {
+    const tgMsgs: Msg[] = (telegramMessages || []).map((m: any) => {
+      const mediaFiles = mapTelegramMediaToFiles(m.raw_update);
+      return {
+        role: m.is_bot ? 'assistant' as const : 'user' as const,
+        content: m.text || '',
+        source: 'telegram' as const,
+        timestamp: m.created_at,
+        files: mediaFiles.length > 0 ? mediaFiles : undefined,
+        images: mediaFiles.some((f) => f.isImage)
+          ? mediaFiles.filter((f) => f.isImage).map((f) => ({ url: f.url }))
+          : undefined,
+      };
+    });
+
     const all = [...appMessages, ...tgMsgs];
     all.sort((a, b) => {
       const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
@@ -245,7 +280,7 @@ export default function AIChat() {
       return ta - tb;
     });
     return all;
-  }, [appMessages, telegramMessages]);
+  }, [appMessages, telegramMessages, mapTelegramMediaToFiles]);
 
   /* ── Auto-scroll ───────────────────── */
   useEffect(() => {

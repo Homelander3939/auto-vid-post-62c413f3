@@ -11,6 +11,26 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
+type TelegramMediaRef = {
+  url: string;
+  name: string;
+  type: string;
+  size?: number;
+  isImage: boolean;
+};
+
+function extFromMime(mimeType: string): string {
+  if (mimeType.includes('jpeg')) return 'jpg';
+  if (mimeType.includes('png')) return 'png';
+  if (mimeType.includes('webp')) return 'webp';
+  if (mimeType.includes('gif')) return 'gif';
+  if (mimeType.includes('pdf')) return 'pdf';
+  if (mimeType.includes('ogg')) return 'ogg';
+  if (mimeType.includes('mpeg')) return 'mp3';
+  if (mimeType.includes('mp4')) return 'mp4';
+  return 'bin';
+}
+
 async function getAppContext(supabase: any): Promise<string> {
   const [
     { data: jobs },
@@ -28,7 +48,6 @@ async function getAppContext(supabase: any): Promise<string> {
   const processingJobs = (jobs || []).filter((j: any) => j.status === 'processing');
   const completedJobs = (jobs || []).filter((j: any) => j.status === 'completed');
   const failedJobs = (jobs || []).filter((j: any) => j.status === 'failed');
-
   const upcomingScheduled = (scheduled || []).filter((s: any) => s.status === 'scheduled');
 
   const formatJob = (j: any) =>
@@ -56,14 +75,12 @@ ${upcomingScheduled.length > 0 ? upcomingScheduled.map(formatScheduled).join('\n
 ===`;
 }
 
-/** Download a Telegram file by file_id → returns a data URL or null */
-async function downloadTelegramFile(
+async function fetchTelegramFileBytes(
   fileId: string,
   lovableKey: string,
   telegramKey: string,
-): Promise<{ url: string; mimeType: string } | null> {
+): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
   try {
-    // Step 1: getFile to get file_path
     const fileResp = await fetch(`${TELEGRAM_GATEWAY}/getFile`, {
       method: 'POST',
       headers: {
@@ -74,11 +91,11 @@ async function downloadTelegramFile(
       body: JSON.stringify({ file_id: fileId }),
     });
     if (!fileResp.ok) return null;
+
     const fileData = await fileResp.json();
     const filePath = fileData.result?.file_path;
     if (!filePath) return null;
 
-    // Step 2: Download via gateway /file/ endpoint
     const dlResp = await fetch(`${TELEGRAM_GATEWAY}/file/${filePath}`, {
       headers: {
         'Authorization': `Bearer ${lovableKey}`,
@@ -88,65 +105,116 @@ async function downloadTelegramFile(
     if (!dlResp.ok) return null;
 
     const contentType = dlResp.headers.get('content-type') || 'application/octet-stream';
-    const arrayBuf = await dlResp.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuf);
-    
-    // Convert to base64 data URL
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    const b64 = btoa(binary);
-    const mimeType = contentType.split(';')[0].trim();
-    return { url: `data:${mimeType};base64,${b64}`, mimeType };
+    const bytes = new Uint8Array(await dlResp.arrayBuffer());
+    return { bytes, mimeType: contentType.split(';')[0].trim() };
   } catch (e) {
-    console.error('File download failed:', e);
+    console.error('fetchTelegramFileBytes failed:', e);
     return null;
   }
 }
 
-/** Extract message content from a Telegram update, handling text, photos, voice, docs */
+async function uploadTelegramMediaToStorage(
+  supabase: any,
+  bytes: Uint8Array,
+  mimeType: string,
+  preferredName?: string,
+): Promise<TelegramMediaRef | null> {
+  try {
+    const ext = extFromMime(mimeType);
+    const safeName = preferredName?.replace(/[^a-zA-Z0-9._-]/g, '_') || `media.${ext}`;
+    const storagePath = `chat/telegram/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
+
+    const { error } = await supabase.storage.from('videos').upload(storagePath, bytes, {
+      contentType: mimeType,
+      upsert: false,
+    });
+    if (error) {
+      console.error('Storage upload failed:', error.message);
+      return null;
+    }
+
+    const { data } = supabase.storage.from('videos').getPublicUrl(storagePath);
+    return {
+      url: data.publicUrl,
+      name: preferredName || safeName,
+      type: mimeType,
+      size: bytes.byteLength,
+      isImage: mimeType.startsWith('image/'),
+    };
+  } catch (e) {
+    console.error('uploadTelegramMediaToStorage failed:', e);
+    return null;
+  }
+}
+
 async function extractMessageContent(
+  supabase: any,
   message: any,
   lovableKey: string,
   telegramKey: string,
-): Promise<{ text: string; images: { url: string }[]; hasMedia: boolean }> {
+): Promise<{ text: string; images: TelegramMediaRef[]; files: TelegramMediaRef[]; hasMedia: boolean }> {
   const text = message.text || message.caption || '';
-  const images: { url: string }[] = [];
-  let hasMedia = false;
+  const images: TelegramMediaRef[] = [];
+  const files: TelegramMediaRef[] = [];
 
-  // Handle photos (array of sizes, pick largest)
-  if (message.photo && message.photo.length > 0) {
-    hasMedia = true;
+  if (message.photo?.length) {
     const largest = message.photo[message.photo.length - 1];
-    const file = await downloadTelegramFile(largest.file_id, lovableKey, telegramKey);
-    if (file && file.mimeType.startsWith('image/')) {
-      images.push({ url: file.url });
+    const download = await fetchTelegramFileBytes(largest.file_id, lovableKey, telegramKey);
+    if (download) {
+      const media = await uploadTelegramMediaToStorage(
+        supabase,
+        download.bytes,
+        download.mimeType === 'application/octet-stream' ? 'image/jpeg' : download.mimeType,
+        `telegram-photo-${largest.file_unique_id || Date.now()}.jpg`,
+      );
+      if (media) images.push(media);
     }
   }
 
-  // Handle document (could be image or other file)
-  if (message.document) {
-    hasMedia = true;
+  if (message.document?.file_id) {
     const doc = message.document;
-    if (doc.mime_type?.startsWith('image/')) {
-      const file = await downloadTelegramFile(doc.file_id, lovableKey, telegramKey);
-      if (file) images.push({ url: file.url });
+    const download = await fetchTelegramFileBytes(doc.file_id, lovableKey, telegramKey);
+    if (download) {
+      const media = await uploadTelegramMediaToStorage(
+        supabase,
+        download.bytes,
+        doc.mime_type || download.mimeType,
+        doc.file_name,
+      );
+      if (media) {
+        if (media.isImage) images.push(media);
+        files.push(media);
+      }
     }
   }
 
-  // Handle voice/audio
-  if (message.voice || message.audio) {
-    hasMedia = true;
-    // We can't transcribe here, but we note it
+  const voiceLike = message.voice || message.audio || message.video || null;
+  if (voiceLike?.file_id) {
+    const download = await fetchTelegramFileBytes(voiceLike.file_id, lovableKey, telegramKey);
+    if (download) {
+      const guessedType = message.voice
+        ? 'audio/ogg'
+        : message.audio?.mime_type || message.video?.mime_type || download.mimeType;
+      const media = await uploadTelegramMediaToStorage(
+        supabase,
+        download.bytes,
+        guessedType,
+        message.audio?.file_name || `telegram-${message.voice ? 'voice' : message.video ? 'video' : 'audio'}-${Date.now()}.${extFromMime(guessedType)}`,
+      );
+      if (media) files.push(media);
+    }
   }
 
-  // Handle sticker
-  if (message.sticker) {
-    hasMedia = true;
-  }
+  return {
+    text,
+    images,
+    files,
+    hasMedia: images.length > 0 || files.length > 0,
+  };
+}
 
-  return { text, images, hasMedia };
+function sanitizeTelegramText(text: string): string {
+  return text.replace(/\u0000/g, '').slice(0, 3900);
 }
 
 serve(async (req) => {
@@ -166,8 +234,6 @@ serve(async (req) => {
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const supabase = createClient(supabaseUrl, supabaseKey);
 
-  let totalProcessed = 0;
-
   const { data: state, error: stateErr } = await supabase
     .from('telegram_bot_state')
     .select('update_offset')
@@ -176,6 +242,7 @@ serve(async (req) => {
 
   if (stateErr) return errResp(stateErr.message);
 
+  let totalProcessed = 0;
   let currentOffset = state.update_offset;
 
   while (true) {
@@ -185,7 +252,8 @@ serve(async (req) => {
 
     const timeout = Math.min(5, Math.floor(remainingMs / 1000) - 3);
     if (timeout < 1) break;
-    console.log(`Polling with offset=${currentOffset}, timeout=${timeout}s, remaining=${Math.round(remainingMs/1000)}s`);
+
+    console.log(`Polling with offset=${currentOffset}, timeout=${timeout}s, remaining=${Math.round(remainingMs / 1000)}s`);
 
     const response = await fetch(`${TELEGRAM_GATEWAY}/getUpdates`, {
       method: 'POST',
@@ -212,27 +280,31 @@ serve(async (req) => {
       if (!message) continue;
 
       const chatId = message.chat.id;
-
-      // Extract content (text, photos, voice, docs)
-      const { text: userText, images, hasMedia } = await extractMessageContent(
-        message, LOVABLE_API_KEY, TELEGRAM_API_KEY
+      const { text: userText, images, files, hasMedia } = await extractMessageContent(
+        supabase,
+        message,
+        LOVABLE_API_KEY,
+        TELEGRAM_API_KEY,
       );
 
-      // Skip if truly empty (no text, no media)
       if (!userText && !hasMedia) continue;
 
-      const displayText = userText || (images.length > 0 ? '📷 [Photo]' : hasMedia ? '📎 [File]' : '');
+      const displayText = userText
+        || (images.length > 0 ? '📷 [Photo]'
+          : files.some((f) => f.type.startsWith('audio/')) ? '🎤 [Voice message]'
+            : '📎 [File]');
 
-      // Store user message
       await supabase.from('telegram_messages').upsert({
         update_id: update.update_id,
         chat_id: chatId,
         text: displayText,
         is_bot: false,
-        raw_update: update,
+        raw_update: {
+          ...update,
+          media: { images, files },
+        },
       }, { onConflict: 'update_id' });
 
-      // Get conversation history
       const { data: history } = await supabase
         .from('telegram_messages')
         .select('*')
@@ -245,32 +317,27 @@ serve(async (req) => {
         content: m.text || '',
       }));
 
-      // Build the current message for AI (with image support)
       const currentAiMsg: any = {
         role: 'user',
-        content: userText || (images.length > 0 ? 'What do you see in this image?' : 'I sent a file.'),
+        content: userText || (images.length ? 'What do you see in this image?' : 'I sent a file.'),
       };
 
       if (images.length > 0) {
-        // Use multimodal format
-        const contentParts: any[] = [];
-        if (userText) contentParts.push({ type: 'text', text: userText });
-        else contentParts.push({ type: 'text', text: 'What do you see in this image? Describe it.' });
-        for (const img of images) {
-          contentParts.push({ type: 'image_url', image_url: { url: img.url } });
-        }
-        currentAiMsg.content = contentParts;
+        const parts: any[] = [];
+        parts.push({ type: 'text', text: userText || 'Please analyze this image in detail.' });
+        images.forEach((img) => parts.push({ type: 'image_url', image_url: { url: img.url } }));
+        currentAiMsg.content = parts;
+      } else if (files.length > 0) {
+        currentAiMsg.content = `${userText || 'I sent a file.'}\n\nAttached files:\n${files
+          .map((f) => `- ${f.name} (${f.type}, ${Math.round((f.size || 0) / 1024)}KB)`)
+          .join('\n')}`;
       }
 
       contextMessages.push(currentAiMsg);
 
-      // Get live app context for AI
       const appContext = await getAppContext(supabase);
-
-      // Pick model: use vision model if images present
       const model = images.length > 0 ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
 
-      // Call AI
       let aiReply = "Sorry, I couldn't process your message right now.";
       try {
         const aiResp = await fetch(AI_GATEWAY, {
@@ -290,9 +357,10 @@ ${appContext}
 
 You help users manage video uploads to YouTube, TikTok, and Instagram. Be concise for Telegram format.
 When users ask about queued jobs, scheduled uploads, or settings — USE THE LIVE DATA ABOVE to answer accurately.
-When users send images, analyze them and describe what you see.
+When users send images, analyze what is ACTUALLY in the image and avoid guessing.
+When users send non-image files/voice, acknowledge receipt and explain clearly if transcription/content extraction is not available.
 NEVER say you don't have access to the data. You DO have access.
-Keep responses short and formatted for Telegram (use simple markdown).`,
+Keep responses short and readable for Telegram.`,
               },
               ...contextMessages,
             ],
@@ -309,8 +377,7 @@ Keep responses short and formatted for Telegram (use simple markdown).`,
         console.error('AI call failed:', e);
       }
 
-      // Send reply via Telegram
-      await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
+      const tgSendResp = await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${LOVABLE_API_KEY}`,
@@ -319,14 +386,16 @@ Keep responses short and formatted for Telegram (use simple markdown).`,
         },
         body: JSON.stringify({
           chat_id: chatId,
-          text: aiReply,
-          parse_mode: 'Markdown',
+          text: sanitizeTelegramText(aiReply),
         }),
       });
 
-      // Store bot reply
+      if (!tgSendResp.ok) {
+        console.error('Telegram send failed:', tgSendResp.status, await tgSendResp.text());
+      }
+
       await supabase.from('telegram_messages').insert({
-        update_id: update.update_id + 1000000000,
+        update_id: update.update_id + 1_000_000_000,
         chat_id: chatId,
         text: aiReply,
         is_bot: true,
