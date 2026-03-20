@@ -715,25 +715,32 @@ type YouTubeSignals = {
   hasNextButton: boolean;
   hasPublicOption: boolean;
   hasDoneButton: boolean;
+  hasTitleTextbox: boolean;
+  isUploadDialog: boolean;
 };
 
 async function getYouTubeSignals(sendCmd: SendCmd): Promise<YouTubeSignals> {
   const signals = await evalJS(sendCmd, `
-    const text = (document.body?.innerText || '').toLowerCase();
+    const text = (document.body?.innerText || '').substring(0, 2000).toLowerCase();
     const hasCreateByText = [...document.querySelectorAll('button, ytcp-button, [role="button"]')]
-      .some((el) => ((el.textContent || '').toLowerCase().includes('create') || (el.getAttribute('aria-label') || '').toLowerCase().includes('create')));
-
+      .some((el) => {
+        const t = (el.textContent || '').toLowerCase().trim();
+        const a = (el.getAttribute('aria-label') || '').toLowerCase();
+        return t === 'create' || a.includes('create') || el.id === 'create-icon';
+      });
     return {
       url: window.location.href,
       hasEmailInput: !!document.querySelector('input[type="email"]'),
       hasPasswordInput: !!document.querySelector('input[type="password"]'),
-      hasVerificationChallenge: text.includes('2-step verification') || text.includes('verify it\'s you') || text.includes('try another way') || text.includes('check your phone'),
+      hasVerificationChallenge: text.includes('2-step verification') || text.includes('verify it\\'s you') || text.includes('try another way') || text.includes('check your phone') || text.includes('confirm your identity'),
       hasCreateButton: !!document.querySelector('#create-icon') || hasCreateByText,
       hasUploadVideosMenu: !!document.querySelector('#text-item-0') || [...document.querySelectorAll('tp-yt-paper-item, [role="menuitem"]')].some((el) => (el.textContent || '').toLowerCase().includes('upload')),
-      hasVideoFileInput: !!document.querySelector('input[type="file"][accept*="video"], input[type="file"]'),
+      hasVideoFileInput: !!document.querySelector('input[type="file"]'),
       hasNextButton: !!document.querySelector('#next-button'),
       hasPublicOption: !!document.querySelector('tp-yt-paper-radio-button[name="PUBLIC"]'),
       hasDoneButton: !!document.querySelector('#done-button'),
+      hasTitleTextbox: !!document.querySelector('#title-textarea #textbox') || document.querySelectorAll('#textbox').length > 0,
+      isUploadDialog: !!document.querySelector('#dialog.ytcp-uploads-dialog, ytcp-uploads-dialog'),
     };
   `);
 
@@ -748,136 +755,123 @@ async function getYouTubeSignals(sendCmd: SendCmd): Promise<YouTubeSignals> {
     hasNextButton: Boolean(signals?.hasNextButton),
     hasPublicOption: Boolean(signals?.hasPublicOption),
     hasDoneButton: Boolean(signals?.hasDoneButton),
+    hasTitleTextbox: Boolean(signals?.hasTitleTextbox),
+    isUploadDialog: Boolean(signals?.isUploadDialog),
   };
 }
 
 async function getDeterministicYouTubeAction(
-  sendCmd: SendCmd,
-  params: AutomationParams,
-  fileUploaded: boolean,
+  sendCmd: SendCmd, params: AutomationParams, fileUploaded: boolean, stepCount: number,
 ): Promise<AgentAction | null> {
   const s = await getYouTubeSignals(sendCmd);
 
   if (s.url.includes('accounts.google.com')) {
-    if (s.hasVerificationChallenge) {
-      return {
-        action: 'need_verification',
-        reasoning: 'Google verification challenge detected via deterministic detector.',
-      };
-    }
-
+    if (s.hasVerificationChallenge) return { action: 'need_verification', reasoning: 'Google verification challenge detected.' };
     if (s.hasEmailInput && params.email) {
-      return {
-        action: 'run_js',
-        reasoning: 'Deterministic: fill Google email and continue.',
-        js: `
-          const input = document.querySelector('input[type="email"]');
-          if (!input) return 'no-email-input';
-          input.focus();
-          input.value = '${escJS(params.email)}';
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          const next = document.querySelector('#identifierNext') || [...document.querySelectorAll('button, [role="button"]')].find((b) => (b.textContent || '').toLowerCase().includes('next'));
-          if (next) next.click();
-          return 'email-submitted';
-        `,
-      };
+      return { action: 'run_js', reasoning: 'Deterministic: fill Google email.',
+        js: `const i=document.querySelector('input[type="email"]');if(!i)return 'none';i.focus();i.value='${escJS(params.email)}';i.dispatchEvent(new Event('input',{bubbles:true}));const n=document.querySelector('#identifierNext')||[...document.querySelectorAll('button,[role="button"]')].find(b=>(b.textContent||'').toLowerCase().includes('next'));if(n)n.click();return 'ok';` };
     }
-
     if (s.hasPasswordInput && params.password) {
-      return {
-        action: 'run_js',
-        reasoning: 'Deterministic: fill Google password and continue.',
-        js: `
-          const input = document.querySelector('input[type="password"]');
-          if (!input) return 'no-password-input';
-          input.focus();
-          input.value = '${escJS(params.password)}';
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          const next = document.querySelector('#passwordNext') || [...document.querySelectorAll('button, [role="button"]')].find((b) => (b.textContent || '').toLowerCase().includes('next'));
-          if (next) next.click();
-          return 'password-submitted';
-        `,
-      };
+      return { action: 'run_js', reasoning: 'Deterministic: fill Google password.',
+        js: `const i=document.querySelector('input[type="password"]');if(!i)return 'none';i.focus();i.value='${escJS(params.password)}';i.dispatchEvent(new Event('input',{bubbles:true}));const n=document.querySelector('#passwordNext')||[...document.querySelectorAll('button,[role="button"]')].find(b=>(b.textContent||'').toLowerCase().includes('next'));if(n)n.click();return 'ok';` };
     }
   }
 
-  if (s.url.includes('studio.youtube.com')) {
-    if (!fileUploaded && s.hasVideoFileInput) {
-      return {
-        action: 'upload_file',
-        reasoning: 'Deterministic: file input is visible in YouTube upload dialog.',
-      };
+  if (s.url.includes('studio.youtube.com') || s.url.includes('youtube.com')) {
+    // Fill title after upload
+    if (fileUploaded && s.hasTitleTextbox && s.isUploadDialog) {
+      const titleFilled = await evalJS(sendCmd, `const tb=document.querySelector('#title-textarea #textbox')||document.querySelectorAll('#textbox')[0];return tb?(tb.textContent||'').trim().length>0:false;`);
+      if (!titleFilled) {
+        return { action: 'run_js', reasoning: 'Deterministic: fill video title.',
+          js: `const tb=document.querySelector('#title-textarea #textbox')||document.querySelectorAll('#textbox')[0];if(!tb)return 'none';tb.focus();tb.click();document.execCommand('selectAll',false,null);document.execCommand('insertText',false,'${escJS(params.title)}');tb.dispatchEvent(new Event('input',{bubbles:true}));return 'ok';` };
+      }
+      if (params.description) {
+        const descFilled = await evalJS(sendCmd, `const tbs=document.querySelectorAll('#textbox');const d=tbs.length>1?tbs[1]:null;return d?(d.textContent||'').trim().length>0:true;`);
+        if (!descFilled) {
+          return { action: 'run_js', reasoning: 'Deterministic: fill description.',
+            js: `const tbs=document.querySelectorAll('#textbox');const d=tbs.length>1?tbs[1]:null;if(!d)return 'none';d.focus();d.click();document.execCommand('selectAll',false,null);document.execCommand('insertText',false,'${escJS(params.description)}');return 'ok';` };
+        }
+      }
     }
-
-    if (!fileUploaded && s.hasUploadVideosMenu) {
-      return {
-        action: 'run_js',
-        reasoning: 'Deterministic: click "Upload videos" menu item.',
-        js: `
-          const direct = document.querySelector('#text-item-0');
-          if (direct) { direct.click(); return 'clicked-direct-upload-menu'; }
-          const item = [...document.querySelectorAll('tp-yt-paper-item, [role="menuitem"]')]
-            .find((el) => (el.textContent || '').toLowerCase().includes('upload'));
-          if (item) { item.click(); return 'clicked-upload-menu'; }
-          return 'no-upload-menu';
-        `,
-      };
+    if (!fileUploaded && s.hasVideoFileInput) return { action: 'upload_file', reasoning: 'File input visible.' };
+    if (!fileUploaded && s.hasUploadVideosMenu && !s.hasVideoFileInput) {
+      return { action: 'run_js', reasoning: 'Click Upload videos menu.',
+        js: `const d=document.querySelector('#text-item-0');if(d){d.click();return 'ok';}const i=[...document.querySelectorAll('tp-yt-paper-item,[role="menuitem"]')].find(el=>(el.textContent||'').toLowerCase().includes('upload'));if(i){i.click();return 'ok';}return 'none';` };
     }
-
     if (!fileUploaded && s.hasCreateButton) {
-      return {
-        action: 'run_js',
-        reasoning: 'Deterministic: click YouTube Create button.',
-        js: `
-          const byId = document.querySelector('#create-icon');
-          if (byId) { byId.click(); return 'clicked-create-id'; }
-          const btn = [...document.querySelectorAll('button, ytcp-button, [role="button"]')]
-            .find((el) => (el.textContent || '').toLowerCase().includes('create') || (el.getAttribute('aria-label') || '').toLowerCase().includes('create'));
-          if (btn) { btn.click(); return 'clicked-create-text'; }
-          return 'no-create-button';
-        `,
-      };
+      return { action: 'run_js', reasoning: 'Click Create button.',
+        js: `const c=document.querySelector('#create-icon');if(c){c.click();return 'ok';}const b=[...document.querySelectorAll('button,ytcp-button,[role="button"]')].find(el=>{const t=(el.textContent||'').toLowerCase().trim();return t==='create'||(el.getAttribute('aria-label')||'').toLowerCase().includes('create');});if(b){b.click();return 'ok';}return 'none';` };
     }
-
-    if (fileUploaded && s.hasNextButton) {
-      return {
-        action: 'run_js',
-        reasoning: 'Deterministic: advance YouTube wizard by clicking Next.',
-        js: `
-          const next = document.querySelector('#next-button');
-          if (next) { next.click(); return 'clicked-next'; }
-          return 'no-next';
-        `,
-      };
+    if (fileUploaded && s.hasNextButton && !s.hasPublicOption && !s.hasDoneButton) {
+      return { action: 'run_js', reasoning: 'Click Next.', js: `document.querySelector('#next-button')?.click();return 'ok';` };
     }
-
     if (fileUploaded && s.hasPublicOption) {
-      return {
-        action: 'run_js',
-        reasoning: 'Deterministic: choose Public visibility.',
-        js: `
-          const pub = document.querySelector('tp-yt-paper-radio-button[name="PUBLIC"]');
-          if (pub) { pub.click(); return 'clicked-public'; }
-          return 'no-public';
-        `,
-      };
+      return { action: 'run_js', reasoning: 'Select Public.', js: `document.querySelector('tp-yt-paper-radio-button[name="PUBLIC"]')?.click();return 'ok';` };
     }
-
     if (fileUploaded && s.hasDoneButton) {
-      return {
-        action: 'run_js',
-        reasoning: 'Deterministic: click Done/Publish button.',
-        js: `
-          const done = document.querySelector('#done-button');
-          if (done) { done.click(); return 'clicked-done'; }
-          return 'no-done';
-        `,
-      };
+      return { action: 'run_js', reasoning: 'Click Done.', js: `document.querySelector('#done-button')?.click();return 'ok';` };
+    }
+    if (!s.hasCreateButton && !s.hasVideoFileInput && !s.hasEmailInput && stepCount < 8) {
+      return { action: 'wait', ms: 3000, reasoning: 'YouTube Studio still loading.' };
     }
   }
+  return null;
+}
 
+// TikTok deterministic controller
+async function getDeterministicTikTokAction(sendCmd: SendCmd, params: AutomationParams, fileUploaded: boolean): Promise<AgentAction | null> {
+  const s = await evalJS(sendCmd, `
+    const url=window.location.href;const text=(document.body?.innerText||'').substring(0,2000).toLowerCase();
+    return {url, hasLoginForm:!!document.querySelector('input[name="username"],input[placeholder*="email" i]'),
+      hasFileInput:!!document.querySelector('input[type="file"]'),
+      hasPostButton:[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim().toLowerCase()==='post'),
+      hasVerification:text.includes('verify')||text.includes('captcha')||text.includes('security check')};
+  `);
+  if (!s) return null;
+  if (s.hasVerification) return { action: 'need_verification', reasoning: 'TikTok verification detected.' };
+  if (s.hasLoginForm && params.email) {
+    return { action: 'run_js', reasoning: 'Fill TikTok login.',
+      js: `const e=document.querySelector('input[name="username"]')||document.querySelector('input[placeholder*="email" i]');if(e){e.focus();e.value='${escJS(params.email)}';e.dispatchEvent(new Event('input',{bubbles:true}));}const p=document.querySelector('input[type="password"]');if(p){p.focus();p.value='${escJS(params.password)}';p.dispatchEvent(new Event('input',{bubbles:true}));}setTimeout(()=>{const b=[...document.querySelectorAll('button')].find(b=>(b.textContent||'').toLowerCase().includes('log in'));if(b)b.click();},500);return 'ok';` };
+  }
+  if (!fileUploaded && s.hasFileInput) return { action: 'upload_file', reasoning: 'TikTok file input found.' };
+  if (fileUploaded && s.hasPostButton) {
+    return { action: 'run_js', reasoning: 'Click TikTok Post.', js: `const b=[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim().toLowerCase()==='post');if(b){b.click();return 'ok';}return 'none';` };
+  }
+  return null;
+}
+
+// Instagram deterministic controller
+async function getDeterministicInstagramAction(sendCmd: SendCmd, params: AutomationParams, fileUploaded: boolean): Promise<AgentAction | null> {
+  const s = await evalJS(sendCmd, `
+    const url=window.location.href;
+    return {url, hasLoginForm:!!document.querySelector('input[name="username"]'),
+      hasFileInput:!!document.querySelector('input[type="file"]'),
+      hasNotNow:[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim().toLowerCase().includes('not now')),
+      hasNewPost:!!document.querySelector('[aria-label="New post"],[aria-label="New Post"]'),
+      hasShareButton:[...document.querySelectorAll('button,div[role="button"]')].some(b=>(b.textContent||'').trim().toLowerCase()==='share'),
+      hasNextButton:[...document.querySelectorAll('button,div[role="button"]')].some(b=>(b.textContent||'').trim().toLowerCase()==='next'),
+      hasVerification:(document.body?.innerText||'').toLowerCase().includes('suspicious')||(document.body?.innerText||'').toLowerCase().includes('security code'),
+      isLoginPage:url.includes('accounts/login')||(!!document.querySelector('input[name="username"]')&&!!document.querySelector('input[name="password"]'))};
+  `);
+  if (!s) return null;
+  if (s.hasVerification) return { action: 'need_verification', reasoning: 'Instagram verification detected.' };
+  if (s.isLoginPage && s.hasLoginForm && params.email) {
+    return { action: 'run_js', reasoning: 'Fill Instagram login.',
+      js: `const u=document.querySelector('input[name="username"]');const p=document.querySelector('input[name="password"]');if(u){u.focus();u.value='';document.execCommand('insertText',false,'${escJS(params.email)}');}if(p){p.focus();p.value='';document.execCommand('insertText',false,'${escJS(params.password)}');}setTimeout(()=>{const b=[...document.querySelectorAll('button[type="submit"],button')].find(b=>(b.textContent||'').toLowerCase().includes('log in'));if(b)b.click();},500);return 'ok';` };
+  }
+  if (s.hasNotNow) {
+    return { action: 'run_js', reasoning: 'Dismiss popup.', js: `const b=[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim().toLowerCase().includes('not now'));if(b){b.click();return 'ok';}return 'none';` };
+  }
+  if (!fileUploaded && s.hasNewPost) {
+    return { action: 'run_js', reasoning: 'Click New Post.', js: `const b=document.querySelector('[aria-label="New post"],[aria-label="New Post"]');if(b){b.click();return 'ok';}return 'none';` };
+  }
+  if (!fileUploaded && s.hasFileInput) return { action: 'upload_file', reasoning: 'Instagram file input found.' };
+  if (s.hasNextButton) {
+    return { action: 'run_js', reasoning: 'Click Next.', js: `const b=[...document.querySelectorAll('button,div[role="button"]')].find(b=>(b.textContent||'').trim().toLowerCase()==='next');if(b){b.click();return 'ok';}return 'none';` };
+  }
+  if (fileUploaded && s.hasShareButton) {
+    return { action: 'run_js', reasoning: 'Click Share.', js: `const b=[...document.querySelectorAll('button,div[role="button"]')].find(b=>(b.textContent||'').trim().toLowerCase()==='share');if(b){b.click();return 'ok';}return 'none';` };
+  }
   return null;
 }
 
@@ -939,13 +933,18 @@ async function agenticUpload(
     let action: AgentAction;
 
     try {
-      const deterministicAction = platform === 'youtube'
-        ? await getDeterministicYouTubeAction(sendCmd, params, fileUploaded)
-        : null;
+      let deterministicAction: AgentAction | null = null;
+      if (platform === 'youtube') {
+        deterministicAction = await getDeterministicYouTubeAction(sendCmd, params, fileUploaded, step);
+      } else if (platform === 'tiktok') {
+        deterministicAction = await getDeterministicTikTokAction(sendCmd, params, fileUploaded);
+      } else if (platform === 'instagram') {
+        deterministicAction = await getDeterministicInstagramAction(sendCmd, params, fileUploaded);
+      }
 
       if (deterministicAction) {
         action = deterministicAction;
-        console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — deterministic action selected.`);
+        console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — deterministic: ${action.reasoning}`);
       } else {
         console.log(`[Agent] Step ${step + 1}/${MAX_STEPS} — asking AI...`);
         action = await askAI(params.lovableApiKey, screenshot, pageInfo, taskPrompt, history);

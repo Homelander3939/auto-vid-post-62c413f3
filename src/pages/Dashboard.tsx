@@ -6,6 +6,7 @@ import {
   uploadVideoFile,
   type VideoMetadata,
 } from '@/lib/storage';
+import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -88,6 +89,13 @@ export default function Dashboard() {
 
       const storagePath = await uploadVideoFile(videoFile);
       await createUploadJob(videoFile.name, storagePath, metadata, selectedPlatforms);
+
+      // Auto-trigger processing
+      try {
+        await supabase.functions.invoke('process-uploads', { body: {} });
+      } catch (e) {
+        console.log('Auto-trigger process-uploads:', e);
+      }
 
       toast({
         title: 'Job queued!',

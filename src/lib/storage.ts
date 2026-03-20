@@ -120,11 +120,22 @@ export async function uploadVideoFile(file: File): Promise<string> {
   const ext = file.name.split('.').pop() || 'mp4';
   const storagePath = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
 
+  // Use upsert and set content type explicitly for better compatibility
   const { error } = await supabase.storage
     .from('videos')
-    .upload(storagePath, file);
+    .upload(storagePath, file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: file.type || 'video/mp4',
+    });
 
-  if (error) throw new Error(`Upload failed: ${error.message}`);
+  if (error) {
+    console.error('Storage upload error:', error);
+    if (error.message?.includes('Payload too large') || error.message?.includes('413')) {
+      throw new Error(`Video file too large. Maximum size is 50MB. Your file: ${(file.size / 1024 / 1024).toFixed(1)}MB`);
+    }
+    throw new Error(`Upload failed: ${error.message}`);
+  }
   return storagePath;
 }
 
