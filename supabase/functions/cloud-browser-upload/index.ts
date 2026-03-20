@@ -1110,14 +1110,7 @@ async function agenticUpload(
       console.error(`[Agent] Action ${action.action} failed:`, actionErr.message);
       history.push({ action: 'system', reasoning: `Action failed: ${actionErr.message}. Try a different approach.` });
 
-      // If we've had too many errors, notify via Telegram
-      const errorCount = history.filter(h => h.action === 'system' && h.reasoning.startsWith('Action failed')).length;
-      if (errorCount >= 5) {
-        await sendTelegramMessage(
-          params.telegram,
-          `⚠️ <b>${platform}</b> upload is having trouble.\n\nMultiple actions failed. The agent will keep trying but may need your attention.\n\nLast error: ${actionErr.message}`
-        );
-      }
+      // Only log errors, don't spam Telegram — final summary handles notifications
       await wait(2000);
     }
   }
