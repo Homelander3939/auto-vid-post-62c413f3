@@ -94,22 +94,23 @@ serve(async (req) => {
       try {
         let uploadUrl = '';
 
-        if (pr.name === 'youtube') {
+        if (pr.name === 'youtube' && settings.youtube_enabled) {
           uploadUrl = await uploadToYouTube(job, supabase, {
-            clientId: YOUTUBE_CLIENT_ID,
-            clientSecret: YOUTUBE_CLIENT_SECRET,
+            clientId: settings.youtube_email,
+            clientSecret: settings.youtube_password,
             refreshToken: YOUTUBE_REFRESH_TOKEN,
           });
-        } else if (pr.name === 'tiktok') {
+        } else if (pr.name === 'tiktok' && settings.tiktok_enabled) {
           uploadUrl = await uploadToTikTok(job, supabase, {
-            accessToken: TIKTOK_ACCESS_TOKEN,
-            openId: TIKTOK_OPEN_ID,
+            accessToken: settings.tiktok_email,
           });
-        } else if (pr.name === 'instagram') {
+        } else if (pr.name === 'instagram' && settings.instagram_enabled) {
           uploadUrl = await uploadToInstagram(job, supabase, {
-            accessToken: INSTAGRAM_ACCESS_TOKEN,
-            businessId: INSTAGRAM_BUSINESS_ID,
+            accessToken: settings.instagram_email,
+            businessId: settings.instagram_password,
           });
+        } else {
+          throw new Error(`${pr.name} is not enabled or credentials missing. Configure in Settings.`);
         }
 
         pr.status = 'success';
