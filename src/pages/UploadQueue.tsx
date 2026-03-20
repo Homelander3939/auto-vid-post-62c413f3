@@ -89,81 +89,119 @@ export default function UploadQueue() {
       )}
 
       <div className="space-y-4">
-        {jobs.map((job) => (
-          <Card key={job.id}>
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 min-w-0">
-                  <CardTitle className="text-sm font-medium truncate">
-                    {job.title || job.video_file_name}
-                  </CardTitle>
-                  {job.video_storage_path && (
-                    <a
-                      href={getVideoUrl(job.video_storage_path)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="shrink-0"
-                    >
-                      <Video className="w-3.5 h-3.5 text-muted-foreground hover:text-primary" />
-                    </a>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 shrink-0 ml-4">
-                  <span className="text-xs text-muted-foreground tabular-nums">
-                    {new Date(job.created_at).toLocaleString()}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleDelete(job.id)}
-                    className="h-7 px-1.5 text-muted-foreground hover:text-destructive"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </Button>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-2.5">
-                {job.platform_results.map((p: PlatformResult) => (
-                  <div key={p.name} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <span className="capitalize text-sm font-medium w-20">{p.name}</span>
-                      <Badge className={statusColors[p.status] || ''} variant="secondary">
-                        {statusLabels[p.status] || p.status}
-                      </Badge>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {p.url && (
-                        <a
-                          href={p.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary hover:underline text-xs flex items-center gap-1"
-                        >
-                          View <ExternalLink className="w-3 h-3" />
-                        </a>
-                      )}
-                      {p.error && (
-                        <span className="text-xs text-destructive truncate max-w-48">{p.error}</span>
-                      )}
-                      {p.status === 'error' && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRetry(job.id)}
-                          className="h-7 px-2"
-                        >
-                          <RefreshCw className="w-3 h-3" />
-                        </Button>
-                      )}
-                    </div>
+        {jobs.map((job) => {
+          const hasPlatformResults = job.platform_results && job.platform_results.length > 0;
+          const overallStatus = job.status || 'pending';
+          const overallStatusColor = {
+            pending: 'bg-amber-100 text-amber-700',
+            processing: 'bg-blue-100 text-blue-700',
+            completed: 'bg-emerald-100 text-emerald-700',
+            failed: 'bg-destructive/10 text-destructive',
+          }[overallStatus] || 'bg-secondary text-secondary-foreground';
+
+          return (
+            <Card key={job.id}>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <CardTitle className="text-sm font-medium truncate">
+                      {job.title || job.video_file_name}
+                    </CardTitle>
+                    {job.video_storage_path && (
+                      <a
+                        href={getVideoUrl(job.video_storage_path)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="shrink-0"
+                      >
+                        <Video className="w-3.5 h-3.5 text-muted-foreground hover:text-primary" />
+                      </a>
+                    )}
+                    <Badge className={overallStatusColor} variant="secondary">
+                      {overallStatus}
+                    </Badge>
                   </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+                  <div className="flex items-center gap-2 shrink-0 ml-4">
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {new Date(job.created_at).toLocaleString()}
+                    </span>
+                    {overallStatus === 'failed' && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleRetry(job.id)}
+                        className="h-7 px-1.5 text-muted-foreground hover:text-primary"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleDelete(job.id)}
+                      className="h-7 px-1.5 text-muted-foreground hover:text-destructive"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              {hasPlatformResults && (
+                <CardContent>
+                  <div className="space-y-2.5">
+                    {job.platform_results.map((p: PlatformResult) => (
+                      <div key={p.name} className="flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <span className="capitalize text-sm font-medium w-20">{p.name}</span>
+                          <Badge className={statusColors[p.status] || ''} variant="secondary">
+                            {statusLabels[p.status] || p.status}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {p.url && (
+                            <a
+                              href={p.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary hover:underline text-xs flex items-center gap-1"
+                            >
+                              View <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                          {p.error && (
+                            <span className="text-xs text-destructive truncate max-w-48">{p.error}</span>
+                          )}
+                          {p.status === 'error' && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleRetry(job.id)}
+                              className="h-7 px-2"
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              )}
+              {!hasPlatformResults && job.target_platforms && job.target_platforms.length > 0 && (
+                <CardContent>
+                  <p className="text-xs text-muted-foreground">
+                    Platforms: {job.target_platforms.join(', ')}
+                  </p>
+                </CardContent>
+              )}
+              {job.description && (
+                <CardContent className="pt-0">
+                  <p className="text-xs text-muted-foreground truncate">{job.description}</p>
+                </CardContent>
+              )}
+            </Card>
+          );
+        })}
       </div>
     </div>
   );

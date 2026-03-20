@@ -552,7 +552,12 @@ When users ask you to do something (upload, schedule, retry, delete, change cron
 When users send images, analyze them in detail.
 When users send voice messages, transcribe them first, then respond.
 NEVER say you can't do something. You CAN perform actions and access data.
-Keep responses concise for Telegram.`;
+
+FORMATTING RULES FOR TELEGRAM:
+- Do NOT use markdown formatting (no ** or __ or # or \`\`\`).
+- Use plain text only.
+- Use line breaks and emoji for structure instead of markdown.
+- Keep responses concise.`;
 
       let aiReply = "Sorry, I couldn't process your message right now.";
       try {
