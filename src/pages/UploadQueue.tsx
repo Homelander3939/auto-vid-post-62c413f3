@@ -354,6 +354,12 @@ export default function UploadQueue() {
   const isCloud = settings?.uploadMode === 'cloud';
 
   const handleClear = async () => {
+    // Stop all active browser sessions first
+    for (const job of jobs) {
+      if (['pending', 'processing', 'uploading'].includes(job.status)) {
+        await stopJob(job.id);
+      }
+    }
     await clearQueue();
     queryClient.invalidateQueries({ queryKey: ['queue'] });
     toast({ title: 'Queue cleared' });
