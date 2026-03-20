@@ -7,7 +7,8 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { useState, useEffect } from 'react';
-import { FolderOpen, Eye, EyeOff } from 'lucide-react';
+import { FolderOpen, Eye, EyeOff, Send } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
 
 function PasswordInput({
   value,
