@@ -2,10 +2,10 @@ import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   createUploadJob,
-  simulateUpload,
   parseTextContent,
   uploadVideoFile,
   getVideoUrl,
+  getSettings,
   type VideoMetadata,
 } from '@/lib/storage';
 import { supabase } from '@/integrations/supabase/client';
