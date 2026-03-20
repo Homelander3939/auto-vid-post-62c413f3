@@ -1,6 +1,7 @@
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
+const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube');
 
@@ -25,6 +26,10 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     // Check if logged in — if we see a sign-in button, we need to login
     const needsLogin = await page.$('a[href*="accounts.google.com"]');
     if (needsLogin) {
+      if (!credentials?.email || !credentials?.password) {
+        throw new Error('YouTube credentials missing in Settings. Add email and password first.');
+      }
+
       console.log('[YouTube] Logging in...');
       await page.goto('https://accounts.google.com/signin', { waitUntil: 'networkidle' });
 
@@ -36,10 +41,31 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       // Enter password
       await page.fill('input[type="password"]', credentials.password);
       await page.click('#passwordNext');
-      await page.waitForTimeout(5000);
+      await page.waitForTimeout(6000);
+
+      // If Google asks for extra verification, ask user via Telegram and keep going after approval/code
+      if (page.url().includes('accounts.google.com')) {
+        const approval = await requestTelegramApproval({
+          telegram: credentials.telegram,
+          platform: 'YouTube',
+        });
+
+        if (!approval) {
+          throw new Error('Google verification required, but no Telegram approval/code was received in time.');
+        }
+
+        if (approval.code) {
+          await tryFillVerificationCode(page, approval.code);
+          await page.waitForTimeout(6000);
+        }
+      }
 
       // Navigate back to studio
       await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 60000 });
+
+      if (page.url().includes('accounts.google.com')) {
+        throw new Error('Google verification is still pending. Approve login in Telegram and retry upload.');
+      }
     }
 
     // Click "Create" button then "Upload videos"
