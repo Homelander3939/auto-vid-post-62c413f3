@@ -90,6 +90,27 @@ serve(async (req) => {
     for (const pr of platformResults) {
       if (pr.status !== 'pending') continue;
 
+      // Validate credentials exist for this platform before starting
+      const platEmail = settings[`${pr.name}_email`] || '';
+      const platPassword = settings[`${pr.name}_password`] || '';
+      const platEnabled = settings[`${pr.name}_enabled`];
+
+      if (!platEnabled) {
+        pr.status = 'error';
+        pr.error = `${pr.name} is not enabled. Enable it in Settings first.`;
+        await supabase.from('upload_jobs').update({ platform_results: platformResults }).eq('id', job.id);
+        hasError = true;
+        continue;
+      }
+
+      if (!platEmail || !platPassword) {
+        pr.status = 'error';
+        pr.error = `${pr.name} credentials missing. Add email and password in Settings before uploading.`;
+        await supabase.from('upload_jobs').update({ platform_results: platformResults }).eq('id', job.id);
+        hasError = true;
+        continue;
+      }
+
       pr.status = 'uploading';
       await supabase.from('upload_jobs').update({ platform_results: platformResults }).eq('id', job.id);
 

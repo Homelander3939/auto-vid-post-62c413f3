@@ -471,6 +471,54 @@ async function sendTelegramMessage(
   return response.ok;
 }
 
+async function sendTelegramPhoto(
+  telegram: AutomationParams['telegram'], photoBase64: string, caption: string,
+): Promise<boolean> {
+  if (!telegram.enabled || !telegram.chatId || !telegram.lovableApiKey || !telegram.telegramApiKey) return false;
+  try {
+    // Convert base64 to binary
+    const binaryStr = atob(photoBase64);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+    // Build multipart form data
+    const boundary = '----TelegramBoundary' + Date.now();
+    const parts: Uint8Array[] = [];
+    const enc = new TextEncoder();
+
+    // chat_id field
+    parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${telegram.chatId}\r\n`));
+    // caption field
+    parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`));
+    // parse_mode field
+    parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="parse_mode"\r\n\r\nHTML\r\n`));
+    // photo file
+    parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="screenshot.png"\r\nContent-Type: image/png\r\n\r\n`));
+    parts.push(bytes);
+    parts.push(enc.encode(`\r\n--${boundary}--\r\n`));
+
+    // Combine all parts
+    const totalLen = parts.reduce((sum, p) => sum + p.length, 0);
+    const body = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const p of parts) { body.set(p, offset); offset += p.length; }
+
+    const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendPhoto', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${telegram.lovableApiKey}`,
+        'X-Connection-Api-Key': telegram.telegramApiKey!,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
+    });
+    return response.ok;
+  } catch (e) {
+    console.error('[Telegram] Failed to send photo:', e);
+    return false;
+  }
+}
+
 async function sendTelegramPrompt(
   telegram: AutomationParams['telegram'], platform: string, jobId: string, reason?: string,
 ): Promise<boolean> {
@@ -739,6 +787,21 @@ async function agenticUpload(
           if (!params.telegram.enabled || !params.telegram.chatId) {
             throw new Error(`${platform} verification required but Telegram is not configured.`);
           }
+
+          // Capture screenshot and send to Telegram so user can see what's on screen
+          try {
+            const verifyScreenshot = await captureScreenshot(sendCmd);
+            if (verifyScreenshot) {
+              await sendTelegramPhoto(
+                params.telegram,
+                verifyScreenshot,
+                `🔐 <b>${platform}</b> verification screen — see what the browser is showing:`
+              );
+            }
+          } catch (e) {
+            console.error('[Agent] Failed to send verification screenshot:', e);
+          }
+
           const sinceIso = new Date().toISOString();
           const reason = action.reasoning || 'Login verification or 2FA required';
           await sendTelegramPrompt(params.telegram, platform, params.jobId, reason);
