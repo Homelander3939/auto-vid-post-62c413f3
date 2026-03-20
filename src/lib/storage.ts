@@ -317,7 +317,9 @@ export async function saveSchedule(config: ScheduleConfig): Promise<void> {
       enabled: config.enabled,
       cron_expression: config.cronExpression,
       platforms: config.platforms,
-    })
+      folder_path: config.folderPath,
+      end_at: config.endAt,
+    } as any)
     .eq('id', 1);
 }
 
