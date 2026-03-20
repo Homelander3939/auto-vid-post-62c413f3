@@ -99,7 +99,7 @@ async function streamChat({
 
 /* ── Telegram indicator ──────────────────────────────── */
 
-function TelegramIndicator({ connected }: { connected: boolean }) {
+function TelegramIndicator({ connected, count }: { connected: boolean; count: number }) {
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary/60">
       {connected ? (
@@ -109,6 +109,11 @@ function TelegramIndicator({ connected }: { connected: boolean }) {
             <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
           </span>
           <span className="text-xs font-medium text-emerald-600">Telegram synced</span>
+          {count > 0 && (
+            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 ml-1">
+              {count}
+            </Badge>
+          )}
         </>
       ) : (
         <>
@@ -134,11 +139,9 @@ function useVoiceRecorder() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       chunksRef.current = [];
-
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
-
       mediaRecorderRef.current = recorder;
       recorder.start(250);
       setRecording(true);
@@ -154,7 +157,6 @@ function useVoiceRecorder() {
     return new Promise((resolve) => {
       const recorder = mediaRecorderRef.current;
       if (!recorder) return;
-
       recorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
         recorder.stream.getTracks().forEach((t) => t.stop());
@@ -163,7 +165,6 @@ function useVoiceRecorder() {
         setDuration(0);
         resolve(blob);
       };
-
       recorder.stop();
     });
   }, []);
@@ -191,21 +192,43 @@ export default function AIChat() {
       return data;
     },
   });
-  const telegramConnected = !!(settings?.telegram_enabled && settings?.telegram_chat_id);
+  const telegramEnabled = !!(settings?.telegram_enabled && settings?.telegram_chat_id);
 
-  /* ── Telegram history (auto-refreshes) ── */
+  /* ── Telegram history (polls every 4s) ── */
   const { data: telegramMessages } = useQuery({
     queryKey: ['telegram-history'],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('telegram_messages')
         .select('*')
         .order('created_at', { ascending: true })
         .limit(200);
+      if (error) console.error('Telegram fetch error:', error);
       return data || [];
     },
     refetchInterval: 4000,
   });
+
+  const telegramSynced = telegramEnabled && (telegramMessages?.length ?? 0) > 0;
+
+  /* ── Resolve numeric chat_id from telegram_messages ── */
+  const resolvedChatId = useMemo(() => {
+    if (!telegramMessages?.length) return undefined;
+    const latest = [...telegramMessages].reverse().find((m: any) => m.chat_id);
+    return latest ? String(latest.chat_id) : undefined;
+  }, [telegramMessages]);
+
+  /* ── Mirror helper: send text to Telegram ── */
+  const mirrorToTelegram = useCallback(async (text: string) => {
+    if (!telegramEnabled || !resolvedChatId || !text.trim()) return;
+    try {
+      await supabase.functions.invoke('send-telegram', {
+        body: { chat_id: resolvedChatId, text: text.slice(0, 3900), parse_mode: 'HTML' },
+      });
+    } catch (e) {
+      console.error('Mirror to Telegram failed:', e);
+    }
+  }, [telegramEnabled, resolvedChatId]);
 
   /* ── Merge app + telegram messages by timestamp ── */
   const messages = useMemo(() => {
@@ -234,92 +257,44 @@ export default function AIChat() {
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
-
     for (const file of Array.from(files)) {
       const isImage = file.type.startsWith('image/');
       const sizeStr = file.size < 1024 * 1024
         ? `${(file.size / 1024).toFixed(0)} KB`
         : `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
-
-      // Upload to storage
       const ext = file.name.split('.').pop() || 'bin';
       const storagePath = `chat/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
       const { error } = await supabase.storage.from('videos').upload(storagePath, file);
-
-      if (error) {
-        toast({ title: 'Upload failed', description: error.message, variant: 'destructive' });
-        continue;
-      }
-
+      if (error) { toast({ title: 'Upload failed', description: error.message, variant: 'destructive' }); continue; }
       const { data: urlData } = supabase.storage.from('videos').getPublicUrl(storagePath);
-
       let textContent: string | undefined;
-      if (file.type.startsWith('text/') || file.name.endsWith('.txt') || file.name.endsWith('.md') || file.name.endsWith('.csv') || file.name.endsWith('.json')) {
-        try {
-          textContent = await file.text();
-          if (textContent.length > 10000) textContent = textContent.slice(0, 10000) + '\n... (truncated)';
-        } catch { /* ignore */ }
+      if (file.type.startsWith('text/') || /\.(txt|md|csv|json)$/.test(file.name)) {
+        try { textContent = await file.text(); if (textContent.length > 10000) textContent = textContent.slice(0, 10000) + '\n... (truncated)'; } catch {}
       }
-
-      const attachment: FileAttachment = {
-        id: storagePath,
-        name: file.name,
-        type: file.type,
-        size: sizeStr,
-        url: urlData.publicUrl,
-        textContent,
-        isImage,
-      };
-
-      setPendingFiles((prev) => [...prev, attachment]);
+      setPendingFiles((prev) => [...prev, { id: storagePath, name: file.name, type: file.type, size: sizeStr, url: urlData.publicUrl, textContent, isImage }]);
     }
-
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const removePendingFile = (id: string) => {
-    setPendingFiles((prev) => prev.filter((f) => f.id !== id));
-  };
+  const removePendingFile = (id: string) => setPendingFiles((prev) => prev.filter((f) => f.id !== id));
 
   /* ── Voice handling ────────────────── */
   const handleVoiceToggle = async () => {
     if (voice.recording) {
       try {
         const blob = await voice.stop();
-        // Use Web Speech API for transcription
-        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-          toast({ title: 'Voice recorded', description: 'Transcribing...' });
-          // Convert to audio and play for recognition
-          const audioUrl = URL.createObjectURL(blob);
-          
-          // For now, upload audio and tell AI about it
-          const storagePath = `chat/voice-${Date.now()}.webm`;
-          await supabase.storage.from('videos').upload(storagePath, blob);
-          const { data: urlData } = supabase.storage.from('videos').getPublicUrl(storagePath);
-          
-          setPendingFiles((prev) => [...prev, {
-            id: storagePath,
-            name: `Voice message (${voice.duration}s)`,
-            type: 'audio/webm',
-            size: `${(blob.size / 1024).toFixed(0)} KB`,
-            url: urlData.publicUrl,
-            isImage: false,
-          }]);
-          
-          setInput((prev) => prev || '🎤 Voice message — please listen and respond');
-          URL.revokeObjectURL(audioUrl);
-        } else {
-          toast({ title: 'Voice recorded and attached' });
-        }
-      } catch {
-        toast({ title: 'Voice recording failed', variant: 'destructive' });
-      }
+        const storagePath = `chat/voice-${Date.now()}.webm`;
+        await supabase.storage.from('videos').upload(storagePath, blob);
+        const { data: urlData } = supabase.storage.from('videos').getPublicUrl(storagePath);
+        setPendingFiles((prev) => [...prev, {
+          id: storagePath, name: `Voice message (${voice.duration}s)`, type: 'audio/webm',
+          size: `${(blob.size / 1024).toFixed(0)} KB`, url: urlData.publicUrl, isImage: false,
+        }]);
+        setInput((prev) => prev || '🎤 Voice message — please listen and respond');
+      } catch { toast({ title: 'Voice recording failed', variant: 'destructive' }); }
     } else {
-      try {
-        await voice.start();
-      } catch {
-        toast({ title: 'Microphone access denied', description: 'Please allow microphone access in your browser settings.', variant: 'destructive' });
-      }
+      try { await voice.start(); }
+      catch { toast({ title: 'Microphone access denied', description: 'Please allow microphone access.', variant: 'destructive' }); }
     }
   };
 
@@ -332,10 +307,7 @@ export default function AIChat() {
     const otherFiles = pendingFiles.filter((f) => !f.isImage);
 
     const userMsg: Msg = {
-      role: 'user',
-      content: text,
-      source: 'app',
-      timestamp: new Date().toISOString(),
+      role: 'user', content: text, source: 'app', timestamp: new Date().toISOString(),
       files: pendingFiles.length > 0 ? [...pendingFiles] : undefined,
       images: imageFiles.length > 0 ? imageFiles.map((f) => ({ url: f.url })) : undefined,
     };
@@ -344,6 +316,11 @@ export default function AIChat() {
     setInput('');
     setPendingFiles([]);
     setIsLoading(true);
+
+    // Mirror user message to Telegram
+    if (telegramEnabled && resolvedChatId && text) {
+      void mirrorToTelegram(`💬 ${text}`);
+    }
 
     let assistantSoFar = '';
     const upsert = (chunk: string) => {
@@ -357,25 +334,18 @@ export default function AIChat() {
       });
     };
 
-    // Build context
     const contextMsgs = messages.slice(-20).map((m) => {
       const base: any = { role: m.role, content: m.content };
       if (m.images) base.images = m.images;
       if (m.files?.some((f) => !f.isImage)) {
-        base.files = m.files.filter((f) => !f.isImage).map((f) => ({
-          name: f.name, type: f.type, size: f.size, textContent: f.textContent,
-        }));
+        base.files = m.files.filter((f) => !f.isImage).map((f) => ({ name: f.name, type: f.type, size: f.size, textContent: f.textContent }));
       }
       return base;
     });
 
     const newMsg: any = { role: 'user', content: text || 'Please analyze the attached file(s).' };
     if (imageFiles.length > 0) newMsg.images = imageFiles.map((f) => ({ url: f.url }));
-    if (otherFiles.length > 0) {
-      newMsg.files = otherFiles.map((f) => ({
-        name: f.name, type: f.type, size: f.size, textContent: f.textContent,
-      }));
-    }
+    if (otherFiles.length > 0) newMsg.files = otherFiles.map((f) => ({ name: f.name, type: f.type, size: f.size, textContent: f.textContent }));
     contextMsgs.push(newMsg);
 
     try {
@@ -387,10 +357,13 @@ export default function AIChat() {
           setAppMessages((prev) =>
             prev.map((m, i) =>
               i === prev.length - 1 && m.role === 'assistant' && !m.timestamp
-                ? { ...m, timestamp: new Date().toISOString() }
-                : m
+                ? { ...m, timestamp: new Date().toISOString() } : m
             )
           );
+          // Mirror AI response to Telegram
+          if (telegramEnabled && resolvedChatId && assistantSoFar.trim()) {
+            void mirrorToTelegram(`🤖 ${assistantSoFar.slice(0, 3900)}`);
+          }
         },
         onError: (err) => {
           toast({ title: 'AI Error', description: err, variant: 'destructive' });
@@ -423,20 +396,11 @@ export default function AIChat() {
             Chat here or via Telegram — synced in real-time
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <TelegramIndicator connected={telegramConnected} />
-          {telegramMessages && telegramMessages.length > 0 && (
-            <Badge variant="secondary" className="text-xs gap-1 h-7">
-              <MessageCircle className="w-3 h-3" />
-              {telegramMessages.length}
-            </Badge>
-          )}
-        </div>
+        <TelegramIndicator connected={telegramSynced} count={telegramMessages?.length ?? 0} />
       </div>
 
       {/* Chat area */}
       <Card className="flex-1 flex flex-col overflow-hidden border shadow-sm">
-        {/* Messages */}
         <div className="flex-1 overflow-y-auto p-5" ref={scrollRef}>
           <div className="space-y-5 max-w-3xl mx-auto">
             {messages.length === 0 && (
@@ -446,17 +410,14 @@ export default function AIChat() {
                 </div>
                 <p className="font-medium text-foreground">How can I help you today?</p>
                 <p className="text-sm text-muted-foreground mt-2 max-w-md">
-                  I can help with video titles, descriptions, tags, scheduling, content strategy,
-                  and analyze images or documents you share.
-                  {telegramConnected && ' Your Telegram messages also appear here.'}
+                  I can check your upload queue, scheduled jobs, help with titles/tags,
+                  and analyze images or documents.
+                  {telegramSynced && ' Your Telegram messages also appear here.'}
                 </p>
                 <div className="flex flex-wrap gap-2 mt-6 justify-center">
-                  {['Write a YouTube title', 'Suggest hashtags', 'Scheduling strategy', 'Analyze my thumbnail'].map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => setInput(q)}
-                      className="px-3 py-1.5 rounded-full border text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
-                    >
+                  {['Check queued jobs', 'Show scheduled uploads', 'Write a YouTube title', 'Suggest hashtags'].map((q) => (
+                    <button key={q} onClick={() => setInput(q)}
+                      className="px-3 py-1.5 rounded-full border text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
                       {q}
                     </button>
                   ))}
@@ -474,9 +435,9 @@ export default function AIChat() {
                 <div className={`flex flex-col max-w-[78%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                   {/* Source label */}
                   {msg.source === 'telegram' && (
-                    <div className="flex items-center gap-1 mb-1 px-1">
+                    <div className="flex items-center gap-1 mb-1">
                       <MessageCircle className="w-3 h-3 text-sky-500" />
-                      <span className="text-[10px] text-sky-500 font-medium">Telegram</span>
+                      <span className="text-[10px] font-medium text-sky-500">Telegram</span>
                     </div>
                   )}
 
@@ -522,7 +483,6 @@ export default function AIChat() {
                     </div>
                   )}
 
-                  {/* Timestamp */}
                   {msg.timestamp && (
                     <span className={`text-[10px] text-muted-foreground/50 mt-1 px-1 ${msg.role === 'user' ? 'text-right' : ''}`}>
                       {formatTime(msg.timestamp)}
@@ -561,7 +521,7 @@ export default function AIChat() {
           </div>
         </div>
 
-        {/* Pending files preview */}
+        {/* Pending files */}
         {pendingFiles.length > 0 && (
           <div className="border-t px-4 py-2 flex gap-2 flex-wrap bg-secondary/30">
             {pendingFiles.map((f) => (
@@ -576,10 +536,8 @@ export default function AIChat() {
                     <span className="text-xs truncate max-w-[120px]">{f.name}</span>
                   </div>
                 )}
-                <button
-                  onClick={() => removePendingFile(f.id)}
-                  className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
-                >
+                <button onClick={() => removePendingFile(f.id)}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm">
                   <X className="w-3 h-3" />
                 </button>
               </div>
@@ -589,43 +547,18 @@ export default function AIChat() {
 
         {/* Input area */}
         <div className="border-t p-3 flex items-end gap-2">
-          {/* File upload */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*,.txt,.md,.csv,.json,.pdf,.doc,.docx"
-            multiple
-            className="hidden"
-            onChange={handleFileSelect}
-          />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="shrink-0 h-10 w-10 text-muted-foreground hover:text-foreground"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isLoading}
-          >
+          <input ref={fileInputRef} type="file" accept="image/*,.txt,.md,.csv,.json,.pdf,.doc,.docx" multiple className="hidden" onChange={handleFileSelect} />
+          <Button variant="ghost" size="icon" className="shrink-0 h-10 w-10 text-muted-foreground hover:text-foreground"
+            onClick={() => fileInputRef.current?.click()} disabled={isLoading}>
             <Paperclip className="w-5 h-5" />
           </Button>
 
-          {/* Voice */}
-          <Button
-            variant={voice.recording ? 'destructive' : 'ghost'}
-            size="icon"
+          <Button variant={voice.recording ? 'destructive' : 'ghost'} size="icon"
             className={`shrink-0 h-10 w-10 ${!voice.recording ? 'text-muted-foreground hover:text-foreground' : ''}`}
-            onClick={handleVoiceToggle}
-            disabled={isLoading}
-          >
-            {voice.recording ? (
-              <div className="flex items-center gap-1">
-                <MicOff className="w-5 h-5" />
-              </div>
-            ) : (
-              <Mic className="w-5 h-5" />
-            )}
+            onClick={handleVoiceToggle} disabled={isLoading}>
+            {voice.recording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
           </Button>
 
-          {/* Recording indicator */}
           {voice.recording && (
             <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-destructive/10 border border-destructive/20">
               <span className="w-2 h-2 rounded-full bg-destructive animate-pulse" />
@@ -633,24 +566,13 @@ export default function AIChat() {
             </div>
           )}
 
-          {/* Text input */}
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
+          <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
             placeholder={voice.recording ? 'Recording… click mic to stop' : 'Type a message…'}
             className="flex-1 min-h-[42px] max-h-32 resize-none rounded-xl border bg-background px-4 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
-            rows={1}
-            disabled={voice.recording}
-          />
+            rows={1} disabled={voice.recording} />
 
-          {/* Send */}
-          <Button
-            onClick={send}
-            disabled={(!input.trim() && pendingFiles.length === 0) || isLoading || voice.recording}
-            size="icon"
-            className="shrink-0 h-10 w-10 rounded-xl"
-          >
+          <Button onClick={send} disabled={(!input.trim() && pendingFiles.length === 0) || isLoading || voice.recording}
+            size="icon" className="shrink-0 h-10 w-10 rounded-xl">
             <Send className="w-4 h-4" />
           </Button>
         </div>
