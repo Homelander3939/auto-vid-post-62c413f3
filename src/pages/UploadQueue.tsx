@@ -3,18 +3,18 @@ import { getQueue, retryJob, deleteJob, clearQueue, type UploadJob, type Platfor
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Cloud, Monitor } from 'lucide-react';
+import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 const statusColors: Record<string, string> = {
-  pending: 'bg-blue-100 text-blue-700',
-  uploading: 'bg-amber-100 text-amber-700',
+  pending: 'bg-amber-100 text-amber-700',
+  uploading: 'bg-blue-100 text-blue-700',
   success: 'bg-emerald-100 text-emerald-700',
   error: 'bg-destructive/10 text-destructive',
 };
 
 const statusLabels: Record<string, string> = {
-  pending: 'queued',
+  pending: 'waiting for server',
   uploading: 'uploading…',
   success: 'uploaded',
   error: 'failed',
@@ -66,18 +66,14 @@ export default function UploadQueue() {
       </div>
 
       {hasPending && (
-        <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm">
-          <Cloud className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+        <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">
+          <Monitor className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
           <div>
-            <p className="font-medium text-blue-800">Processing uploads</p>
-            <p className="text-blue-700 mt-0.5">
-              Queued jobs are automatically processed via cloud APIs (YouTube Data API, TikTok Content API, Instagram Graph API).
-              Make sure your API credentials are configured in Settings. You'll receive Telegram notifications when uploads complete.
+            <p className="font-medium text-amber-800">Waiting for local server</p>
+            <p className="text-amber-700 mt-0.5">
+              Pending jobs will be processed when your local server is running. It checks for new jobs every minute 
+              and uploads via real browser automation (Playwright). See the Setup Guide to get started.
             </p>
-            <div className="flex items-center gap-4 mt-2 text-xs text-blue-600">
-              <span className="flex items-center gap-1"><Cloud className="w-3 h-3" /> Cloud: Official APIs</span>
-              <span className="flex items-center gap-1"><Monitor className="w-3 h-3" /> Local: Browser automation</span>
-            </div>
           </div>
         </div>
       )}

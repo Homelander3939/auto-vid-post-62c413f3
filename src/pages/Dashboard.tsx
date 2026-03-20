@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   createUploadJob,
   parseTextContent,
@@ -7,7 +7,6 @@ import {
   getSettings,
   type VideoMetadata,
 } from '@/lib/storage';
-import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -55,28 +54,15 @@ export default function Dashboard() {
     setUploading(true);
 
     try {
-      const settings = await getSettings();
       const platforms =
         selectedPlatforms.length > 0 ? selectedPlatforms : metadata.platforms;
 
-      const missingCreds: string[] = [];
-      for (const p of platforms) {
-        if (p === 'youtube' && (!settings.youtube.email || !settings.youtube.enabled)) missingCreds.push('YouTube');
-        if (p === 'tiktok' && (!settings.tiktok.email || !settings.tiktok.enabled)) missingCreds.push('TikTok');
-        if (p === 'instagram' && (!settings.instagram.email || !settings.instagram.enabled)) missingCreds.push('Instagram');
-      }
-
       const storagePath = await uploadVideoFile(videoFile);
-
       await createUploadJob(videoFile.name, storagePath, metadata, platforms);
-
-      const warningMsg = missingCreds.length > 0
-        ? `⚠️ Missing credentials for: ${missingCreds.join(', ')}. Configure them in Settings. `
-        : '';
 
       toast({
         title: 'Job queued!',
-        description: `${warningMsg}Video stored. The local server will pick it up and upload to platforms via browser automation.`,
+        description: 'Video stored in cloud. Your local server will pick it up and upload via browser automation.',
       });
 
       queryClient.invalidateQueries({ queryKey: ['queue'] });
@@ -85,6 +71,7 @@ export default function Dashboard() {
       setTextContent(null);
       setTextFileName(null);
       setMetadata(null);
+      setSelectedPlatforms([]);
       if (videoInputRef.current) videoInputRef.current.value = '';
       if (textInputRef.current) textInputRef.current.value = '';
     } catch (err: any) {
@@ -124,9 +111,7 @@ export default function Dashboard() {
           </TabsTrigger>
         </TabsList>
 
-        {/* --- Single Upload Tab --- */}
         <TabsContent value="single" className="space-y-6 mt-6">
-          {/* File Selection */}
           <div className="grid gap-4 sm:grid-cols-2">
             <input
               ref={videoInputRef}
@@ -189,7 +174,6 @@ export default function Dashboard() {
             </button>
           </div>
 
-          {/* Metadata Preview */}
           {metadata && (
             <Card>
               <CardHeader>
@@ -221,7 +205,6 @@ export default function Dashboard() {
             </Card>
           )}
 
-          {/* Upload Action */}
           {videoFile && metadata && (
             <Card>
               <CardHeader>
@@ -254,18 +237,18 @@ export default function Dashboard() {
             </Card>
           )}
 
-          {/* Empty state */}
           {!videoFile && !textContent && (
             <Card className="border-muted">
               <CardContent className="flex items-start gap-3 pt-5">
                 <Info className="w-5 h-5 text-muted-foreground shrink-0 mt-0.5" />
                 <div className="text-sm">
-                  <p className="font-medium text-foreground mb-1">How single upload works</p>
+                  <p className="font-medium text-foreground mb-1">How it works</p>
                   <ol className="text-muted-foreground list-decimal list-inside space-y-1">
                     <li>Select a video file (.mp4, .mov, etc.)</li>
                     <li>Select a text file with metadata (title, description, tags)</li>
                     <li>Review parsed metadata and pick target platforms</li>
-                    <li>Click "Queue Upload Now" — job is created immediately</li>
+                    <li>Click "Queue Upload Now" — video is stored in cloud</li>
+                    <li>Your local server picks it up and uploads via real browser</li>
                   </ol>
                 </div>
               </CardContent>
@@ -273,7 +256,6 @@ export default function Dashboard() {
           )}
         </TabsContent>
 
-        {/* --- Campaign Tab --- */}
         <TabsContent value="campaign" className="mt-6">
           <CampaignScheduler />
         </TabsContent>
