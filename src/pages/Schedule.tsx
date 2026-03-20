@@ -16,8 +16,12 @@ type FrequencyMode = 'hourly' | 'daily' | 'weekly' | 'custom';
 type DurationUnit = 'hours' | 'days' | 'weeks';
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
-const MINUTES = [0, 15, 30, 45];
 const DAYS_OF_WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function clampMinute(value: number) {
+  if (Number.isNaN(value)) return 0;
+  return Math.max(0, Math.min(59, value));
+}
 
 function cronToState(cron: string) {
   const parts = cron.split(' ');
@@ -82,6 +86,11 @@ export default function Schedule() {
   const [durationAmount, setDurationAmount] = useState(7);
   const [durationUnit, setDurationUnit] = useState<DurationUnit>('days');
 
+  const localTimeZone = useMemo(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local time',
+    []
+  );
+
   useEffect(() => {
     if (data) {
       setConfig(data);
@@ -127,6 +136,10 @@ export default function Schedule() {
         ? prev.platforms.filter((x) => x !== p)
         : [...prev.platforms, p],
     }));
+  };
+
+  const handleMinuteInput = (value: string) => {
+    setMinute(clampMinute(parseInt(value, 10)));
   };
 
   const handleSave = async () => {
@@ -221,15 +234,14 @@ export default function Schedule() {
                   </Select>
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">At minute</Label>
-                  <Select value={String(minute)} onValueChange={(v) => setMinute(Number(v))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {MINUTES.map((m) => (
-                        <SelectItem key={m} value={String(m)}>:{m.toString().padStart(2, '0')}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label className="text-xs">At minute (0-59)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={59}
+                    value={minute}
+                    onChange={(e) => handleMinuteInput(e.target.value)}
+                  />
                 </div>
               </div>
             )}
@@ -248,15 +260,14 @@ export default function Schedule() {
                   </Select>
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">Minute</Label>
-                  <Select value={String(minute)} onValueChange={(v) => setMinute(Number(v))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {MINUTES.map((m) => (
-                        <SelectItem key={m} value={String(m)}>:{m.toString().padStart(2, '0')}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label className="text-xs">Minute (0-59)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={59}
+                    value={minute}
+                    onChange={(e) => handleMinuteInput(e.target.value)}
+                  />
                 </div>
               </div>
             )}
@@ -292,19 +303,22 @@ export default function Schedule() {
                     </Select>
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Minute</Label>
-                    <Select value={String(minute)} onValueChange={(v) => setMinute(Number(v))}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {MINUTES.map((m) => (
-                          <SelectItem key={m} value={String(m)}>:{m.toString().padStart(2, '0')}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <Label className="text-xs">Minute (0-59)</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={59}
+                      value={minute}
+                      onChange={(e) => handleMinuteInput(e.target.value)}
+                    />
                   </div>
                 </div>
               </div>
             )}
+
+            <p className="text-xs text-muted-foreground">
+              Scheduler uses your local machine time zone: <span className="font-medium">{localTimeZone}</span>
+            </p>
           </CardContent>
         </Card>
 
@@ -431,6 +445,7 @@ export default function Schedule() {
               Platforms: {config.platforms.join(', ')} · Cron: <code className="font-mono bg-muted px-1 rounded">{config.cronExpression}</code>
               {config.folderPath && <> · Folder: <code className="font-mono bg-muted px-1 rounded">{config.folderPath}</code></>}
               {config.endAt && <> · Ends: {new Date(config.endAt).toLocaleDateString()}</>}
+              {` · Time zone: ${localTimeZone}`}
             </p>
             <Button onClick={handleSave} className="w-full gap-2" size="lg">
               <Save className="w-4 h-4" />

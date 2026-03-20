@@ -68,7 +68,22 @@ async function notifyTelegram(settings, message) {
 
 const uploaders = { youtube: uploadToYouTube, tiktok: uploadToTikTok, instagram: uploadToInstagram };
 
-async function processJob(jobId) {
+function normalizeFolderPath(folderPath) {
+  return String(folderPath || '')
+    .replace(/^\[folder\]\s*/i, '')
+    .replace(/^"(.+)"$/, '$1')
+    .replace(/^'(.+)'$/, '$1')
+    .trim();
+}
+
+function getReadyPlatforms(settings, requestedPlatforms = []) {
+  return (Array.isArray(requestedPlatforms) ? requestedPlatforms : []).filter((platform) => {
+    const config = settings?.[platform];
+    return Boolean(config?.enabled && config?.email && config?.password);
+  });
+}
+
+async function processJob(jobId, options = {}) {
   // Prevent duplicate processing
   if (processingJobs.has(jobId)) {
     console.log(`[Worker] Job ${jobId} already being processed, skipping`);
@@ -84,6 +99,7 @@ async function processJob(jobId) {
     }
 
     const settings = await getSettings();
+    const folderPathOverride = normalizeFolderPath(options.folderPath);
     const results = job.platform_results || [];
 
     // === CREDENTIAL VALIDATION: Skip platforms without credentials ===
@@ -114,6 +130,10 @@ async function processJob(jobId) {
 
     // Determine video path
     let videoPath;
+    let resolvedTitle = job.title;
+    let resolvedDescription = job.description;
+    let resolvedTags = job.tags;
+
     if (job.video_storage_path) {
       const { data: fileData, error } = await supabase.storage.from('videos').download(job.video_storage_path);
       if (error || !fileData) {
@@ -127,8 +147,34 @@ async function processJob(jobId) {
       videoPath = path.join(tempDir, job.video_file_name);
       const buffer = Buffer.from(await fileData.arrayBuffer());
       fs.writeFileSync(videoPath, buffer);
-    } else if (settings.folderPath) {
-      videoPath = path.join(settings.folderPath, job.video_file_name);
+    } else if (typeof job.video_file_name === 'string' && job.video_file_name.startsWith('[folder] ')) {
+      const folderPath = normalizeFolderPath(job.video_file_name);
+      const { videoFile, textFile } = scanFolder(folderPath);
+
+      if (!videoFile) {
+        console.error(`Video file not found in folder: ${folderPath}`);
+        await supabase.from('upload_jobs').update({ status: 'failed', completed_at: new Date().toISOString() }).eq('id', jobId);
+        await notifyTelegram(settings, `❌ No video file found in folder: ${folderPath}`);
+        return;
+      }
+
+      videoPath = path.join(folderPath, videoFile);
+
+      if (textFile) {
+        const parsed = parseTextFile(path.join(folderPath, textFile));
+        if (!resolvedTitle || resolvedTitle === '(auto from folder)') resolvedTitle = parsed.title || videoFile;
+        if (!resolvedDescription) resolvedDescription = parsed.description || '';
+        if (!Array.isArray(resolvedTags) || resolvedTags.length === 0) resolvedTags = parsed.tags || [];
+      } else if (!resolvedTitle || resolvedTitle === '(auto from folder)') {
+        resolvedTitle = videoFile;
+      }
+    } else if (path.isAbsolute(job.video_file_name)) {
+      videoPath = job.video_file_name;
+    } else {
+      const baseFolder = folderPathOverride || normalizeFolderPath(settings.folderPath);
+      if (baseFolder) {
+        videoPath = path.join(baseFolder, job.video_file_name);
+      }
     }
 
     if (!videoPath || !fs.existsSync(videoPath)) {
@@ -138,7 +184,7 @@ async function processJob(jobId) {
       return;
     }
 
-    const metadata = { title: job.title, description: job.description, tags: job.tags };
+    const metadata = { title: resolvedTitle, description: resolvedDescription, tags: resolvedTags };
     await supabase.from('upload_jobs').update({ status: 'uploading', platform_results: results }).eq('id', jobId);
 
     for (const platform of results) {
@@ -241,6 +287,7 @@ app.post('/api/process-pending', async (req, res) => {
 // --- Scheduled uploads ---
 async function processScheduledUploads() {
   const now = new Date().toISOString();
+  const settings = await getSettings();
   const { data: dueUploads } = await supabase
     .from('scheduled_uploads')
     .select('*')
@@ -260,17 +307,20 @@ async function processScheduledUploads() {
       let itemTitle = item.title;
       let itemDescription = item.description;
       let itemTags = item.tags;
+      let folderPathForJob = null;
 
       // Handle folder-based entries
       if (videoFileName.startsWith('[folder] ')) {
-        const folderPath = videoFileName.replace('[folder] ', '');
+        const folderPath = normalizeFolderPath(videoFileName);
         const { videoFile, textFile } = scanFolder(folderPath);
         if (!videoFile) {
           console.error(`[Scheduler] No video found in folder: ${folderPath}`);
           await supabase.from('scheduled_uploads').update({ status: 'error' }).eq('id', item.id);
+          await notifyTelegram(settings, `❌ Scheduled upload failed: no video found in folder ${folderPath}`);
           continue;
         }
         videoFileName = videoFile;
+        folderPathForJob = folderPath;
         videoStoragePath = null; // Will be read from folder directly
 
         // Parse text file metadata if found
@@ -282,7 +332,17 @@ async function processScheduledUploads() {
         }
       }
 
-      const platformResults = item.target_platforms.map(name => ({ name, status: 'pending' }));
+      const requestedPlatforms = Array.isArray(item.target_platforms) ? item.target_platforms : [];
+      const readyPlatforms = getReadyPlatforms(settings, requestedPlatforms);
+
+      if (readyPlatforms.length === 0) {
+        console.log('[Scheduler] No enabled platforms with credentials for scheduled upload');
+        await supabase.from('scheduled_uploads').update({ status: 'error' }).eq('id', item.id);
+        await notifyTelegram(settings, `⚠️ Scheduled upload skipped: no enabled platforms with credentials for ${itemTitle || item.video_file_name}`);
+        continue;
+      }
+
+      const platformResults = readyPlatforms.map(name => ({ name, status: 'pending' }));
       const { data: job, error } = await supabase
         .from('upload_jobs')
         .insert({
@@ -291,7 +351,7 @@ async function processScheduledUploads() {
           title: itemTitle || videoFileName,
           description: itemDescription || '',
           tags: itemTags || [],
-          target_platforms: item.target_platforms,
+          target_platforms: readyPlatforms,
           status: 'pending',
           platform_results: platformResults,
         })
@@ -305,8 +365,16 @@ async function processScheduledUploads() {
       }
 
       await supabase.from('scheduled_uploads').update({ upload_job_id: job.id }).eq('id', item.id);
-      await processJob(job.id);
-      await supabase.from('scheduled_uploads').update({ status: 'completed' }).eq('id', item.id);
+      await processJob(job.id, { folderPath: folderPathForJob });
+
+      const { data: processedJob } = await supabase
+        .from('upload_jobs')
+        .select('status')
+        .eq('id', job.id)
+        .single();
+
+      const scheduledStatus = processedJob?.status === 'completed' ? 'completed' : 'error';
+      await supabase.from('scheduled_uploads').update({ status: scheduledStatus }).eq('id', item.id);
     } catch (err) {
       console.error('[Scheduler] Error:', err.message);
       await supabase.from('scheduled_uploads').update({ status: 'error' }).eq('id', item.id);
@@ -315,12 +383,13 @@ async function processScheduledUploads() {
 }
 
 // --- Recurring schedule: auto-pick from folder ---
-let lastRecurringRunMinute = -1;
+let lastRecurringRunKey = '';
 
 async function processRecurringSchedule() {
   try {
     const { data: config } = await supabase.from('schedule_config').select('*').eq('id', 1).single();
     if (!config || !config.enabled) return;
+    const settings = await getSettings();
 
     // Check end_at expiry
     if (config.end_at && new Date(config.end_at) < new Date()) {
@@ -329,7 +398,8 @@ async function processRecurringSchedule() {
       return;
     }
 
-    if (!config.folder_path) return;
+    const folderPath = normalizeFolderPath(config.folder_path);
+    if (!folderPath) return;
 
     // Parse cron to check if NOW matches
     const now = new Date();
@@ -346,15 +416,16 @@ async function processRecurringSchedule() {
     if (!minuteMatch || !hourMatch || !dowMatch) return;
 
     // Prevent running multiple times in the same minute
-    const minuteKey = currentHour * 60 + currentMinute;
-    if (lastRecurringRunMinute === minuteKey) return;
-    lastRecurringRunMinute = minuteKey;
+    const runKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()} ${currentHour}:${currentMinute}`;
+    if (lastRecurringRunKey === runKey) return;
+    lastRecurringRunKey = runKey;
 
-    console.log(`[Recurring] Cron matched at ${now.toISOString()}, scanning folder: ${config.folder_path}`);
+    console.log(`[Recurring] Cron matched at ${now.toISOString()}, scanning folder: ${folderPath}`);
 
-    const { videoFile, textFile } = scanFolder(config.folder_path);
+    const { videoFile, textFile } = scanFolder(folderPath);
     if (!videoFile) {
       console.log('[Recurring] No video file found in folder');
+      await notifyTelegram(settings, `⚠️ Recurring schedule: no video found in folder ${folderPath}`);
       return;
     }
 
@@ -363,13 +434,23 @@ async function processRecurringSchedule() {
     let tags = [];
 
     if (textFile) {
-      const meta = parseTextFile(path.join(config.folder_path, textFile));
+      const meta = parseTextFile(path.join(folderPath, textFile));
       if (meta.title) title = meta.title;
       if (meta.description) description = meta.description;
       if (meta.tags?.length) tags = meta.tags;
     }
 
-    const platforms = config.platforms || ['youtube', 'tiktok', 'instagram'];
+    const requestedPlatforms = Array.isArray(config.platforms) && config.platforms.length
+      ? config.platforms
+      : ['youtube', 'tiktok', 'instagram'];
+    const platforms = getReadyPlatforms(settings, requestedPlatforms);
+
+    if (platforms.length === 0) {
+      console.log('[Recurring] No enabled platforms with credentials');
+      await notifyTelegram(settings, `⚠️ Recurring schedule skipped: no enabled platforms with credentials`);
+      return;
+    }
+
     const platformResults = platforms.map(name => ({ name, status: 'pending' }));
 
     const { data: job, error } = await supabase
@@ -393,7 +474,7 @@ async function processRecurringSchedule() {
     }
 
     console.log(`[Recurring] Created job ${job.id} for ${videoFile}`);
-    await processJob(job.id);
+    await processJob(job.id, { folderPath });
   } catch (e) {
     console.error('[Recurring] Error:', e.message);
   }

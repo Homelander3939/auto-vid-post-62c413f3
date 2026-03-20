@@ -46,6 +46,11 @@ interface ScheduleEntry {
   platforms: string[];
 }
 
+function toLocalDateTimeInputValue(date: Date) {
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
 export default function CampaignScheduler() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -189,8 +194,9 @@ export default function CampaignScheduler() {
           platforms: entry.platforms,
         };
 
+        const scheduledAtIso = new Date(entry.scheduledAt).toISOString();
+        const scheduledTime = new Date(scheduledAtIso).getTime();
         // If scheduled time is in the past or within 1 minute, create an upload_job immediately
-        const scheduledTime = new Date(entry.scheduledAt).getTime();
         const isImmediate = scheduledTime <= Date.now() + 60_000;
 
         if (isImmediate) {
@@ -199,7 +205,7 @@ export default function CampaignScheduler() {
           immediateJobIds.push(job.id);
         } else {
           setSaveProgress(`Scheduling ${i + 1}/${entries.length}...`);
-          await createScheduledUpload(fileName, storagePath, metadata, entry.platforms, entry.scheduledAt);
+          await createScheduledUpload(fileName, storagePath, metadata, entry.platforms, scheduledAtIso);
         }
       }
 
@@ -237,7 +243,7 @@ export default function CampaignScheduler() {
     toast({ title: 'Removed' });
   };
 
-  const minDateTime = new Date(Date.now() + 5 * 60000).toISOString().slice(0, 16);
+  const minDateTime = toLocalDateTimeInputValue(new Date(Date.now() + 5 * 60000));
 
   return (
     <div className="space-y-6">
