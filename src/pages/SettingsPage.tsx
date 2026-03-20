@@ -72,6 +72,9 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [demoVideoName, setDemoVideoName] = useState('');
   const [demoTextContent, setDemoTextContent] = useState('');
+  const [demoVideoFile, setDemoVideoFile] = useState<File | null>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const textInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (savedSettings) setSettings(savedSettings);
