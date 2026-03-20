@@ -33,6 +33,8 @@ serve(async (req) => {
     });
   }
 
+  const uploadMode = (settings as any).upload_mode || 'local';
+
   // In cloud mode, platform credentials are stored in app_settings:
   // YouTube: email = client_id, password = client_secret
   // TikTok: email = access_token
