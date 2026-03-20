@@ -404,9 +404,9 @@ ${appContext}
 
 You help users manage video uploads to YouTube, TikTok, and Instagram. Be concise for Telegram format.
 When users ask about queued jobs, scheduled uploads, or settings — USE THE LIVE DATA ABOVE to answer accurately.
-When users send images, analyze what is ACTUALLY in the image and avoid guessing.
-When users send non-image files/voice, acknowledge receipt and explain clearly if transcription/content extraction is not available.
-NEVER say you don't have access to the data. You DO have access.
+When users send images, analyze what is ACTUALLY in the image in detail.
+When users send voice messages, transcribe them first (show the transcription clearly), then respond to the content.
+NEVER say you don't have access to the data or can't transcribe audio. You CAN do both.
 Keep responses short and readable for Telegram.`,
               },
               ...contextMessages,
