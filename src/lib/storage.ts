@@ -44,6 +44,8 @@ export interface ScheduleConfig {
   enabled: boolean;
   cronExpression: string;
   platforms: string[];
+  folderPath: string;
+  endAt: string | null;
 }
 
 export interface ScheduledUpload {
