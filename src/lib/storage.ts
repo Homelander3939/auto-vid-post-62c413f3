@@ -206,59 +206,8 @@ export async function updateJobPlatformResults(
   await supabase.from('upload_jobs').update(updates).eq('id', jobId);
 }
 
-export async function simulateUpload(jobId: string): Promise<void> {
-  // Get the job
-  const { data: job } = await supabase
-    .from('upload_jobs')
-    .select('*')
-    .eq('id', jobId)
-    .single();
-
-  if (!job) return;
-
-  const results = (job.platform_results as any as PlatformResult[]) || [];
-
-  // Update to processing
-  await updateJobPlatformResults(jobId, results, 'processing');
-
-  // Simulate each platform upload with delays
-  for (let i = 0; i < results.length; i++) {
-    if (results[i].status !== 'pending') continue;
-
-    // Set uploading
-    results[i].status = 'uploading';
-    await updateJobPlatformResults(jobId, [...results], 'processing');
-
-    // Wait a bit
-    await new Promise((r) => setTimeout(r, 1500 + Math.random() * 2000));
-
-    // Simulate result (90% success in simulation)
-    const success = Math.random() > 0.1;
-    if (success) {
-      const urls: Record<string, string> = {
-        youtube: 'https://youtube.com/watch?v=demo_' + jobId.slice(0, 6),
-        tiktok: 'https://tiktok.com/@user/video/demo_' + jobId.slice(0, 6),
-        instagram: 'https://instagram.com/reel/demo_' + jobId.slice(0, 6),
-      };
-      results[i] = { ...results[i], status: 'success', url: urls[results[i].name] || '#' };
-    } else {
-      results[i] = { ...results[i], status: 'error', error: 'Simulated error — works with local server' };
-    }
-    await updateJobPlatformResults(jobId, [...results], 'processing');
-  }
-
-  // Mark complete
-  const allSuccess = results.every((r) => r.status === 'success');
-  const anyError = results.some((r) => r.status === 'error');
-  const finalStatus = anyError ? 'failed' : 'completed';
-
-  await updateJobPlatformResults(
-    jobId,
-    results,
-    finalStatus,
-    new Date().toISOString()
-  );
-}
+// No fake simulation. Jobs stay "pending" until the local Node.js server
+// picks them up and performs real Playwright browser uploads.
 
 export async function retryJob(jobId: string): Promise<void> {
   const { data: job } = await supabase
@@ -276,7 +225,6 @@ export async function retryJob(jobId: string): Promise<void> {
   });
 
   await updateJobPlatformResults(jobId, results, 'pending');
-  simulateUpload(jobId); // fire and forget
 }
 
 export async function deleteJob(jobId: string): Promise<void> {

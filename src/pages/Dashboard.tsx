@@ -2,10 +2,10 @@ import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   createUploadJob,
-  simulateUpload,
   parseTextContent,
   uploadVideoFile,
   getVideoUrl,
+  getSettings,
   type VideoMetadata,
 } from '@/lib/storage';
 import { supabase } from '@/integrations/supabase/client';
@@ -68,11 +68,20 @@ export default function Dashboard() {
     setUploading(true);
 
     try {
-      // Upload video to storage
-      const storagePath = await uploadVideoFile(videoFile);
-
+      // Check if any platform credentials are configured
+      const settings = await getSettings();
       const platforms =
         selectedPlatforms.length > 0 ? selectedPlatforms : metadata.platforms;
+
+      const missingCreds: string[] = [];
+      for (const p of platforms) {
+        if (p === 'youtube' && (!settings.youtube.email || !settings.youtube.enabled)) missingCreds.push('YouTube');
+        if (p === 'tiktok' && (!settings.tiktok.email || !settings.tiktok.enabled)) missingCreds.push('TikTok');
+        if (p === 'instagram' && (!settings.instagram.email || !settings.instagram.enabled)) missingCreds.push('Instagram');
+      }
+
+      // Upload video to storage
+      const storagePath = await uploadVideoFile(videoFile);
 
       // Create job in database
       const job = await createUploadJob(
@@ -82,13 +91,14 @@ export default function Dashboard() {
         platforms
       );
 
-      toast({
-        title: 'Upload job created!',
-        description: 'Video stored. Check Upload Queue for progress.',
-      });
+      const warningMsg = missingCreds.length > 0
+        ? `⚠️ Missing credentials for: ${missingCreds.join(', ')}. Configure them in Settings. `
+        : '';
 
-      // Simulate the platform uploads (in real local mode, the server handles this)
-      simulateUpload(job.id);
+      toast({
+        title: 'Job queued!',
+        description: `${warningMsg}Video stored. The local server will pick it up and upload to platforms via browser automation.`,
+      });
 
       queryClient.invalidateQueries({ queryKey: ['queue'] });
 
