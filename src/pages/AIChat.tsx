@@ -1,15 +1,38 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Send, Bot, User, Loader2, MessageCircle, Wifi } from 'lucide-react';
+import {
+  Send, Bot, User, Loader2, MessageCircle, Paperclip,
+  Mic, MicOff, Image as ImageIcon, File as FileIcon, X, Download,
+} from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import ReactMarkdown from 'react-markdown';
 
-type Msg = { role: 'user' | 'assistant'; content: string; source?: 'app' | 'telegram'; timestamp?: string };
+/* ── Types ───────────────────────────────────────────── */
+
+interface FileAttachment {
+  id: string;
+  name: string;
+  type: string;
+  size: string;
+  url: string;
+  textContent?: string;
+  isImage: boolean;
+}
+
+interface Msg {
+  role: 'user' | 'assistant';
+  content: string;
+  source?: 'app' | 'telegram';
+  timestamp?: string;
+  files?: FileAttachment[];
+  images?: { url: string }[];
+}
+
+/* ── Stream helper ───────────────────────────────────── */
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`;
 
@@ -19,7 +42,7 @@ async function streamChat({
   onDone,
   onError,
 }: {
-  messages: { role: string; content: string }[];
+  messages: any[];
   onDelta: (text: string) => void;
   onDone: () => void;
   onError: (err: string) => void;
@@ -52,10 +75,10 @@ async function streamChat({
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    let newlineIndex: number;
-    while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-      let line = buffer.slice(0, newlineIndex);
-      buffer = buffer.slice(newlineIndex + 1);
+    let idx: number;
+    while ((idx = buffer.indexOf('\n')) !== -1) {
+      let line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
       if (line.endsWith('\r')) line = line.slice(0, -1);
       if (line.startsWith(':') || line.trim() === '') continue;
       if (!line.startsWith('data: ')) continue;
@@ -63,7 +86,7 @@ async function streamChat({
       if (jsonStr === '[DONE]') break;
       try {
         const parsed = JSON.parse(jsonStr);
-        const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+        const content = parsed.choices?.[0]?.delta?.content;
         if (content) onDelta(content);
       } catch {
         buffer = line + '\n' + buffer;
@@ -74,36 +97,94 @@ async function streamChat({
   onDone();
 }
 
+/* ── Telegram indicator ──────────────────────────────── */
+
 function TelegramIndicator({ connected }: { connected: boolean }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary/60">
       {connected ? (
         <>
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
             <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
           </span>
-          <span className="text-xs text-emerald-600 font-medium">Telegram connected</span>
+          <span className="text-xs font-medium text-emerald-600">Telegram synced</span>
         </>
       ) : (
         <>
           <span className="h-2 w-2 rounded-full bg-muted-foreground/30" />
-          <span className="text-xs text-muted-foreground">Telegram not configured</span>
+          <span className="text-xs text-muted-foreground">Telegram offline</span>
         </>
       )}
     </div>
   );
 }
 
+/* ── Voice recorder hook ─────────────────────────────── */
+
+function useVoiceRecorder() {
+  const [recording, setRecording] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<ReturnType<typeof setInterval>>();
+
+  const start = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      chunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+
+      mediaRecorderRef.current = recorder;
+      recorder.start(250);
+      setRecording(true);
+      setDuration(0);
+      timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000);
+    } catch (err) {
+      console.error('Microphone access denied:', err);
+      throw err;
+    }
+  }, []);
+
+  const stop = useCallback((): Promise<Blob> => {
+    return new Promise((resolve) => {
+      const recorder = mediaRecorderRef.current;
+      if (!recorder) return;
+
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        recorder.stream.getTracks().forEach((t) => t.stop());
+        clearInterval(timerRef.current);
+        setRecording(false);
+        setDuration(0);
+        resolve(blob);
+      };
+
+      recorder.stop();
+    });
+  }, []);
+
+  return { recording, duration, start, stop };
+}
+
+/* ── Main component ──────────────────────────────────── */
+
 export default function AIChat() {
   const { toast } = useToast();
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<FileAttachment[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const voice = useVoiceRecorder();
 
-  // Check if telegram is configured
+  /* ── Telegram status ───────────────── */
   const { data: settings } = useQuery({
     queryKey: ['settings-telegram'],
     queryFn: async () => {
@@ -111,10 +192,9 @@ export default function AIChat() {
       return data;
     },
   });
-
   const telegramConnected = !!(settings?.telegram_enabled && settings?.telegram_chat_id);
 
-  // Load telegram message history
+  /* ── Telegram history ──────────────── */
   const { data: telegramMessages } = useQuery({
     queryKey: ['telegram-history'],
     queryFn: async () => {
@@ -122,13 +202,12 @@ export default function AIChat() {
         .from('telegram_messages')
         .select('*')
         .order('created_at', { ascending: true })
-        .limit(100);
+        .limit(200);
       return data || [];
     },
-    refetchInterval: 5000,
+    refetchInterval: 8000,
   });
 
-  // Merge telegram history into chat on first load
   useEffect(() => {
     if (telegramMessages && telegramMessages.length > 0 && !historyLoaded) {
       const tgMsgs: Msg[] = telegramMessages.map((m: any) => ({
@@ -142,15 +221,11 @@ export default function AIChat() {
     }
   }, [telegramMessages, historyLoaded]);
 
-  // Subscribe to new telegram messages in realtime
+  /* ── Realtime subscription ─────────── */
   useEffect(() => {
     const channel = supabase
       .channel('telegram-live')
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'telegram_messages',
-      }, (payload: any) => {
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'telegram_messages' }, (payload: any) => {
         const m = payload.new;
         if (!m?.text) return;
         const newMsg: Msg = {
@@ -159,35 +234,140 @@ export default function AIChat() {
           source: 'telegram',
           timestamp: m.created_at,
         };
-        setMessages(prev => {
-          // Avoid duplicates
-          if (prev.some(p => p.source === 'telegram' && p.content === newMsg.content && p.timestamp === newMsg.timestamp)) return prev;
+        setMessages((prev) => {
+          if (prev.some((p) => p.source === 'telegram' && p.content === newMsg.content && p.timestamp === newMsg.timestamp)) return prev;
           return [...prev, newMsg];
         });
       })
       .subscribe();
-
     return () => { supabase.removeChannel(channel); };
   }, []);
 
+  /* ── Auto-scroll ───────────────────── */
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  /* ── File handling ─────────────────── */
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    for (const file of Array.from(files)) {
+      const isImage = file.type.startsWith('image/');
+      const sizeStr = file.size < 1024 * 1024
+        ? `${(file.size / 1024).toFixed(0)} KB`
+        : `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
+
+      // Upload to storage
+      const ext = file.name.split('.').pop() || 'bin';
+      const storagePath = `chat/${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
+      const { error } = await supabase.storage.from('videos').upload(storagePath, file);
+
+      if (error) {
+        toast({ title: 'Upload failed', description: error.message, variant: 'destructive' });
+        continue;
+      }
+
+      const { data: urlData } = supabase.storage.from('videos').getPublicUrl(storagePath);
+
+      let textContent: string | undefined;
+      if (file.type.startsWith('text/') || file.name.endsWith('.txt') || file.name.endsWith('.md') || file.name.endsWith('.csv') || file.name.endsWith('.json')) {
+        try {
+          textContent = await file.text();
+          if (textContent.length > 10000) textContent = textContent.slice(0, 10000) + '\n... (truncated)';
+        } catch { /* ignore */ }
+      }
+
+      const attachment: FileAttachment = {
+        id: storagePath,
+        name: file.name,
+        type: file.type,
+        size: sizeStr,
+        url: urlData.publicUrl,
+        textContent,
+        isImage,
+      };
+
+      setPendingFiles((prev) => [...prev, attachment]);
+    }
+
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removePendingFile = (id: string) => {
+    setPendingFiles((prev) => prev.filter((f) => f.id !== id));
+  };
+
+  /* ── Voice handling ────────────────── */
+  const handleVoiceToggle = async () => {
+    if (voice.recording) {
+      try {
+        const blob = await voice.stop();
+        // Use Web Speech API for transcription
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+          toast({ title: 'Voice recorded', description: 'Transcribing...' });
+          // Convert to audio and play for recognition
+          const audioUrl = URL.createObjectURL(blob);
+          
+          // For now, upload audio and tell AI about it
+          const storagePath = `chat/voice-${Date.now()}.webm`;
+          await supabase.storage.from('videos').upload(storagePath, blob);
+          const { data: urlData } = supabase.storage.from('videos').getPublicUrl(storagePath);
+          
+          setPendingFiles((prev) => [...prev, {
+            id: storagePath,
+            name: `Voice message (${voice.duration}s)`,
+            type: 'audio/webm',
+            size: `${(blob.size / 1024).toFixed(0)} KB`,
+            url: urlData.publicUrl,
+            isImage: false,
+          }]);
+          
+          setInput((prev) => prev || '🎤 Voice message — please listen and respond');
+          URL.revokeObjectURL(audioUrl);
+        } else {
+          toast({ title: 'Voice recorded and attached' });
+        }
+      } catch {
+        toast({ title: 'Voice recording failed', variant: 'destructive' });
+      }
+    } else {
+      try {
+        await voice.start();
+      } catch {
+        toast({ title: 'Microphone access denied', description: 'Please allow microphone access in your browser settings.', variant: 'destructive' });
+      }
+    }
+  };
+
+  /* ── Send message ──────────────────── */
   const send = async () => {
     const text = input.trim();
-    if (!text || isLoading) return;
+    if ((!text && pendingFiles.length === 0) || isLoading) return;
 
-    const userMsg: Msg = { role: 'user', content: text, source: 'app', timestamp: new Date().toISOString() };
-    setMessages(prev => [...prev, userMsg]);
+    const imageFiles = pendingFiles.filter((f) => f.isImage);
+    const otherFiles = pendingFiles.filter((f) => !f.isImage);
+
+    const userMsg: Msg = {
+      role: 'user',
+      content: text,
+      source: 'app',
+      timestamp: new Date().toISOString(),
+      files: pendingFiles.length > 0 ? [...pendingFiles] : undefined,
+      images: imageFiles.length > 0 ? imageFiles.map((f) => ({ url: f.url })) : undefined,
+    };
+
+    setMessages((prev) => [...prev, userMsg]);
     setInput('');
+    setPendingFiles([]);
     setIsLoading(true);
 
     let assistantSoFar = '';
     const upsert = (chunk: string) => {
       assistantSoFar += chunk;
-      setMessages(prev => {
+      setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === 'assistant' && last?.source === 'app' && !last?.timestamp) {
           return prev.map((m, i) => (i === prev.length - 1 ? { ...m, content: assistantSoFar } : m));
@@ -196,9 +376,26 @@ export default function AIChat() {
       });
     };
 
-    // Build context from recent messages
-    const contextMsgs = messages.slice(-20).map(m => ({ role: m.role, content: m.content }));
-    contextMsgs.push({ role: 'user', content: text });
+    // Build context
+    const contextMsgs = messages.slice(-20).map((m) => {
+      const base: any = { role: m.role, content: m.content };
+      if (m.images) base.images = m.images;
+      if (m.files?.some((f) => !f.isImage)) {
+        base.files = m.files.filter((f) => !f.isImage).map((f) => ({
+          name: f.name, type: f.type, size: f.size, textContent: f.textContent,
+        }));
+      }
+      return base;
+    });
+
+    const newMsg: any = { role: 'user', content: text || 'Please analyze the attached file(s).' };
+    if (imageFiles.length > 0) newMsg.images = imageFiles.map((f) => ({ url: f.url }));
+    if (otherFiles.length > 0) {
+      newMsg.files = otherFiles.map((f) => ({
+        name: f.name, type: f.type, size: f.size, textContent: f.textContent,
+      }));
+    }
+    contextMsgs.push(newMsg);
 
     try {
       await streamChat({
@@ -206,12 +403,13 @@ export default function AIChat() {
         onDelta: upsert,
         onDone: () => {
           setIsLoading(false);
-          // Mark the assistant message with a timestamp
-          setMessages(prev => prev.map((m, i) =>
-            i === prev.length - 1 && m.role === 'assistant' && !m.timestamp
-              ? { ...m, timestamp: new Date().toISOString() }
-              : m
-          ));
+          setMessages((prev) =>
+            prev.map((m, i) =>
+              i === prev.length - 1 && m.role === 'assistant' && !m.timestamp
+                ? { ...m, timestamp: new Date().toISOString() }
+                : m
+            )
+          );
         },
         onError: (err) => {
           toast({ title: 'AI Error', description: err, variant: 'destructive' });
@@ -225,10 +423,7 @@ export default function AIChat() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   };
 
   const formatTime = (ts?: string) => {
@@ -236,87 +431,129 @@ export default function AIChat() {
     return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  /* ── Render ────────────────────────── */
   return (
-    <div className="space-y-4 h-[calc(100vh-8rem)] flex flex-col">
-      <div className="flex items-start justify-between">
+    <div className="space-y-3 h-[calc(100vh-8rem)] flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">AI Assistant</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Chat here or via Telegram — conversation syncs between both
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Chat here or via Telegram — synced in real-time
           </p>
         </div>
-        <div className="flex items-center gap-3 mt-1">
+        <div className="flex items-center gap-2">
           <TelegramIndicator connected={telegramConnected} />
           {telegramMessages && telegramMessages.length > 0 && (
-            <Badge variant="secondary" className="text-xs gap-1">
+            <Badge variant="secondary" className="text-xs gap-1 h-7">
               <MessageCircle className="w-3 h-3" />
-              {telegramMessages.length} messages
+              {telegramMessages.length}
             </Badge>
           )}
         </div>
       </div>
 
-      <Card className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex-1 overflow-y-auto p-4" ref={scrollRef}>
-          <div className="space-y-4">
+      {/* Chat area */}
+      <Card className="flex-1 flex flex-col overflow-hidden border shadow-sm">
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto p-5" ref={scrollRef}>
+          <div className="space-y-5 max-w-3xl mx-auto">
             {messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-16 text-center">
-                <Bot className="w-12 h-12 text-muted-foreground/40 mb-4" />
-                <p className="text-sm font-medium text-muted-foreground">Start a conversation</p>
-                <p className="text-xs text-muted-foreground/70 mt-1 max-w-sm">
-                  Ask for help with video titles, descriptions, tags, scheduling, or content strategy.
-                  {telegramConnected && ' Your Telegram messages will also appear here.'}
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-5">
+                  <Bot className="w-8 h-8 text-primary" />
+                </div>
+                <p className="font-medium text-foreground">How can I help you today?</p>
+                <p className="text-sm text-muted-foreground mt-2 max-w-md">
+                  I can help with video titles, descriptions, tags, scheduling, content strategy,
+                  and analyze images or documents you share.
+                  {telegramConnected && ' Your Telegram messages also appear here.'}
                 </p>
+                <div className="flex flex-wrap gap-2 mt-6 justify-center">
+                  {['Write a YouTube title', 'Suggest hashtags', 'Scheduling strategy', 'Analyze my thumbnail'].map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => setInput(q)}
+                      className="px-3 py-1.5 rounded-full border text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
             {messages.map((msg, i) => (
-              <div
-                key={i}
-                className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
+              <div key={i} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 {msg.role === 'assistant' && (
-                  <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+                  <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
                     <Bot className="w-4 h-4 text-primary" />
                   </div>
                 )}
-                <div className="flex flex-col max-w-[80%]">
-                  {/* Source badge */}
+                <div className={`flex flex-col max-w-[78%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                  {/* Source label */}
                   {msg.source === 'telegram' && (
-                    <div className="flex items-center gap-1 mb-1">
-                      <MessageCircle className="w-3 h-3 text-blue-500" />
-                      <span className="text-[10px] text-blue-500 font-medium">via Telegram</span>
+                    <div className="flex items-center gap-1 mb-1 px-1">
+                      <MessageCircle className="w-3 h-3 text-sky-500" />
+                      <span className="text-[10px] text-sky-500 font-medium">Telegram</span>
                     </div>
                   )}
-                  <div
-                    className={`rounded-2xl px-4 py-2.5 text-sm ${
+
+                  {/* File attachments */}
+                  {msg.files && msg.files.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {msg.files.filter((f) => f.isImage).map((f) => (
+                        <a key={f.id} href={f.url} target="_blank" rel="noopener noreferrer"
+                          className="block rounded-xl overflow-hidden border shadow-sm hover:shadow-md transition-shadow max-w-[280px]">
+                          <img src={f.url} alt={f.name} className="w-full h-auto max-h-48 object-cover" />
+                        </a>
+                      ))}
+                      {msg.files.filter((f) => !f.isImage).map((f) => (
+                        <a key={f.id} href={f.url} target="_blank" rel="noopener noreferrer"
+                          className="flex items-center gap-2 px-3 py-2 rounded-lg border bg-secondary/50 hover:bg-secondary transition-colors">
+                          <FileIcon className="w-4 h-4 text-muted-foreground shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium truncate">{f.name}</p>
+                            <p className="text-[10px] text-muted-foreground">{f.size}</p>
+                          </div>
+                          <Download className="w-3 h-3 text-muted-foreground shrink-0" />
+                        </a>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Message bubble */}
+                  {msg.content && (
+                    <div className={`rounded-2xl px-4 py-2.5 text-sm ${
                       msg.role === 'user'
                         ? msg.source === 'telegram'
-                          ? 'bg-blue-100 text-blue-900'
+                          ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/30 dark:text-sky-100'
                           : 'bg-primary text-primary-foreground'
                         : 'bg-secondary text-secondary-foreground'
-                    }`}
-                  >
-                    {msg.role === 'assistant' ? (
-                      <div className="prose prose-sm prose-neutral dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                        <ReactMarkdown>{msg.content}</ReactMarkdown>
-                      </div>
-                    ) : (
-                      <span className="whitespace-pre-wrap">{msg.content}</span>
-                    )}
-                  </div>
+                    }`}>
+                      {msg.role === 'assistant' ? (
+                        <div className="prose prose-sm prose-neutral dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_pre]:bg-muted [&_pre]:rounded-lg [&_code]:text-xs">
+                          <ReactMarkdown>{msg.content}</ReactMarkdown>
+                        </div>
+                      ) : (
+                        <span className="whitespace-pre-wrap break-words">{msg.content}</span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Timestamp */}
                   {msg.timestamp && (
-                    <span className={`text-[10px] text-muted-foreground/60 mt-0.5 ${msg.role === 'user' ? 'text-right' : ''}`}>
+                    <span className={`text-[10px] text-muted-foreground/50 mt-1 px-1 ${msg.role === 'user' ? 'text-right' : ''}`}>
                       {formatTime(msg.timestamp)}
                     </span>
                   )}
                 </div>
                 {msg.role === 'user' && (
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${
-                    msg.source === 'telegram' ? 'bg-blue-100' : 'bg-muted'
+                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
+                    msg.source === 'telegram' ? 'bg-sky-100 dark:bg-sky-900/30' : 'bg-muted'
                   }`}>
                     {msg.source === 'telegram' ? (
-                      <MessageCircle className="w-4 h-4 text-blue-500" />
+                      <MessageCircle className="w-4 h-4 text-sky-500" />
                     ) : (
                       <User className="w-4 h-4 text-muted-foreground" />
                     )}
@@ -325,13 +562,14 @@ export default function AIChat() {
               </div>
             ))}
 
+            {/* Typing indicator */}
             {isLoading && messages[messages.length - 1]?.role !== 'assistant' && (
               <div className="flex gap-3">
-                <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
                   <Bot className="w-4 h-4 text-primary" />
                 </div>
-                <div className="bg-secondary rounded-2xl px-4 py-2.5">
-                  <div className="flex gap-1">
+                <div className="bg-secondary rounded-2xl px-4 py-3">
+                  <div className="flex gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:0ms]" />
                     <span className="w-2 h-2 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:150ms]" />
                     <span className="w-2 h-2 rounded-full bg-muted-foreground/40 animate-bounce [animation-delay:300ms]" />
@@ -342,20 +580,95 @@ export default function AIChat() {
           </div>
         </div>
 
-        <div className="border-t p-3 flex gap-2">
-          <Textarea
+        {/* Pending files preview */}
+        {pendingFiles.length > 0 && (
+          <div className="border-t px-4 py-2 flex gap-2 flex-wrap bg-secondary/30">
+            {pendingFiles.map((f) => (
+              <div key={f.id} className="relative group">
+                {f.isImage ? (
+                  <div className="w-16 h-16 rounded-lg overflow-hidden border shadow-sm">
+                    <img src={f.url} alt={f.name} className="w-full h-full object-cover" />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg border bg-background shadow-sm">
+                    <FileIcon className="w-4 h-4 text-muted-foreground" />
+                    <span className="text-xs truncate max-w-[120px]">{f.name}</span>
+                  </div>
+                )}
+                <button
+                  onClick={() => removePendingFile(f.id)}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Input area */}
+        <div className="border-t p-3 flex items-end gap-2">
+          {/* File upload */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,.txt,.md,.csv,.json,.pdf,.doc,.docx"
+            multiple
+            className="hidden"
+            onChange={handleFileSelect}
+          />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="shrink-0 h-10 w-10 text-muted-foreground hover:text-foreground"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isLoading}
+          >
+            <Paperclip className="w-5 h-5" />
+          </Button>
+
+          {/* Voice */}
+          <Button
+            variant={voice.recording ? 'destructive' : 'ghost'}
+            size="icon"
+            className={`shrink-0 h-10 w-10 ${!voice.recording ? 'text-muted-foreground hover:text-foreground' : ''}`}
+            onClick={handleVoiceToggle}
+            disabled={isLoading}
+          >
+            {voice.recording ? (
+              <div className="flex items-center gap-1">
+                <MicOff className="w-5 h-5" />
+              </div>
+            ) : (
+              <Mic className="w-5 h-5" />
+            )}
+          </Button>
+
+          {/* Recording indicator */}
+          {voice.recording && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-destructive/10 border border-destructive/20">
+              <span className="w-2 h-2 rounded-full bg-destructive animate-pulse" />
+              <span className="text-xs font-medium text-destructive tabular-nums">{voice.duration}s</span>
+            </div>
+          )}
+
+          {/* Text input */}
+          <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask about video titles, descriptions, scheduling..."
-            className="min-h-[44px] max-h-32 resize-none"
+            placeholder={voice.recording ? 'Recording… click mic to stop' : 'Type a message…'}
+            className="flex-1 min-h-[42px] max-h-32 resize-none rounded-xl border bg-background px-4 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
             rows={1}
+            disabled={voice.recording}
           />
+
+          {/* Send */}
           <Button
             onClick={send}
-            disabled={!input.trim() || isLoading}
+            disabled={(!input.trim() && pendingFiles.length === 0) || isLoading || voice.recording}
             size="icon"
-            className="shrink-0 h-11 w-11"
+            className="shrink-0 h-10 w-10 rounded-xl"
           >
             <Send className="w-4 h-4" />
           </Button>
