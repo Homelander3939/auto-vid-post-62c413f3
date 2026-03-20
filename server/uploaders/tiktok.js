@@ -2,7 +2,7 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
-const { analyzePage, smartClick, smartFill, waitForStateChange } = require('./smart-agent');
+const { smartClick, smartFill } = require('./smart-agent');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok');
 
@@ -10,7 +10,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
   fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 
-  console.log('[TikTok] Starting smart upload...');
+  console.log('[TikTok] Starting upload...');
   const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
@@ -20,147 +20,117 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
   const page = context.pages()[0] || await context.newPage();
 
   try {
-    // === STEP 1: Navigate to TikTok Creator Center ===
-    console.log('[TikTok] Navigating to TikTok Creator Center...');
-    await page.goto('https://www.tiktok.com/creator#/upload?scene=creator_center', {
-      waitUntil: 'networkidle', timeout: 60000,
-    });
+    // ===== PHASE 1: LOGIN =====
+    await page.goto('https://www.tiktok.com/creator-center/upload', { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
 
-    // === STEP 2: Handle login if needed ===
-    let maxAttempts = 12;
-    while (maxAttempts-- > 0) {
-      const url = page.url().toLowerCase();
-      const hasLoginSignals = url.includes('login') || url.includes('signin');
-      
-      const pageInfo = await page.evaluate(() => {
-        const text = (document.body?.innerText || '').toLowerCase();
-        return {
-          hasLoginForm: !!document.querySelector('input[name="username"], input[placeholder*="email" i], input[placeholder*="phone" i]'),
-          hasPasswordInput: !!document.querySelector('input[type="password"]'),
-          hasCodeInput: !!document.querySelector('input[type="tel"], input[name*="code" i]'),
-          hasFileInput: !!document.querySelector('input[type="file"]'),
-          hasLoginButton: !!document.querySelector('[data-e2e="top-login-button"], button:has-text("Log in")'),
-          bodyText: text.substring(0, 1000),
-        };
-      });
+    let loginAttempts = 0;
+    while (loginAttempts++ < 15) {
+      const url = page.url();
 
-      // If we can see file input or upload area, we're logged in
-      if (pageInfo.hasFileInput || url.includes('/upload') || url.includes('/creator')) {
-        if (!hasLoginSignals && !pageInfo.hasLoginButton) {
-          console.log('[TikTok] Successfully on upload page');
+      // Check if we're on the upload page (logged in)
+      if (url.includes('creator-center/upload') || url.includes('tiktok.com/upload')) {
+        const hasFileInput = await page.$('input[type="file"]');
+        if (hasFileInput) {
+          console.log('[TikTok] Logged in, upload page ready');
           break;
         }
       }
 
-      if (pageInfo.hasLoginButton && !pageInfo.hasLoginForm) {
-        console.log('[TikTok] Clicking login button...');
-        await smartClick(page, ['[data-e2e="top-login-button"]'], 'Log in');
-        await page.waitForTimeout(3000);
-        continue;
-      }
+      // Check for login page
+      if (url.includes('login') || url.includes('passport')) {
+        const pageState = await page.evaluate(() => {
+          const hasEmail = !!document.querySelector('input[name="username"], input[type="email"], input[type="text"][placeholder*="email" i], input[type="text"][placeholder*="phone" i]');
+          const hasPassword = !!document.querySelector('input[type="password"]');
+          const hasCode = !!document.querySelector('input[type="tel"], input[name*="code" i]');
+          return { hasEmail, hasPassword, hasCode };
+        });
 
-      if (pageInfo.hasLoginForm || hasLoginSignals) {
-        if (!credentials?.email || !credentials?.password) {
-          throw new Error('TikTok credentials not configured in Settings');
-        }
-
-        console.log('[TikTok] Filling login credentials...');
-        // Click email/username login option
-        await smartClick(page, [
-          'div[data-e2e="channel-item"]:has-text("email")',
-          'a:has-text("email")',
-          'div:has-text("Use phone / email")',
-        ], 'email');
+        // Try to switch to email/password login
+        await page.evaluate(() => {
+          const links = document.querySelectorAll('a, div[role="link"], span, p');
+          for (const link of links) {
+            const text = link.textContent?.toLowerCase() || '';
+            if (text.includes('email') || text.includes('password') || text.includes('log in with email')) {
+              link.click(); return;
+            }
+          }
+        });
         await page.waitForTimeout(1500);
-        
-        // Sometimes need to click "Log in with email or username"
-        await smartClick(page, ['a:has-text("Log in with email or username")'], 'Log in with email');
-        await page.waitForTimeout(1000);
 
-        await smartFill(page, [
-          'input[name="username"]',
-          'input[placeholder*="email" i]',
-          'input[placeholder*="username" i]',
-          'input[type="text"]',
-        ], credentials.email);
+        if (pageState.hasEmail || pageState.hasPassword) {
+          console.log('[TikTok] Filling login credentials...');
+          await smartFill(page, [
+            'input[name="username"]', 'input[type="email"]',
+            'input[type="text"][placeholder*="email" i]', 'input[type="text"]',
+          ], credentials.email);
+          await page.waitForTimeout(500);
 
-        await smartFill(page, ['input[type="password"]'], credentials.password);
-        await page.waitForTimeout(500);
-
-        await smartClick(page, ['button[type="submit"]', 'button[data-e2e="login-button"]'], 'Log in');
-        await page.waitForTimeout(8000);
-        continue;
-      }
-
-      if (pageInfo.hasCodeInput || pageInfo.bodyText.includes('verification') || pageInfo.bodyText.includes('security check')) {
-        console.log('[TikTok] Verification needed...');
-        const approval = await requestTelegramApproval({ telegram: credentials.telegram, platform: 'TikTok' });
-        if (!approval) throw new Error('TikTok verification required but no approval received.');
-        if (approval.code) {
-          await tryFillVerificationCode(page, approval.code);
-          await page.waitForTimeout(5000);
+          if (pageState.hasPassword) {
+            await smartFill(page, ['input[type="password"]'], credentials.password);
+            await page.waitForTimeout(500);
+            await smartClick(page, ['button[type="submit"]', 'button[data-e2e="submit-button"]'], 'Log in');
+            await page.waitForTimeout(5000);
+          }
+          continue;
         }
-        continue;
+
+        if (pageState.hasCode) {
+          console.log('[TikTok] Verification code needed...');
+          const approval = await requestTelegramApproval({ telegram: credentials.telegram, platform: 'TikTok' });
+          if (approval?.code) {
+            await tryFillVerificationCode(page, approval.code);
+            await page.waitForTimeout(5000);
+          }
+          continue;
+        }
       }
 
       await page.waitForTimeout(3000);
     }
 
-    // Navigate to upload page if needed
-    if (!page.url().includes('/upload') && !page.url().includes('/creator')) {
-      await page.goto('https://www.tiktok.com/creator#/upload?scene=creator_center', {
-        waitUntil: 'networkidle', timeout: 30000,
-      });
-      await page.waitForTimeout(3000);
-    }
+    // ===== PHASE 2: UPLOAD VIDEO =====
+    console.log('[TikTok] Setting video file...');
+    const fileInput = await page.$('input[type="file"]');
+    if (!fileInput) throw new Error('TikTok upload page not found. Try logging in manually first.');
 
-    // === STEP 3: Upload video file ===
-    console.log('[TikTok] Uploading video file...');
-    let fileInput = await page.$('input[type="file"][accept*="video"]') || await page.$('input[type="file"]');
-    
-    if (!fileInput) {
-      // Try iframe
-      try {
-        const iframe = page.frameLocator('iframe');
-        const iframeInput = iframe.locator('input[type="file"]').first();
-        await iframeInput.setInputFiles(videoPath);
-        console.log('[TikTok] File set via iframe');
-      } catch {
-        throw new Error('Could not find file input on TikTok upload page');
+    await fileInput.setInputFiles(videoPath);
+    await page.waitForTimeout(8000);
+
+    // ===== PHASE 3: FILL CAPTION =====
+    if (metadata?.title || metadata?.description) {
+      const caption = `${metadata.title || ''}${metadata.description ? '\n\n' + metadata.description : ''}${metadata.tags?.length ? '\n\n' + metadata.tags.map(t => '#' + t).join(' ') : ''}`;
+      console.log('[TikTok] Setting caption...');
+      const filled = await page.evaluate((text) => {
+        const editors = document.querySelectorAll('[contenteditable="true"], [data-e2e="caption-editor"], .public-DraftEditor-content');
+        for (const editor of editors) {
+          editor.focus(); editor.click();
+          document.execCommand('selectAll', false, null);
+          document.execCommand('insertText', false, text);
+          return true;
+        }
+        return false;
+      }, caption);
+      if (!filled) {
+        await smartFill(page, ['textarea[placeholder*="caption" i]', '[data-e2e="caption-editor"]'], caption);
       }
-    } else {
-      await fileInput.setInputFiles(videoPath);
     }
+    await page.waitForTimeout(2000);
+
+    // ===== PHASE 4: POST =====
+    console.log('[TikTok] Posting...');
+    await smartClick(page, ['button[data-e2e="post-button"]', 'button:has-text("Post")'], 'Post');
+    await page.evaluate(() => {
+      const buttons = document.querySelectorAll('button');
+      for (const btn of buttons) {
+        if (btn.textContent?.trim().toLowerCase() === 'post') { btn.click(); return; }
+      }
+    });
     await page.waitForTimeout(10000);
-
-    // === STEP 4: Fill caption ===
-    console.log('[TikTok] Filling caption...');
-    const caption = (metadata?.title || '') + (metadata?.description ? '\n' + metadata.description : '');
-    const tags = (metadata?.tags || []).map(t => ` #${t}`).join('');
-    const fullCaption = (caption + tags).slice(0, 2200);
-
-    const captionEditor = await page.$('[contenteditable="true"], .DraftEditor-root [contenteditable], div[data-e2e="upload-caption-input"]');
-    if (captionEditor) {
-      await captionEditor.click();
-      await page.keyboard.press('Control+a');
-      await page.waitForTimeout(200);
-      await page.keyboard.type(fullCaption, { delay: 15 });
-    }
-    await page.waitForTimeout(3000);
-
-    // === STEP 5: Post ===
-    console.log('[TikTok] Clicking Post...');
-    await smartClick(page, [
-      'button[data-e2e="upload-btn"]',
-      'button:has-text("Post")',
-      'div[data-e2e="upload-btn"]',
-    ], 'Post');
-    await page.waitForTimeout(12000);
 
     console.log('[TikTok] Upload complete!');
     await context.close();
-    return { url: 'https://www.tiktok.com/@' + (credentials.email || 'user') };
+    return { url: 'https://www.tiktok.com' };
   } catch (err) {
     console.error('[TikTok] Upload failed:', err.message);
     await context.close();
