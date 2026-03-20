@@ -2,9 +2,148 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
-const { analyzePage, smartClick, smartFill, takeScreenshot, waitForStateChange } = require('./smart-agent');
+const { smartClick, smartFill, waitForStateChange } = require('./smart-agent');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube');
+const YT_STUDIO_URL = 'https://studio.youtube.com';
+const YT_UPLOAD_URL = 'https://studio.youtube.com/upload';
+
+async function inspectGoogleAuthState(page) {
+  return page.evaluate(() => {
+    const text = (document.body?.innerText || '').toLowerCase();
+    const isVisible = (el) => {
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+
+    const emailInput = document.querySelector('#identifierId, input[type="email"], input[name="identifier"]');
+    const passwordInput = document.querySelector('input[type="password"]:not([aria-hidden="true"])');
+    const codeInput = document.querySelector('input[type="tel"], input[name*="code" i], input[autocomplete="one-time-code"]');
+
+    const accountChips = Array.from(document.querySelectorAll('[data-identifier], [data-email], div[role="link"], li[role="link"]'));
+    const accountEmails = accountChips
+      .map((el) => (el.getAttribute('data-identifier') || el.getAttribute('data-email') || el.textContent || '').trim())
+      .filter(Boolean)
+      .slice(0, 8);
+
+    const continueBtn = Array.from(document.querySelectorAll('button, [role="button"]')).find((btn) => {
+      const t = (btn.textContent || '').toLowerCase().trim();
+      return t === 'continue' || t.includes('continue as') || t === 'yes' || t.includes('i agree') || t.includes('next');
+    });
+
+    const matchNumber = (() => {
+      const bigNumbers = document.querySelectorAll('[data-number], .vdE7Oc, .eKnrVb');
+      for (const el of bigNumbers) {
+        const v = (el.textContent || '').trim();
+        if (/^\d{1,3}$/.test(v)) return v;
+      }
+      const textMatch = text.match(/tap\s+(\d{1,3})/i) || text.match(/number\s*[:=]?\s*(\d{1,3})/i);
+      return textMatch?.[1] || '';
+    })();
+
+    return {
+      hasEmailInput: isVisible(emailInput),
+      hasPasswordInput: isVisible(passwordInput),
+      hasCodeInput: isVisible(codeInput),
+      hasPhonePrompt: text.includes('check your phone') || text.includes('tap yes') || text.includes('confirm it') || text.includes('approve sign-in'),
+      hasNumberMatchPrompt: text.includes('choose a number') || text.includes('match the number') || text.includes('try another way'),
+      isChooseAccount: text.includes('choose an account') || text.includes('select an account'),
+      hasCaptcha: text.includes('not a robot') || text.includes('captcha') || text.includes('unusual traffic'),
+      hasContinueButton: !!continueBtn,
+      accountEmails,
+      emailValue: (emailInput && 'value' in emailInput) ? String(emailInput.value || '') : '',
+      matchNumber,
+    };
+  });
+}
+
+async function clickByText(page, texts) {
+  return page.evaluate((labels) => {
+    const wanted = labels.map((t) => t.toLowerCase());
+    const nodes = Array.from(document.querySelectorAll('button, [role="button"], div[role="link"], li[role="link"], a, span'));
+    for (const node of nodes) {
+      const text = (node.textContent || '').trim().toLowerCase();
+      if (!text) continue;
+      if (wanted.some((w) => text === w || text.includes(w))) {
+        node.click();
+        return true;
+      }
+    }
+    return false;
+  }, texts);
+}
+
+async function chooseGoogleAccount(page, email) {
+  const clickedByData = await page.evaluate((targetEmail) => {
+    const normalized = String(targetEmail || '').toLowerCase().trim();
+    const nodes = Array.from(document.querySelectorAll('[data-identifier], [data-email], div[role="link"], li[role="link"]'));
+    for (const node of nodes) {
+      const text = ((node.getAttribute('data-identifier') || node.getAttribute('data-email') || node.textContent || '')).toLowerCase();
+      if (normalized && text.includes(normalized)) {
+        node.click();
+        return true;
+      }
+    }
+    return false;
+  }, email);
+
+  if (clickedByData) return true;
+  return clickByText(page, ['use another account', 'another account']);
+}
+
+async function submitGoogleEmail(page, email) {
+  console.log('[YouTube] Entering email...');
+  const urlBefore = page.url();
+  const filled = await smartFill(page, ['#identifierId', 'input[type="email"]', 'input[name="identifier"]'], email);
+  if (!filled) return false;
+
+  await page.waitForTimeout(300);
+  const clickedNext = await smartClick(page, ['#identifierNext button', '#identifierNext', 'button:has-text("Next")'], 'Next');
+  if (!clickedNext) {
+    await page.keyboard.press('Enter').catch(() => {});
+  }
+
+  await waitForStateChange(page, urlBefore, 8000);
+  await page.waitForTimeout(1200);
+  return true;
+}
+
+async function submitGooglePassword(page, password) {
+  console.log('[YouTube] Entering password...');
+  const urlBefore = page.url();
+  const filled = await smartFill(page, [
+    'input[type="password"]:not([aria-hidden="true"])',
+    'input[name="Passwd"]',
+  ], password);
+  if (!filled) return false;
+
+  await page.waitForTimeout(300);
+  const clickedNext = await smartClick(page, ['#passwordNext button', '#passwordNext', 'button:has-text("Next")'], 'Next');
+  if (!clickedNext) {
+    await page.keyboard.press('Enter').catch(() => {});
+  }
+
+  await waitForStateChange(page, urlBefore, 9000);
+  await page.waitForTimeout(1400);
+  return true;
+}
+
+async function getYouTubeFileInput(page) {
+  return page.$('input[type="file"]');
+}
+
+async function ensureStudioUploadPage(page) {
+  await page.goto(YT_UPLOAD_URL, { waitUntil: 'networkidle', timeout: 45000 });
+  await page.waitForTimeout(2500);
+  const fileInput = await getYouTubeFileInput(page);
+  if (fileInput) return fileInput;
+
+  await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 45000 });
+  await page.waitForTimeout(2000);
+  return getYouTubeFileInput(page);
+}
 
 async function uploadToYouTube(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
@@ -21,11 +160,15 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
   try {
     // ===== PHASE 1: LOGIN =====
-    await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 60000 });
+    await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
 
     let loginAttempts = 0;
-    const MAX_LOGIN_ATTEMPTS = 20;
+    const MAX_LOGIN_ATTEMPTS = 40;
+    let verificationRequested = false;
+    let lastStateKey = '';
+    let repeatedStateCount = 0;
+    let loggedIn = false;
 
     while (loginAttempts++ < MAX_LOGIN_ATTEMPTS) {
       const url = page.url();
@@ -33,68 +176,69 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       // Success: we're on YouTube Studio
       if (url.includes('studio.youtube.com') && !url.includes('accounts.google.com')) {
         console.log('[YouTube] Logged in to YouTube Studio');
+        loggedIn = true;
         break;
       }
 
       // Google login flow
       if (url.includes('accounts.google.com')) {
-        // Check what's on the page
-        const pageState = await page.evaluate(() => {
-          const body = (document.body?.innerText || '').toLowerCase();
-          const hasEmail = !!document.querySelector('input[type="email"], #identifierId');
-          const hasPassword = !!document.querySelector('input[type="password"]:not([aria-hidden="true"])');
-          const hasCodeInput = !!document.querySelector('input[type="tel"], input[name*="code" i], input[autocomplete="one-time-code"]');
-          const hasPhonePrompt = body.includes('check your phone') || body.includes('tap yes') || body.includes('confirm it');
-          const hasNumberMatch = body.includes('try another way') || body.includes('choose a number') || body.includes('match the number');
-          // Look for the number to tap on phone
-          const bigNumbers = document.querySelectorAll('[data-number], .vdE7Oc, .eKnrVb');
-          let matchNumber = '';
-          bigNumbers.forEach(el => { if (el.textContent?.trim().match(/^\d{1,3}$/)) matchNumber = el.textContent.trim(); });
-          // Also check for prominent number display
-          if (!matchNumber) {
-            const allText = body;
-            const numMatch = allText.match(/tap (\d{1,3})/i) || allText.match(/number:\s*(\d{1,3})/i);
-            if (numMatch) matchNumber = numMatch[1];
-          }
-          return { hasEmail, hasPassword, hasCodeInput, hasPhonePrompt, hasNumberMatch, matchNumber, bodySnippet: body.substring(0, 500) };
-        });
+        const auth = await inspectGoogleAuthState(page);
+        const stateKey = [
+          auth.hasEmailInput ? 'email' : '',
+          auth.hasPasswordInput ? 'password' : '',
+          auth.hasCodeInput ? 'code' : '',
+          auth.hasPhonePrompt ? 'phone' : '',
+          auth.isChooseAccount ? 'choose' : '',
+          auth.hasContinueButton ? 'continue' : '',
+        ].filter(Boolean).join('|') || 'unknown';
 
-        if (pageState.hasEmail && !pageState.hasPassword) {
-          // Email entry
-          console.log('[YouTube] Entering email...');
-          const filled = await smartFill(page, ['#identifierId', 'input[type="email"]', 'input[name="identifier"]'], credentials.email);
-          if (filled) {
-            await page.waitForTimeout(500);
-            await smartClick(page, ['#identifierNext button', '#identifierNext', 'button:has-text("Next")'], 'Next');
-            await page.waitForTimeout(4000);
-          }
+        if (stateKey === lastStateKey) repeatedStateCount += 1;
+        else repeatedStateCount = 0;
+        lastStateKey = stateKey;
+
+        if (auth.hasPasswordInput) {
+          verificationRequested = false;
+          await submitGooglePassword(page, credentials.password);
           continue;
         }
 
-        if (pageState.hasPassword) {
-          // Password entry
-          console.log('[YouTube] Entering password...');
-          const filled = await smartFill(page, [
-            'input[type="password"]:not([aria-hidden="true"])',
-            'input[name="Passwd"]',
-          ], credentials.password);
-          if (filled) {
-            await page.waitForTimeout(500);
-            await smartClick(page, ['#passwordNext button', '#passwordNext', 'button:has-text("Next")'], 'Next');
-            await page.waitForTimeout(5000);
-          }
+        if (auth.hasEmailInput) {
+          verificationRequested = false;
+          await submitGoogleEmail(page, credentials.email);
           continue;
         }
 
-        // 2FA / Verification — only request Telegram help here
-        if (pageState.hasCodeInput || pageState.hasPhonePrompt || pageState.hasNumberMatch) {
+        if (auth.isChooseAccount || auth.accountEmails.length > 0) {
+          console.log('[YouTube] Choosing Google account...');
+          const chose = await chooseGoogleAccount(page, credentials.email);
+          if (chose) {
+            await page.waitForTimeout(2500);
+            continue;
+          }
+        }
+
+        if (auth.hasContinueButton) {
+          const clicked = await clickByText(page, ['continue', 'continue as', 'yes', 'i agree', 'next']);
+          if (clicked) {
+            await page.waitForTimeout(2500);
+            continue;
+          }
+        }
+
+        // 2FA / Verification — only request Telegram help when credentials are not requested
+        if (!auth.hasEmailInput && !auth.hasPasswordInput && (auth.hasCodeInput || auth.hasPhonePrompt || auth.hasNumberMatchPrompt)) {
+          if (verificationRequested && repeatedStateCount < 3) {
+            await page.waitForTimeout(2500);
+            continue;
+          }
+
           console.log('[YouTube] Verification detected — requesting Telegram help...');
+          verificationRequested = true;
 
-          // Take screenshot and send description
           let verificationMessage = `🔐 <b>YouTube verification needed</b>\n`;
-          if (pageState.matchNumber) {
-            verificationMessage += `Tap number <b>${pageState.matchNumber}</b> on your phone.\nThen reply APPROVED`;
-          } else if (pageState.hasPhonePrompt) {
+          if (auth.matchNumber) {
+            verificationMessage += `Tap number <b>${auth.matchNumber}</b> on your phone.\nThen reply APPROVED`;
+          } else if (auth.hasPhonePrompt) {
             verificationMessage += `Check your phone and approve the sign-in.\nThen reply APPROVED`;
           } else {
             verificationMessage += `Enter the verification code.\nReply with: CODE 123456`;
@@ -111,83 +255,101 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
             await tryFillVerificationCode(page, approval.code);
             await page.waitForTimeout(6000);
           } else {
-            // User approved on phone
-            await page.waitForTimeout(15000);
+            await page.waitForTimeout(9000);
           }
+
+          await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => {});
+          await page.waitForTimeout(2000);
           continue;
         }
 
-        // Unknown Google state — wait and retry
+        if (auth.hasCaptcha) {
+          throw new Error('Google asked for CAPTCHA/unusual-traffic check. Complete it manually once, then retry upload.');
+        }
+
+        if (repeatedStateCount >= 2) {
+          console.log('[YouTube] Auth state stuck, retrying via YouTube Studio route...');
+          await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => {});
+          await page.waitForTimeout(2500);
+          continue;
+        }
+
         console.log('[YouTube] Waiting on Google auth page...');
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(2500);
         continue;
       }
 
-      // Not on Google or Studio — wait
-      await page.waitForTimeout(3000);
+      if (url.includes('youtube.com')) {
+        await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => {});
+        await page.waitForTimeout(2500);
+        continue;
+      }
+
+      await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => {});
+      await page.waitForTimeout(2500);
     }
 
-    // Verify login succeeded
-    const currentUrl = page.url();
-    if (currentUrl.includes('accounts.google.com')) {
-      throw new Error('Login failed — still on Google accounts page. Check credentials or approve verification via Telegram.');
+    if (!loggedIn) {
+      const recoveredInput = await ensureStudioUploadPage(page).catch(() => null);
+      if (recoveredInput) {
+        loggedIn = true;
+      }
     }
 
-    // Navigate to studio if needed
-    if (!currentUrl.includes('studio.youtube.com')) {
-      await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 30000 });
-      await page.waitForTimeout(3000);
+    if (!loggedIn) {
+      throw new Error('Login did not complete — still blocked on Google sign-in flow after multiple attempts.');
     }
 
     // ===== PHASE 2: OPEN UPLOAD DIALOG =====
     console.log('[YouTube] Opening upload dialog...');
 
-    // Try clicking Create button
-    let createClicked = await smartClick(page, [
-      '#create-icon',
-      'ytcp-button#create-icon',
-      '[aria-label="Create"]',
-      'button[aria-label="Create"]',
-    ], 'Create');
+    let fileInput = await ensureStudioUploadPage(page);
 
-    if (!createClicked) {
-      // Try JS click
-      await page.evaluate(() => {
-        const btn = document.querySelector('#create-icon') ||
-                    document.querySelector('[aria-label="Create"]') ||
-                    document.querySelector('ytcp-button#create-icon');
-        if (btn) { btn.click(); return true; }
-        return false;
-      });
-    }
-    await page.waitForTimeout(2000);
-
-    // Click "Upload videos" from dropdown
-    let uploadMenuClicked = await smartClick(page, [
-      '#text-item-0',
-      'tp-yt-paper-item:first-child',
-      '[test-id="upload-icon"]',
-    ], 'Upload video');
-
-    if (!uploadMenuClicked) {
-      await page.evaluate(() => {
-        const items = document.querySelectorAll('tp-yt-paper-item, ytcp-text-menu a, [role="menuitem"], [role="option"]');
-        for (const item of items) {
-          if (item.textContent?.toLowerCase().includes('upload video')) { item.click(); return; }
-        }
-        if (items.length > 0) items[0].click();
-      });
-    }
-    await page.waitForTimeout(3000);
-
-    // Verify upload dialog opened — check for file input
-    let fileInput = await page.$('input[type="file"]');
     if (!fileInput) {
-      // Maybe Create menu didn't open. Try direct URL approach
+      // Try clicking Create button
+      let createClicked = await smartClick(page, [
+        '#create-icon',
+        'ytcp-button#create-icon',
+        '[aria-label="Create"]',
+        'button[aria-label="Create"]',
+      ], 'Create');
+
+      if (!createClicked) {
+        await page.evaluate(() => {
+          const btn = document.querySelector('#create-icon') ||
+                      document.querySelector('[aria-label="Create"]') ||
+                      document.querySelector('ytcp-button#create-icon');
+          if (btn) { btn.click(); return true; }
+          return false;
+        });
+      }
+      await page.waitForTimeout(1800);
+
+      // Click "Upload videos" from dropdown
+      let uploadMenuClicked = await smartClick(page, [
+        '#text-item-0',
+        'tp-yt-paper-item:first-child',
+        '[test-id="upload-icon"]',
+      ], 'Upload video');
+
+      if (!uploadMenuClicked) {
+        await page.evaluate(() => {
+          const items = document.querySelectorAll('tp-yt-paper-item, ytcp-text-menu a, [role="menuitem"], [role="option"]');
+          for (const item of items) {
+            if (item.textContent?.toLowerCase().includes('upload video')) { item.click(); return; }
+          }
+          if (items.length > 0) items[0].click();
+        });
+      }
+      await page.waitForTimeout(2500);
+      fileInput = await getYouTubeFileInput(page);
+    }
+
+    if (!fileInput) {
       console.log('[YouTube] Upload dialog not found, trying direct navigation...');
-      await page.goto('https://studio.youtube.com/channel/UC/videos/upload?d=ud', { waitUntil: 'networkidle', timeout: 30000 });
+      await page.goto(YT_UPLOAD_URL, { waitUntil: 'networkidle', timeout: 45000 });
       await page.waitForTimeout(3000);
-      fileInput = await page.$('input[type="file"]');
+      fileInput = await getYouTubeFileInput(page);
     }
 
     if (!fileInput) {
