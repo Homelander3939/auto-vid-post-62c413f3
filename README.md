@@ -1,18 +1,19 @@
 # Video Uploader App
 
-Automated video uploader for YouTube, TikTok, and Instagram with Telegram notifications.
+Automated video uploader for YouTube, TikTok, and Instagram with Telegram notifications and AI-powered browser automation.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────┐
-│  React Frontend (Vite, :8080)    │  ← Works online AND locally
+│  React Frontend (Vite, :8081)    │  ← Works online AND locally
 │  - Upload video + text file      │
 │  - Configure platform creds      │
 │  - Upload queue with status      │
 │  - Schedule configuration        │
+│  - Campaign scheduling           │
 └──────────┬───────────────────────┘
-           │ Supabase (database + file storage)
+           │ Lovable Cloud (database + file storage)
 ┌──────────▼───────────────────────┐
 │  Local Node.js Server (:3001)    │  ← Only when running locally
 │  - Downloads video from storage  │
@@ -20,30 +21,34 @@ Automated video uploader for YouTube, TikTok, and Instagram with Telegram notifi
 │  - Uploads to YouTube/TikTok/IG  │
 │  - Sends Telegram notifications  │
 │  - Cron scheduler for auto-runs  │
+│  - AI-powered obstacle handling  │
 └──────────────────────────────────┘
 ```
 
-## Online Mode (Lovable Preview)
+## Quick Start (Windows)
 
-The app works fully online — you can:
-- Upload video and text files (stored in cloud)
-- Configure all settings (saved to database)
-- Create upload jobs and see simulated progress
-- Set up schedules
+### One-Click Launcher
 
-Actual platform uploads only happen via the local server.
+1. Clone the repo to `C:\auto-vid-post`
+2. Double-click **`smart-launcher.bat`**
 
-## Local Setup (Windows)
+That's it! The launcher will:
+- Pull latest updates from GitHub
+- Install dependencies if missing (including Playwright browser)
+- Start the backend server and frontend
+- Open Brave Browser (or default browser) at `http://localhost:8081`
 
-### 1. Clone and install
+### Manual Setup
+
+#### 1. Clone and install
 
 ```bash
-git clone <your-repo-url>
-cd <project-folder>
+git clone <your-repo-url> C:\auto-vid-post
+cd C:\auto-vid-post
 npm install
 ```
 
-### 2. Install server dependencies
+#### 2. Install server dependencies
 
 ```bash
 cd server
@@ -52,11 +57,11 @@ npx playwright install chromium
 cd ..
 ```
 
-### 3. Start the app
+#### 3. Start the app
 
 **Terminal 1 — Frontend:**
 ```bash
-npm run dev
+npm run dev -- --port 8081 --strictPort
 ```
 
 **Terminal 2 — Local Server:**
@@ -65,7 +70,7 @@ cd server
 npm start
 ```
 
-### 4. Open `http://localhost:8080`
+#### 4. Open `http://localhost:8081`
 
 ## How It Works
 
@@ -78,8 +83,22 @@ npm start
    Platforms: youtube, tiktok, instagram
    ```
 3. **Click "Start Upload"** — Video is stored in cloud, job is queued
-4. **Local server processes** — Downloads video, opens Playwright browser, uploads to each platform
+4. **Local server processes** — Downloads video, opens Playwright browser, logs into platforms, uploads
 5. **Telegram notification** — Success link or error sent to your bot
+6. **AI obstacle handling** — If login verification or CAPTCHA appears, the system screenshots and sends to Telegram for your input
+
+## Scheduled Uploads
+
+### Recurring Schedules
+- Set up daily/hourly/weekly recurring uploads from the Schedule page
+- Point to a local folder — the system auto-picks the latest video + text file
+- Only platforms with valid credentials are used
+- Set duration limits (days/hours/weeks)
+
+### Campaign Scheduling
+- Plan individual uploads for specific dates and times
+- Upload video + text file per entry with precise scheduling
+- Scheduled jobs appear in Upload Queue as "upcoming" before their time
 
 ## Telegram Bot Setup
 
@@ -88,9 +107,17 @@ npm start
 3. Message your bot, visit `https://api.telegram.org/bot<TOKEN>/getUpdates` for chat ID
 4. Enter both in Settings
 
+### Telegram AI Features
+- Send text/voice/image messages to your bot for AI assistance
+- Get real-time upload status and obstacle screenshots
+- Reply with authentication codes when platforms request verification
+- Voice messages are transcribed and understood
+
 ## Important Notes
 
 - **Browser automation is fragile** — Platform UI changes can break upload scripts
 - **First login** — Browser opens visibly for 2FA/captcha
 - **Sessions persist** in `server/data/browser-sessions/`
 - **All data** is stored in the cloud database — works from any device
+- **Smart obstacle handling** — System detects verification prompts and collaborates with you via Telegram
+- **Platform-aware scheduling** — Only uploads to platforms where credentials are configured
