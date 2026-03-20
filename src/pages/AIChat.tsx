@@ -193,7 +193,7 @@ export default function AIChat() {
               </div>
             )}
           </div>
-        </ScrollArea>
+        </div>
 
         <div className="border-t p-3 flex gap-2">
           <Textarea
