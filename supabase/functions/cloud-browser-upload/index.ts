@@ -508,8 +508,14 @@ async function sendTelegramMessage(
     console.log('[Telegram] Message skipped — not configured. enabled:', telegram.enabled, 'chatId:', telegram.chatId);
     return false;
   }
+
+  const numericChatId = Number(telegram.chatId);
+  if (!Number.isFinite(numericChatId)) {
+    console.log('[Telegram] Message skipped — invalid numeric chat ID:', telegram.chatId);
+    return false;
+  }
+
   try {
-    const numericChatId = Number(telegram.chatId);
     console.log('[Telegram] Sending message to chat:', numericChatId, 'text:', text.substring(0, 80));
     const response = await fetch('https://connector-gateway.lovable.dev/telegram/sendMessage', {
       method: 'POST',
