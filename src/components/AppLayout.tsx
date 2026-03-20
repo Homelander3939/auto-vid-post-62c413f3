@@ -1,7 +1,7 @@
-import { NavLink, Outlet } from 'react-router-dom';
-import { Settings, LayoutDashboard, Upload, Clock, BookOpen, MessageSquare, Wifi, WifiOff, Cloud, Monitor, Globe } from 'lucide-react';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { Settings, LayoutDashboard, Upload, Clock, BookOpen, MessageSquare, Wifi, WifiOff, Cloud, Monitor, Globe, Menu, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getSettings, saveSettings } from '@/lib/storage';
@@ -42,6 +42,8 @@ function useLocalServerStatus() {
 export default function AppLayout() {
   const serverStatus = useLocalServerStatus();
   const queryClient = useQueryClient();
+  const location = useLocation();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -50,6 +52,11 @@ export default function AppLayout() {
 
   const uploadMode = settings?.uploadMode || 'local';
   const isCloud = uploadMode === 'cloud';
+
+  // Close mobile nav on route change
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [location.pathname]);
 
   const toggleMode = async () => {
     if (!settings) return;
@@ -60,16 +67,37 @@ export default function AppLayout() {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <aside className="w-64 shrink-0 border-r bg-card flex flex-col">
-        <div className="p-6 pb-4">
+    <div className="flex h-[100dvh] overflow-hidden">
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
+      {/* Sidebar */}
+      <aside
+        className={cn(
+          'fixed inset-y-0 left-0 z-50 w-64 shrink-0 border-r bg-card flex flex-col transition-transform duration-200 ease-out',
+          'md:static md:translate-x-0',
+          mobileOpen ? 'translate-x-0' : '-translate-x-full'
+        )}
+      >
+        <div className="p-6 pb-4 flex items-center justify-between">
           <h1 className="text-lg font-semibold tracking-tight text-foreground">
             Video Uploader
           </h1>
-          <p className="text-xs text-muted-foreground mt-1">
-            YouTube · TikTok · Instagram
-          </p>
+          <button
+            onClick={() => setMobileOpen(false)}
+            className="md:hidden p-1.5 rounded-lg hover:bg-secondary text-muted-foreground"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
+        <p className="text-xs text-muted-foreground px-6 -mt-2 mb-2">
+          YouTube · TikTok · Instagram
+        </p>
 
         <nav className="flex-1 px-3 space-y-1">
           {navItems.map(({ to, icon: Icon, label }) => (
@@ -168,8 +196,38 @@ export default function AppLayout() {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto">
-        <div className="max-w-5xl mx-auto p-8">
+      <main className="flex-1 overflow-y-auto min-w-0">
+        {/* Mobile top bar */}
+        <div className="sticky top-0 z-30 flex items-center gap-3 border-b bg-card/95 backdrop-blur px-4 py-3 md:hidden">
+          <button
+            onClick={() => setMobileOpen(true)}
+            className="p-1.5 rounded-lg hover:bg-secondary text-muted-foreground"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <span className="text-sm font-semibold text-foreground truncate">Video Uploader</span>
+          <div className="ml-auto">
+            {isCloud ? (
+              <span className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                </span>
+                Cloud
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span className={cn(
+                  'h-2 w-2 rounded-full',
+                  serverStatus === 'connected' ? 'bg-emerald-500' : 'bg-muted-foreground/40'
+                )} />
+                Local
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="max-w-5xl mx-auto p-4 sm:p-6 md:p-8">
           <Outlet />
         </div>
       </main>
