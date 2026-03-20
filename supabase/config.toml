@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.telegram-ai-bot]
 verify_jwt = false
+
+[functions.process-uploads]
+verify_jwt = false
