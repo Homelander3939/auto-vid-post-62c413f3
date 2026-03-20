@@ -2,166 +2,15 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
+const { analyzePage, smartClick, smartFill, waitForStateChange, takeScreenshot } = require('./smart-agent');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube');
-
-// Try to use Stagehand if available, otherwise fall back to manual Playwright
-let Stagehand;
-try {
-  Stagehand = require('@browserbasehq/stagehand').Stagehand;
-} catch {
-  Stagehand = null;
-}
 
 async function uploadToYouTube(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
   fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 
-  if (Stagehand && credentials?.stagehandApiKey) {
-    return uploadWithStagehand(videoPath, metadata, credentials);
-  }
-  return uploadWithPlaywright(videoPath, metadata, credentials);
-}
-
-// ========== Stagehand (AI-driven) ==========
-async function uploadWithStagehand(videoPath, metadata, credentials) {
-  console.log('[YouTube/Stagehand] Starting AI-driven upload...');
-
-  const stagehand = new Stagehand({
-    env: 'LOCAL',
-    modelName: 'google/gemini-2.5-flash',
-    modelClientOptions: {
-      apiKey: credentials.stagehandApiKey,
-      baseURL: 'https://ai.gateway.lovable.dev/v1',
-    },
-    headless: false,
-    browserbaseSessionCreateParams: {
-      projectId: credentials.browserbaseProjectId,
-    },
-    localBrowserLaunchOptions: {
-      headless: false,
-      args: ['--disable-blink-features=AutomationControlled'],
-      userDataDir: USER_DATA_DIR,
-    },
-  });
-
-  await stagehand.init();
-  const page = stagehand.page;
-
-  try {
-    // Navigate to YouTube Studio
-    await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 60000 });
-    await page.waitForTimeout(3000);
-
-    // Check if login is needed
-    const needsLogin = await page.evaluate(() => {
-      return window.location.href.includes('accounts.google.com') ||
-             !!document.querySelector('a[href*="accounts.google.com"]');
-    });
-
-    if (needsLogin) {
-      if (!credentials?.email || !credentials?.password) {
-        throw new Error('YouTube credentials missing. Add email and password in Settings.');
-      }
-
-      console.log('[YouTube/Stagehand] Logging in...');
-      await stagehand.act('Enter the email address in the email input field: ' + credentials.email);
-      await stagehand.act('Click the Next button to proceed');
-      await page.waitForTimeout(3000);
-
-      await stagehand.act('Enter the password: ' + credentials.password);
-      await stagehand.act('Click the Next button to submit the password');
-      await page.waitForTimeout(6000);
-
-      // Check for verification
-      const stillOnGoogle = await page.evaluate(() => window.location.href.includes('accounts.google.com'));
-      if (stillOnGoogle) {
-        console.log('[YouTube/Stagehand] Verification needed...');
-        const approval = await requestTelegramApproval({
-          telegram: credentials.telegram,
-          platform: 'YouTube',
-        });
-
-        if (!approval) throw new Error('Google verification required but no Telegram approval received.');
-        if (approval.code) {
-          await stagehand.act('Enter the verification code: ' + approval.code);
-          await stagehand.act('Click verify or next to submit the code');
-          await page.waitForTimeout(6000);
-        } else {
-          await page.waitForTimeout(15000); // Wait for external approval
-        }
-      }
-
-      await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 60000 });
-    }
-
-    // Upload flow
-    await stagehand.act('Click the Create button (camera icon with plus) in the top right area');
-    await page.waitForTimeout(1500);
-    await stagehand.act('Click "Upload videos" from the dropdown menu');
-    await page.waitForTimeout(2000);
-
-    // Set file on input
-    const fileInput = await page.$('input[type="file"]');
-    if (fileInput) {
-      await fileInput.setInputFiles(videoPath);
-    } else {
-      throw new Error('Could not find file input on YouTube Studio');
-    }
-    await page.waitForTimeout(5000);
-
-    // Fill metadata
-    if (metadata?.title) {
-      await stagehand.act('Clear the title field and type the title: ' + metadata.title);
-    }
-    if (metadata?.description) {
-      await stagehand.act('Click the description field and type: ' + metadata.description);
-    }
-    await page.waitForTimeout(1500);
-
-    // Navigate wizard
-    await stagehand.act('Click the Next button');
-    await page.waitForTimeout(2000);
-    await stagehand.act('Click the Next button');
-    await page.waitForTimeout(2000);
-    await stagehand.act('Click the Next button');
-    await page.waitForTimeout(2000);
-
-    // Set public visibility
-    await stagehand.act('Select the Public visibility option');
-    await page.waitForTimeout(1000);
-
-    // Publish
-    await stagehand.act('Click the Publish or Done button');
-    await page.waitForTimeout(7000);
-
-    // Extract video URL
-    let videoUrl = '';
-    try {
-      const extracted = await stagehand.extract('Extract the published video URL or link shown on the page');
-      videoUrl = extracted?.url || extracted?.text || '';
-    } catch {
-      videoUrl = '';
-    }
-
-    if (!videoUrl) {
-      try {
-        const linkEl = await page.$('a.style-scope.ytcp-video-info[href*="youtu"]');
-        if (linkEl) videoUrl = await linkEl.getAttribute('href') || '';
-      } catch {}
-    }
-
-    console.log(`[YouTube/Stagehand] Upload complete: ${videoUrl}`);
-    await stagehand.close();
-    return { url: videoUrl || undefined };
-  } catch (err) {
-    await stagehand.close();
-    throw err;
-  }
-}
-
-// ========== Playwright Fallback ==========
-async function uploadWithPlaywright(videoPath, metadata, credentials) {
+  console.log('[YouTube] Starting smart upload...');
   const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
@@ -171,90 +20,217 @@ async function uploadWithPlaywright(videoPath, metadata, credentials) {
   const page = context.pages()[0] || await context.newPage();
 
   try {
+    // === STEP 1: Navigate to YouTube Studio ===
+    console.log('[YouTube] Navigating to YouTube Studio...');
     await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 60000 });
+    await page.waitForTimeout(3000);
 
-    const needsLogin = await page.$('a[href*="accounts.google.com"]');
-    if (needsLogin) {
-      if (!credentials?.email || !credentials?.password) {
-        throw new Error('YouTube credentials missing in Settings.');
+    // === STEP 2: Handle login if needed ===
+    let maxLoginAttempts = 15;
+    while (maxLoginAttempts-- > 0) {
+      const state = await analyzePage(page, 'Trying to log into YouTube Studio to upload a video');
+      console.log(`[YouTube] State: ${state.state} — ${state.description}`);
+
+      if (state.state === 'logged_in' || state.state === 'upload_page') {
+        console.log('[YouTube] Successfully on YouTube Studio dashboard');
+        break;
       }
 
-      await page.goto('https://accounts.google.com/signin', { waitUntil: 'networkidle' });
-      await page.fill('input[type="email"]', credentials.email);
-      await page.click('#identifierNext');
-      await page.waitForTimeout(3000);
-      await page.fill('input[type="password"]', credentials.password);
-      await page.click('#passwordNext');
-      await page.waitForTimeout(6000);
+      if (state.state === 'login_email') {
+        if (!credentials?.email) throw new Error('YouTube email not configured in Settings');
+        console.log('[YouTube] Entering email...');
+        const filled = await smartFill(page, [
+          'input[type="email"]',
+          'input#identifierId',
+          'input[name="identifier"]',
+        ], credentials.email);
+        if (filled) {
+          await page.waitForTimeout(500);
+          await smartClick(page, ['#identifierNext button', '#identifierNext'], 'Next');
+          await page.waitForTimeout(4000);
+        }
+        continue;
+      }
 
-      if (page.url().includes('accounts.google.com')) {
-        const approval = await requestTelegramApproval({ telegram: credentials.telegram, platform: 'YouTube' });
-        if (!approval) throw new Error('Google verification required but no Telegram approval received.');
+      if (state.state === 'login_password') {
+        if (!credentials?.password) throw new Error('YouTube password not configured in Settings');
+        console.log('[YouTube] Entering password...');
+        const filled = await smartFill(page, [
+          'input[type="password"]:not([aria-hidden="true"])',
+          'input[name="Passwd"]',
+        ], credentials.password);
+        if (filled) {
+          await page.waitForTimeout(500);
+          await smartClick(page, ['#passwordNext button', '#passwordNext'], 'Next');
+          await page.waitForTimeout(5000);
+        }
+        continue;
+      }
+
+      if (state.state === 'verification_2fa' || state.state === 'verification_code') {
+        console.log('[YouTube] Verification needed — requesting Telegram approval...');
+        const approval = await requestTelegramApproval({
+          telegram: credentials.telegram,
+          platform: 'YouTube',
+        });
+        if (!approval) throw new Error('YouTube verification required but no approval received within timeout.');
         if (approval.code) {
           await tryFillVerificationCode(page, approval.code);
           await page.waitForTimeout(6000);
+        } else {
+          // User approved on phone, wait for redirect
+          await page.waitForTimeout(15000);
         }
+        continue;
       }
 
-      await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 60000 });
-      if (page.url().includes('accounts.google.com')) {
-        throw new Error('Still on Google login. Approve in Telegram and retry.');
-      }
+      // Unknown state — wait and retry
+      await page.waitForTimeout(3000);
     }
 
-    await page.click('#create-icon', { timeout: 10000 });
-    await page.waitForTimeout(1000);
-    await page.click('#text-item-0', { timeout: 5000 });
+    // Verify we're on YouTube Studio
+    const finalUrl = page.url();
+    if (finalUrl.includes('accounts.google.com')) {
+      throw new Error('Login failed — still on Google accounts page. Check credentials or approve verification.');
+    }
+
+    // If URL isn't studio, navigate there
+    if (!finalUrl.includes('studio.youtube.com')) {
+      await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 30000 });
+      await page.waitForTimeout(3000);
+    }
+
+    // === STEP 3: Click Create → Upload videos ===
+    console.log('[YouTube] Clicking Create button...');
+    
+    // Try multiple selectors for the Create button
+    let createClicked = await smartClick(page, [
+      '#create-icon',
+      'ytcp-button#create-icon',
+      '[aria-label="Create"]',
+      'button[aria-label="Create"]',
+    ], 'Create');
+    
+    if (!createClicked) {
+      // Try via JS injection
+      await page.evaluate(() => {
+        const btn = document.querySelector('#create-icon') || 
+                    document.querySelector('[aria-label="Create"]') ||
+                    document.querySelector('ytcp-button#create-icon');
+        if (btn) btn.click();
+      });
+      createClicked = true;
+    }
     await page.waitForTimeout(2000);
 
-    const fileInput = await page.$('input[type="file"]');
-    if (fileInput) {
-      await fileInput.setInputFiles(videoPath);
-    } else {
-      throw new Error('Could not find file input on YouTube Studio');
+    // Click "Upload videos" from dropdown
+    console.log('[YouTube] Clicking Upload videos...');
+    let uploadClicked = await smartClick(page, [
+      '#text-item-0',
+      'tp-yt-paper-item:first-child',
+      '[test-id="upload-icon"]',
+    ], 'Upload videos');
+
+    if (!uploadClicked) {
+      await page.evaluate(() => {
+        const items = document.querySelectorAll('tp-yt-paper-item, ytcp-text-menu a, [role="menuitem"]');
+        for (const item of items) {
+          if (item.textContent?.toLowerCase().includes('upload video')) {
+            item.click();
+            return;
+          }
+        }
+        // Fallback: click first menu item
+        if (items.length > 0) items[0].click();
+      });
     }
+    await page.waitForTimeout(3000);
 
-    await page.waitForTimeout(5000);
+    // === STEP 4: Set video file ===
+    console.log('[YouTube] Setting video file...');
+    const fileInput = await page.$('input[type="file"]');
+    if (!fileInput) {
+      // Try to find hidden file input
+      const hiddenInput = await page.evaluate(() => {
+        const inputs = document.querySelectorAll('input[type="file"]');
+        return inputs.length;
+      });
+      if (hiddenInput === 0) {
+        throw new Error('No file input found on YouTube Studio upload page. The Create menu may not have opened correctly.');
+      }
+    }
+    
+    await (fileInput || await page.$('input[type="file"]')).setInputFiles(videoPath);
+    console.log('[YouTube] Video file set, waiting for upload to begin...');
+    await page.waitForTimeout(8000);
 
+    // === STEP 5: Fill title and description ===
     if (metadata?.title) {
-      const titleInput = await page.$('#textbox[aria-label*="title" i], #textbox');
-      if (titleInput) {
-        await titleInput.click({ clickCount: 3 });
-        await titleInput.fill(metadata.title);
+      console.log('[YouTube] Setting title...');
+      const titleBox = await page.$('#textbox[aria-label*="title" i]') || await page.$('#textbox');
+      if (titleBox) {
+        await titleBox.click({ clickCount: 3 });
+        await page.waitForTimeout(200);
+        await page.keyboard.press('Control+a');
+        await page.keyboard.type(metadata.title, { delay: 20 });
       }
     }
 
     if (metadata?.description) {
-      const descBoxes = await page.$$('#textbox');
-      if (descBoxes.length > 1) {
-        await descBoxes[1].click();
-        await descBoxes[1].fill(metadata.description);
+      console.log('[YouTube] Setting description...');
+      const textboxes = await page.$$('#textbox');
+      if (textboxes.length > 1) {
+        await textboxes[1].click();
+        await page.waitForTimeout(200);
+        await page.keyboard.type(metadata.description, { delay: 20 });
       }
     }
+    await page.waitForTimeout(2000);
 
+    // === STEP 6: Click through the wizard (Next × 3) ===
+    console.log('[YouTube] Navigating upload wizard...');
     for (let i = 0; i < 3; i++) {
-      await page.click('#next-button', { timeout: 10000 });
-      await page.waitForTimeout(2000);
+      const clicked = await smartClick(page, ['#next-button', '#step-badge-' + (i + 1)], 'Next');
+      if (!clicked) {
+        await page.evaluate(() => {
+          const btn = document.querySelector('#next-button');
+          if (btn) btn.click();
+        });
+      }
+      await page.waitForTimeout(2500);
     }
 
-    await page.click('tp-yt-paper-radio-button[name="PUBLIC"]', { timeout: 5000 }).catch(() => {});
-    await page.waitForTimeout(1000);
-    await page.click('#done-button', { timeout: 10000 });
-    await page.waitForTimeout(5000);
+    // === STEP 7: Set visibility to Public ===
+    console.log('[YouTube] Setting visibility to Public...');
+    await smartClick(page, [
+      'tp-yt-paper-radio-button[name="PUBLIC"]',
+      '#radioLabel:has-text("Public")',
+      '[name="PUBLIC"]',
+    ], 'Public');
+    await page.waitForTimeout(1500);
 
+    // === STEP 8: Publish ===
+    console.log('[YouTube] Publishing...');
+    await smartClick(page, ['#done-button', '#publish-button'], 'Publish');
+    await page.waitForTimeout(8000);
+
+    // === STEP 9: Extract video URL ===
     let videoUrl = '';
     try {
-      const linkEl = await page.$('a.style-scope.ytcp-video-info');
-      if (linkEl) {
-        videoUrl = await linkEl.getAttribute('href') || '';
-        if (videoUrl && !videoUrl.startsWith('http')) videoUrl = `https://studio.youtube.com${videoUrl}`;
-      }
+      videoUrl = await page.evaluate(() => {
+        const link = document.querySelector('a.style-scope.ytcp-video-info[href*="youtu"]') ||
+                     document.querySelector('a[href*="youtu.be"]') ||
+                     document.querySelector('a[href*="youtube.com/watch"]') ||
+                     document.querySelector('.video-url-fadeable a');
+        return link?.href || link?.textContent || '';
+      });
     } catch {}
 
-    console.log(`[YouTube] Upload complete: ${videoUrl}`);
+    console.log(`[YouTube] Upload complete! URL: ${videoUrl || 'not captured'}`);
     await context.close();
-    return { url: videoUrl };
+    return { url: videoUrl || undefined };
   } catch (err) {
+    console.error('[YouTube] Upload failed:', err.message);
     await context.close();
     throw err;
   }

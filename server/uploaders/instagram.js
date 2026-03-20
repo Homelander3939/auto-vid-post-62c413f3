@@ -2,135 +2,15 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
+const { analyzePage, smartClick, smartFill } = require('./smart-agent');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
-
-let Stagehand;
-try {
-  Stagehand = require('@browserbasehq/stagehand').Stagehand;
-} catch {
-  Stagehand = null;
-}
 
 async function uploadToInstagram(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
   fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 
-  if (Stagehand && credentials?.stagehandApiKey) {
-    return uploadWithStagehand(videoPath, metadata, credentials);
-  }
-  return uploadWithPlaywright(videoPath, metadata, credentials);
-}
-
-// ========== Stagehand (AI-driven) ==========
-async function uploadWithStagehand(videoPath, metadata, credentials) {
-  console.log('[Instagram/Stagehand] Starting AI-driven upload...');
-
-  const stagehand = new Stagehand({
-    env: 'LOCAL',
-    modelName: 'google/gemini-2.5-flash',
-    modelClientOptions: {
-      apiKey: credentials.stagehandApiKey,
-      baseURL: 'https://ai.gateway.lovable.dev/v1',
-    },
-    headless: false,
-    localBrowserLaunchOptions: {
-      headless: false,
-      args: ['--disable-blink-features=AutomationControlled'],
-      userDataDir: USER_DATA_DIR,
-    },
-  });
-
-  await stagehand.init();
-  const page = stagehand.page;
-
-  try {
-    await page.goto('https://www.instagram.com/', { waitUntil: 'networkidle', timeout: 60000 });
-    await page.waitForTimeout(3000);
-
-    // Dismiss cookie banner
-    try {
-      await stagehand.act('Click the Allow or Accept cookies button if visible');
-    } catch {}
-    await page.waitForTimeout(1000);
-
-    // Check login
-    const hasLoginForm = await page.evaluate(() => !!document.querySelector('input[name="username"]'));
-    if (hasLoginForm) {
-      if (!credentials?.email || !credentials?.password) {
-        throw new Error('Instagram credentials missing. Add email and password in Settings.');
-      }
-
-      console.log('[Instagram/Stagehand] Logging in...');
-      await stagehand.act('Enter the username or email: ' + credentials.email);
-      await stagehand.act('Enter the password: ' + credentials.password);
-      await stagehand.act('Click the Log In button');
-      await page.waitForTimeout(8000);
-
-      const needsVerification = await page.evaluate(() => {
-        const text = (document.body?.innerText || '').toLowerCase();
-        return text.includes('security code') || text.includes('confirmation code') ||
-               text.includes('verify your account') || text.includes('suspicious login');
-      });
-
-      if (needsVerification) {
-        const approval = await requestTelegramApproval({ telegram: credentials.telegram, platform: 'Instagram' });
-        if (!approval) throw new Error('Instagram verification required but no Telegram approval received.');
-        if (approval.code) {
-          await stagehand.act('Enter the security/confirmation code: ' + approval.code);
-          await stagehand.act('Click confirm or submit');
-          await page.waitForTimeout(5000);
-        }
-      }
-
-      // Dismiss dialogs
-      try { await stagehand.act('Click "Not Now" if a save login info dialog is shown'); } catch {}
-      await page.waitForTimeout(1000);
-      try { await stagehand.act('Click "Not Now" if a notifications dialog is shown'); } catch {}
-    }
-
-    // Create new post
-    await stagehand.act('Click the Create or New Post button (the plus icon in the navigation)');
-    await page.waitForTimeout(2000);
-
-    // Upload file
-    const fileInput = await page.$('input[type="file"][accept*="video"]') || await page.$('input[type="file"]');
-    if (fileInput) {
-      await fileInput.setInputFiles(videoPath);
-    } else {
-      throw new Error('Could not find file input on Instagram');
-    }
-    await page.waitForTimeout(8000);
-
-    // Click Next (crop)
-    await stagehand.act('Click the Next button');
-    await page.waitForTimeout(2000);
-    // Click Next (filter)
-    await stagehand.act('Click the Next button');
-    await page.waitForTimeout(2000);
-
-    // Fill caption
-    const caption = (metadata?.title || '') + '\n\n' + (metadata?.description || '');
-    const tags = (metadata?.tags || []).map(t => `#${t}`).join(' ');
-    const fullCaption = `${caption}\n\n${tags}`.trim();
-    await stagehand.act('Click the caption text area and type: ' + fullCaption.slice(0, 2200));
-    await page.waitForTimeout(2000);
-
-    // Share
-    await stagehand.act('Click the Share button to publish');
-    await page.waitForTimeout(10000);
-
-    console.log('[Instagram/Stagehand] Upload complete');
-    await stagehand.close();
-    return { url: 'https://www.instagram.com/' + (credentials.email || 'user') };
-  } catch (err) {
-    await stagehand.close();
-    throw err;
-  }
-}
-
-// ========== Playwright Fallback ==========
-async function uploadWithPlaywright(videoPath, metadata, credentials) {
+  console.log('[Instagram] Starting smart upload...');
   const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
@@ -140,92 +20,150 @@ async function uploadWithPlaywright(videoPath, metadata, credentials) {
   const page = context.pages()[0] || await context.newPage();
 
   try {
+    // === STEP 1: Navigate to Instagram ===
+    console.log('[Instagram] Navigating to Instagram...');
     await page.goto('https://www.instagram.com/', { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
 
-    const cookieBtn = await page.$('button:has-text("Allow"), button:has-text("Accept")');
-    if (cookieBtn) await cookieBtn.click();
+    // Dismiss cookie banner
+    await smartClick(page, [
+      'button:has-text("Allow essential and optional cookies")',
+      'button:has-text("Allow all cookies")',
+      'button:has-text("Accept")',
+      'button:has-text("Allow")',
+    ]).catch(() => {});
+    await page.waitForTimeout(1000);
 
-    const loginForm = await page.$('input[name="username"]');
-    if (loginForm) {
-      if (!credentials?.email || !credentials?.password) {
-        throw new Error('Instagram credentials missing in Settings.');
+    // === STEP 2: Handle login if needed ===
+    let maxAttempts = 12;
+    while (maxAttempts-- > 0) {
+      const hasLoginForm = await page.$('input[name="username"]');
+      const url = page.url().toLowerCase();
+
+      if (!hasLoginForm && !url.includes('login') && !url.includes('challenge')) {
+        console.log('[Instagram] Already logged in');
+        break;
       }
 
-      await page.fill('input[name="username"]', credentials.email);
-      await page.fill('input[name="password"]', credentials.password);
-      await page.click('button[type="submit"]');
-      await page.waitForTimeout(8000);
+      if (hasLoginForm) {
+        if (!credentials?.email || !credentials?.password) {
+          throw new Error('Instagram credentials not configured in Settings');
+        }
 
-      const needsVerification = await page.evaluate(() => {
-        const text = (document.body?.innerText || '').toLowerCase();
-        return text.includes('security code') || text.includes('confirmation code') ||
-               text.includes('verify your account') || text.includes('suspicious login');
-      });
+        console.log('[Instagram] Filling login credentials...');
+        await smartFill(page, ['input[name="username"]'], credentials.email);
+        await smartFill(page, ['input[name="password"]'], credentials.password);
+        await page.waitForTimeout(500);
+        await smartClick(page, ['button[type="submit"]'], 'Log in');
+        await page.waitForTimeout(8000);
+        continue;
+      }
 
-      if (needsVerification) {
+      // Check for verification
+      const pageText = await page.evaluate(() => (document.body?.innerText || '').toLowerCase().substring(0, 1500));
+      if (pageText.includes('security code') || pageText.includes('confirmation code') ||
+          pageText.includes('verify your account') || pageText.includes('suspicious login') ||
+          url.includes('challenge')) {
+        console.log('[Instagram] Verification needed...');
         const approval = await requestTelegramApproval({ telegram: credentials.telegram, platform: 'Instagram' });
         if (!approval) throw new Error('Instagram verification required but no approval received.');
         if (approval.code) {
           await tryFillVerificationCode(page, approval.code);
           await page.waitForTimeout(5000);
         }
+        continue;
       }
 
-      const notNow = await page.$('button:has-text("Not Now"), button:has-text("Not now")');
-      if (notNow) await notNow.click();
+      // Dismiss "Save login info" and "Notifications" dialogs
+      await smartClick(page, ['button:has-text("Not Now")', 'button:has-text("Not now")']);
       await page.waitForTimeout(2000);
-      const notNow2 = await page.$('button:has-text("Not Now"), button:has-text("Not now")');
-      if (notNow2) await notNow2.click();
     }
 
-    const createBtn = await page.$('[aria-label="New post"], svg[aria-label="New post"]');
-    if (createBtn) {
-      await createBtn.click();
-    } else {
-      const plusBtn = await page.$('a[href="/create/style/"], svg[aria-label="New Post"]');
-      if (plusBtn) await plusBtn.click();
+    // Dismiss any remaining "Not Now" dialogs
+    for (let i = 0; i < 2; i++) {
+      await smartClick(page, ['button:has-text("Not Now")', 'button:has-text("Not now")']).catch(() => {});
+      await page.waitForTimeout(1500);
     }
-    await page.waitForTimeout(2000);
 
-    const fileInput = await page.$('input[type="file"][accept*="video"]');
+    // === STEP 3: Click Create / New Post ===
+    console.log('[Instagram] Opening new post dialog...');
+    let createClicked = await smartClick(page, [
+      '[aria-label="New post"]',
+      'svg[aria-label="New post"]',
+      '[aria-label="New Post"]',
+      'a[href="/create/style/"]',
+      'a[href="/create/select/"]',
+    ], 'New post');
+
+    if (!createClicked) {
+      // Try by matching the + icon in nav
+      await page.evaluate(() => {
+        const links = document.querySelectorAll('a, div[role="button"], span[role="link"]');
+        for (const el of links) {
+          const label = el.getAttribute('aria-label') || el.textContent || '';
+          if (label.toLowerCase().includes('new post') || label.toLowerCase().includes('create')) {
+            el.click();
+            return;
+          }
+        }
+      });
+    }
+    await page.waitForTimeout(3000);
+
+    // === STEP 4: Upload video file ===
+    console.log('[Instagram] Selecting video file...');
+    let fileInput = await page.$('input[type="file"][accept*="video"]') || await page.$('input[type="file"]');
     if (!fileInput) {
-      const anyFileInput = await page.$('input[type="file"]');
-      if (anyFileInput) await anyFileInput.setInputFiles(videoPath);
-      else throw new Error('Could not find file input on Instagram');
-    } else {
-      await fileInput.setInputFiles(videoPath);
+      // Click "Select from computer" button if visible
+      await smartClick(page, ['button:has-text("Select from computer")', 'button:has-text("Select From Computer")']);
+      await page.waitForTimeout(1500);
+      fileInput = await page.$('input[type="file"]');
     }
+
+    if (!fileInput) throw new Error('Could not find file input on Instagram');
+    await fileInput.setInputFiles(videoPath);
     await page.waitForTimeout(8000);
 
+    // Handle "OK" for reel crop dialog if visible
+    await smartClick(page, ['button:has-text("OK")']).catch(() => {});
+    await page.waitForTimeout(1500);
+
+    // === STEP 5: Click Next (crop → filter → details) ===
+    console.log('[Instagram] Navigating post wizard...');
     for (let i = 0; i < 2; i++) {
-      const nextBtn = await page.$('button:has-text("Next"), div[role="button"]:has-text("Next")');
-      if (nextBtn) await nextBtn.click();
-      await page.waitForTimeout(2000);
+      await smartClick(page, [
+        'button:has-text("Next")',
+        'div[role="button"]:has-text("Next")',
+      ], 'Next');
+      await page.waitForTimeout(2500);
     }
 
-    if (metadata?.title || metadata?.description) {
-      const caption = (metadata.title || '') + '\n\n' + (metadata.description || '');
-      const tags = metadata?.tags?.map(t => `#${t}`).join(' ') || '';
-      const fullCaption = `${caption}\n\n${tags}`.trim();
+    // === STEP 6: Fill caption ===
+    console.log('[Instagram] Filling caption...');
+    const caption = (metadata?.title || '') + '\n\n' + (metadata?.description || '');
+    const tags = (metadata?.tags || []).map(t => `#${t}`).join(' ');
+    const fullCaption = `${caption}\n\n${tags}`.trim().slice(0, 2200);
 
-      const captionInput = await page.$('textarea[aria-label*="caption" i], div[contenteditable="true"][role="textbox"]');
-      if (captionInput) {
-        await captionInput.click();
-        await page.keyboard.type(fullCaption.slice(0, 2200));
-      }
+    const captionInput = await page.$('textarea[aria-label*="caption" i], div[contenteditable="true"][role="textbox"]');
+    if (captionInput) {
+      await captionInput.click();
+      await page.keyboard.type(fullCaption, { delay: 15 });
     }
-
     await page.waitForTimeout(2000);
 
-    const shareBtn = await page.$('button:has-text("Share"), div[role="button"]:has-text("Share")');
-    if (shareBtn) await shareBtn.click();
+    // === STEP 7: Share ===
+    console.log('[Instagram] Sharing post...');
+    await smartClick(page, [
+      'button:has-text("Share")',
+      'div[role="button"]:has-text("Share")',
+    ], 'Share');
+    await page.waitForTimeout(12000);
 
-    await page.waitForTimeout(10000);
-    console.log('[Instagram] Upload complete');
+    console.log('[Instagram] Upload complete!');
     await context.close();
     return { url: 'https://www.instagram.com/' + (credentials.email || 'user') };
   } catch (err) {
+    console.error('[Instagram] Upload failed:', err.message);
     await context.close();
     throw err;
   }
