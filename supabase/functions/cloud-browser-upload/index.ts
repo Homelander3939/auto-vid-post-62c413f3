@@ -740,13 +740,15 @@ async function agenticUpload(
             throw new Error(`${platform} verification required but Telegram is not configured.`);
           }
           const sinceIso = new Date().toISOString();
-          await sendTelegramPrompt(params.telegram, platform, params.jobId);
+          const reason = action.reasoning || 'Login verification or 2FA required';
+          await sendTelegramPrompt(params.telegram, platform, params.jobId, reason);
           const approval = await waitForTelegramApproval(params.supabase, params.telegram.chatId, sinceIso);
           if (!approval) {
+            // Send timeout message
+            await sendTelegramMessage(params.telegram, `⏱ ${platform} verification timed out after 4 minutes. The upload has been cancelled.`);
             throw new Error(`${platform} verification timed out. Reply APPROVED or CODE 123456 in Telegram.`);
           }
           if (approval.code) {
-            // Type the code into whatever input is focused/visible
             const codeTyped = await evalJS(sendCmd, `
               const inputs = document.querySelectorAll('input[type="tel"], input[type="text"], input[autocomplete="one-time-code"], input[name*="code" i], input[name*="pin" i]');
               for (const inp of inputs) {
@@ -765,7 +767,7 @@ async function agenticUpload(
             await pressKey(sendCmd, 'Enter');
             await wait(5000);
           } else {
-            await wait(10000); // User approved externally
+            await wait(10000);
           }
           history.push({ action: 'system', reasoning: 'Verification handled via Telegram' });
           break;
