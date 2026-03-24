@@ -13,6 +13,209 @@ function isDurStr(t) {
   return /^\d{1,2}:\d{2}(:\d{2})?$/.test(cleaned);
 }
 
+// ─── Copy upload session to stats session directory ─────────
+// Always refreshes the stats session from the main upload session so login
+// cookies stay fresh. Files that must not be copied (lock files, sockets) are skipped.
+function syncSessionFromUpload(uploadDir, statsDir) {
+  if (!fs.existsSync(uploadDir)) return;
+  const SKIP = new Set(['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'lockfile', '.lock']);
+  try {
+    fs.mkdirSync(statsDir, { recursive: true });
+    const files = fs.readdirSync(uploadDir).filter(f => !SKIP.has(f) && !f.endsWith('.tmp'));
+    for (const file of files) {
+      const src = path.join(uploadDir, file);
+      const dst = path.join(statsDir, file);
+      try {
+        const stat = fs.statSync(src);
+        if (stat.isFile()) {
+          fs.copyFileSync(src, dst);
+        } else if (stat.isDirectory()) {
+          fs.cpSync(src, dst, { recursive: true });
+        }
+      } catch (_) {}
+    }
+    console.log(`[Stats] Synced session: ${path.basename(uploadDir)} → ${path.basename(statsDir)}`);
+  } catch (err) {
+    console.warn(`[Stats] Session sync failed: ${err.message}`);
+  }
+}
+
+// ─── YouTube login (when session is expired) ─────────────────
+async function ensureYouTubeLogin(page, credentials = {}) {
+  const { email = '', password = '' } = credentials;
+
+  // Navigate to YouTube Studio
+  await page.goto('https://studio.youtube.com', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
+    console.warn('[Stats] YouTube Studio navigation error:', e.message);
+  });
+  await page.waitForTimeout(3000);
+
+  const rawUrl = page.url();
+  let hostname = '';
+  try { hostname = new URL(rawUrl).hostname; } catch (_) {}
+  // If we're already in Studio, we're logged in
+  if (hostname === 'studio.youtube.com') {
+    console.log('[Stats] YouTube session active');
+    return true;
+  }
+
+  if (!email || !password) {
+    console.warn('[Stats] YouTube session expired and no credentials provided for re-login');
+    return false;
+  }
+
+  console.log('[Stats] YouTube session expired, attempting login...');
+  try {
+    // Wait for email input
+    await page.waitForSelector('#identifierId, input[type="email"]', { timeout: 10000 }).catch(e => {
+      console.warn('[Stats] YouTube email selector timeout:', e.message);
+    });
+    const emailInput = await page.$('#identifierId, input[type="email"], input[name="identifier"]');
+    if (!emailInput) { console.warn('[Stats] No email input found'); return false; }
+
+    await emailInput.fill(email);
+    await page.waitForTimeout(300);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(3000);
+
+    // Enter password
+    await page.waitForSelector('input[type="password"]', { timeout: 10000 }).catch(e => {
+      console.warn('[Stats] YouTube password selector timeout:', e.message);
+    });
+    const passwordInput = await page.$('input[type="password"]:not([aria-hidden="true"])');
+    if (!passwordInput) { console.warn('[Stats] No password input found'); return false; }
+
+    await passwordInput.fill(password);
+    await page.waitForTimeout(300);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(5000);
+
+    // Check if we landed in Studio
+    let afterHostname = '';
+    try { afterHostname = new URL(page.url()).hostname; } catch (_) {}
+    if (afterHostname === 'studio.youtube.com') {
+      console.log('[Stats] YouTube login successful');
+      return true;
+    }
+    console.warn(`[Stats] YouTube login may need 2FA or additional steps (url: ${page.url()})`);
+    // Wait a bit more in case of redirect
+    await page.waitForTimeout(4000);
+    let finalHostname = '';
+    try { finalHostname = new URL(page.url()).hostname; } catch (_) {}
+    return finalHostname === 'studio.youtube.com';
+  } catch (err) {
+    console.error('[Stats] YouTube login error:', err.message);
+    return false;
+  }
+}
+
+// ─── TikTok login (when session is expired) ──────────────────
+async function ensureTikTokLogin(page, credentials = {}) {
+  const { email = '', password = '' } = credentials;
+
+  await page.goto('https://www.tiktok.com/profile', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(e => {
+    console.warn('[Stats] TikTok profile navigation error:', e.message);
+  });
+  await page.waitForTimeout(3000);
+
+  const url = page.url();
+  if (!url.includes('login')) {
+    console.log('[Stats] TikTok session active');
+    return true;
+  }
+
+  if (!email || !password) {
+    console.warn('[Stats] TikTok session expired and no credentials provided for re-login');
+    return false;
+  }
+
+  console.log('[Stats] TikTok session expired, attempting login...');
+  try {
+    // Navigate to login with email
+    await page.goto('https://www.tiktok.com/login/phone-or-email/email', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(e => {
+      console.warn('[Stats] TikTok login page navigation error:', e.message);
+    });
+    await page.waitForTimeout(2500);
+
+    const emailInput = await page.$('input[name="username"], input[type="email"], input[placeholder*="email" i], input[placeholder*="phone" i]');
+    if (!emailInput) { console.warn('[Stats] No TikTok email input found'); return false; }
+
+    await emailInput.fill(email);
+    await page.waitForTimeout(300);
+
+    const passwordInput = await page.$('input[type="password"]');
+    if (!passwordInput) { console.warn('[Stats] No TikTok password input found'); return false; }
+
+    await passwordInput.fill(password);
+    await page.waitForTimeout(300);
+
+    // Click login button
+    const loginBtn = await page.$('button[type="submit"], button:has-text("Log in"), [data-e2e="login-button"]');
+    if (loginBtn) await loginBtn.click();
+    else await page.keyboard.press('Enter');
+
+    await page.waitForTimeout(5000);
+    const newUrl = page.url();
+    const loggedIn = !newUrl.includes('login');
+    console.log(`[Stats] TikTok login ${loggedIn ? 'successful' : 'may need manual step'} (url: ${newUrl})`);
+    return loggedIn;
+  } catch (err) {
+    console.error('[Stats] TikTok login error:', err.message);
+    return false;
+  }
+}
+
+// ─── Instagram login (when session is expired) ───────────────
+async function ensureInstagramLogin(page, credentials = {}) {
+  const { email = '', password = '' } = credentials;
+
+  await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(e => {
+    console.warn('[Stats] Instagram navigation error:', e.message);
+  });
+  await page.waitForTimeout(3000);
+
+  const url = page.url();
+  // Logged in if we see the main feed (not the accounts login page)
+  const onLogin = url.includes('/accounts/login') || url.includes('/accounts/emailsignup');
+  if (!onLogin) {
+    console.log('[Stats] Instagram session active');
+    return true;
+  }
+
+  if (!email || !password) {
+    console.warn('[Stats] Instagram session expired and no credentials provided for re-login');
+    return false;
+  }
+
+  console.log('[Stats] Instagram session expired, attempting login...');
+  try {
+    const emailInput = await page.$('input[name="username"], input[type="email"]');
+    if (!emailInput) { console.warn('[Stats] No Instagram email input found'); return false; }
+
+    await emailInput.fill(email);
+    await page.waitForTimeout(300);
+
+    const passwordInput = await page.$('input[type="password"], input[name="password"]');
+    if (!passwordInput) { console.warn('[Stats] No Instagram password input found'); return false; }
+
+    await passwordInput.fill(password);
+    await page.waitForTimeout(300);
+
+    const loginBtn = await page.$('button[type="submit"]');
+    if (loginBtn) await loginBtn.click();
+    else await page.keyboard.press('Enter');
+
+    await page.waitForTimeout(5000);
+    const newUrl = page.url();
+    const loggedIn = !newUrl.includes('/accounts/login');
+    console.log(`[Stats] Instagram login ${loggedIn ? 'successful' : 'may need manual step'} (url: ${newUrl})`);
+    return loggedIn;
+  } catch (err) {
+    console.error('[Stats] Instagram login error:', err.message);
+    return false;
+  }
+}
+
 // Extract title from raw Innertube API video object — tries all known field shapes.
 function extractTitleFromApiItem(v) {
   const candidates = [
@@ -799,36 +1002,9 @@ async function checkPlatformStats(platform, credentials) {
   const sessionDir = sessionDirs[platform];
   if (!sessionDir) throw new Error(`Unknown platform: ${platform}`);
 
-  // If the dedicated stats session doesn't exist yet, try to copy cookies from the
-  // main upload session so the user doesn't have to log in again.
+  // Always sync session from the main upload session so login cookies stay fresh.
   const uploadSessionDir = path.join(__dirname, '..', 'data', 'browser-sessions', platform);
-  if (!fs.existsSync(sessionDir) && fs.existsSync(uploadSessionDir)) {
-    try {
-      fs.mkdirSync(sessionDir, { recursive: true });
-      // Skip Chromium lock / socket / temporary files that must not be copied
-      const SKIP_FILES = new Set([
-        'SingletonLock', 'SingletonSocket', 'SingletonCookie',
-        'lockfile', '.lock',
-      ]);
-      const files = fs.readdirSync(uploadSessionDir).filter(f => !SKIP_FILES.has(f) && !f.endsWith('.tmp'));
-      for (const file of files) {
-        const src = path.join(uploadSessionDir, file);
-        const dst = path.join(sessionDir, file);
-        try {
-          const stat = fs.statSync(src);
-          if (stat.isFile()) {
-            fs.copyFileSync(src, dst);
-          } else if (stat.isDirectory()) {
-            fs.cpSync(src, dst, { recursive: true });
-          }
-        } catch (_) {}
-      }
-      console.log(`[Stats] Copied browser session from ${platform} to ${platform}-stats`);
-    } catch (copyErr) {
-      console.warn(`[Stats] Could not copy session: ${copyErr.message}`);
-    }
-  }
-
+  syncSessionFromUpload(uploadSessionDir, sessionDir);
   fs.mkdirSync(sessionDir, { recursive: true });
 
   console.log(`[Stats] Opening browser for ${platform} stats check...`);
@@ -842,12 +1018,16 @@ async function checkPlatformStats(platform, credentials) {
 
   try {
     let stats = [];
+    const creds = credentials || {};
 
     if (platform === 'youtube') {
+      await ensureYouTubeLogin(page, creds);
       stats = await scrapeYouTubeShortsStats(page, { maxVideos: 20 });
     } else if (platform === 'tiktok') {
+      await ensureTikTokLogin(page, creds);
       stats = await scrapeTikTokStats(page, { maxVideos: 20 });
     } else if (platform === 'instagram') {
+      await ensureInstagramLogin(page, creds);
       stats = await scrapeInstagramReelsStats(page, { maxVideos: 20 });
     }
 

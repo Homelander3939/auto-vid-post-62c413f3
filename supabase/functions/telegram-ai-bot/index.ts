@@ -157,11 +157,11 @@ const tools = [
     type: 'function',
     function: {
       name: 'check_platform_stats',
-      description: 'Check video stats (views, likes, comments) for a platform. Opens browser, logs in, scrapes recent video stats. Use "all" to check all configured platforms.',
+      description: 'Queue a stats check (views, likes, comments) for YouTube Shorts, TikTok videos, or Instagram Reels. This ALWAYS works — it queues a command via Supabase and the local server opens the browser on the user\'s computer to scrape stats, then sends the results back to Telegram. Use "all" to check all configured platforms at once. ALWAYS call this tool immediately when the user asks about stats, views, likes, or video performance — never explain why it might fail.',
       parameters: {
         type: 'object',
         properties: {
-          platform: { type: 'string', enum: ['youtube', 'tiktok', 'instagram', 'all'], description: 'Platform to check stats for, or "all"' },
+          platform: { type: 'string', enum: ['youtube', 'tiktok', 'instagram', 'all'], description: 'Platform to check stats for, or "all" to check all platforms' },
         },
         required: ['platform'],
       },
@@ -296,7 +296,8 @@ async function executeTool(supabase: any, name: string, args: any): Promise<stri
         status: 'pending',
       });
       if (error) return `❌ Could not queue stats check: ${error.message}`;
-      return `✅ Stats check queued for ${platform === 'all' ? 'all platforms' : platform}. The local server will open the browser and send results to Telegram shortly (usually within 30 seconds).`;
+      const platformLabel = platform === 'all' ? 'all platforms' : platform;
+      return `✅ Stats check queued for ${platformLabel}. The local server will open a browser window on your PC, log into ${platformLabel}, scrape your video stats, and send the results here via Telegram. This usually takes 30-60 seconds. Make sure the local server (smart-launcher.bat) is running on your computer.`;
     }
     default: return `Unknown tool: ${name}`;
   }
@@ -778,7 +779,23 @@ YOU CAN PERFORM ACTIONS via tool calls:
 8. delete_scheduled_upload — Cancel a scheduled upload by ID
 9. edit_scheduled_upload — Edit a scheduled upload's details or reschedule it
 10. manage_recurring_schedule — Create, update, or delete recurring schedules (action: create/update/delete)
-11. check_platform_stats — Check video stats (views, likes, comments) for YouTube Shorts, TikTok, or Instagram Reels. Use "all" to check all platforms. Results are sent to Telegram once the local server processes the request (usually within 30 seconds).
+11. check_platform_stats — Queue a stats check that opens the browser on the user's computer to scrape video views, likes, and comments. Use "all" to check all platforms. Results arrive via a new Telegram message within ~60 seconds.
+
+HOW check_platform_stats WORKS (understand this architecture):
+- You call check_platform_stats(platform) → it inserts a row into the pending_commands Supabase table.
+- The local server running on the user's Windows PC polls this table every minute.
+- When it finds the command, it opens a real browser window (Playwright, headless=false) on the user's PC.
+- The browser navigates to YouTube Studio / TikTok / Instagram, logs in using saved session, and scrapes stats.
+- Stats are sent back to the user via a new Telegram message automatically.
+- YOU NEVER connect directly to the browser — you only queue the command. The browser always runs on the user's machine.
+- ALWAYS call this tool immediately. NEVER say "the browser connection is failing" or "I can't connect to your local server".
+
+STATS CHECK RULES — CRITICAL:
+- ALWAYS call check_platform_stats immediately when user asks for stats, views, likes, comments, or video performance.
+- After calling it, tell the user: "Stats check queued! The browser will open on your computer and results will arrive here in Telegram in up to 60 seconds."
+- Do NOT explain why it might fail. Do NOT say "browser automation is failing". Just call the tool and reassure the user.
+- If user says they are not getting results, call the tool again and suggest they make sure the local server (smart-launcher.bat) is running.
+- Stats are ALSO automatically checked after every successful upload and included in the upload completion notification.
 
 IMPORTANT: The live data above includes job IDs and schedule IDs. Always use these IDs when performing actions.
 When users say "delete all failed" or "clear the queue", use clear_jobs_by_status.

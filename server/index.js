@@ -670,9 +670,14 @@ async function processPendingCommands() {
                   backend: settings.backend,
                 });
                 const pName = p === 'youtube' ? 'YouTube' : p === 'tiktok' ? 'TikTok' : 'Instagram';
-                allStats.push(formatStatsForTelegram(pName, stats));
+                if (!stats || stats.length === 0) {
+                  allStats.push(`📊 ${pName}: No videos found. The browser opened and checked your ${pName} account but found no recent videos/stats yet. Try again after uploading some content.`);
+                } else {
+                  allStats.push(formatStatsForTelegram(pName, stats));
+                }
               } catch (err) {
-                allStats.push(`❌ ${p}: ${err.message}`);
+                const pName = p === 'youtube' ? 'YouTube' : p === 'tiktok' ? 'TikTok' : 'Instagram';
+                allStats.push(`❌ ${pName} stats check failed: ${err.message}\n\nMake sure you have logged into ${pName} at least once by uploading a video first (this saves the browser session). Then try again.`);
               }
             }
 
@@ -688,7 +693,9 @@ async function processPendingCommands() {
         } catch (err) {
           console.error(`[Commands] Command ${cmd.id} failed:`, err.message);
           const settingsForError = await getSettings().catch(() => null);
-          if (settingsForError) await notifyTelegram(settingsForError, `❌ Stats check failed: ${err.message}`);
+          if (settingsForError) {
+            await notifyTelegram(settingsForError, `❌ Stats check failed: ${err.message}\n\nThis usually means:\n1. The browser could not open (Playwright not installed?)\n2. The platform session needs login — upload a video first to save the session\n3. The platform website changed its layout\n\nTip: Make sure smart-launcher.bat is running and you have uploaded at least one video to the platform.`);
+          }
           await supabase.from('pending_commands').update({
             status: 'failed', result: err.message, completed_at: new Date().toISOString(),
           }).eq('id', cmd.id).catch(() => {});
