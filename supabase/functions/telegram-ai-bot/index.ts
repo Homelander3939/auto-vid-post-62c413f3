@@ -350,12 +350,12 @@ async function getAppContext(supabase: any): Promise<string> {
     { data: jobs },
     { data: scheduled },
     { data: settings },
-    { data: scheduleConfig },
+    { data: scheduleConfigs },
   ] = await Promise.all([
     supabase.from('upload_jobs').select('*').order('created_at', { ascending: false }).limit(20),
     supabase.from('scheduled_uploads').select('*').order('scheduled_at', { ascending: true }).limit(20),
     supabase.from('app_settings').select('*').eq('id', 1).single(),
-    supabase.from('schedule_config').select('*').eq('id', 1).single(),
+    supabase.from('schedule_config').select('*').order('id', { ascending: true }),
   ]);
 
   const pendingJobs = (jobs || []).filter((j: any) => j.status === 'pending');
@@ -365,10 +365,13 @@ async function getAppContext(supabase: any): Promise<string> {
   const upcomingScheduled = (scheduled || []).filter((s: any) => s.status === 'scheduled');
 
   const formatJob = (j: any) =>
-    `• "${j.title || j.video_file_name}" → ${j.target_platforms?.join(', ') || 'none'} [${j.status}]`;
+    `  ID: ${j.id} | "${j.title || j.video_file_name}" → ${j.target_platforms?.join(', ') || 'none'} [${j.status}]`;
 
   const formatScheduled = (s: any) =>
-    `• "${s.title || s.video_file_name}" → ${new Date(s.scheduled_at).toLocaleString()} [${s.status}]`;
+    `  ID: ${s.id} | "${s.title || s.video_file_name}" → ${s.target_platforms?.join(', ')} at ${new Date(s.scheduled_at).toLocaleString()} [${s.status}]`;
+
+  const formatRecurring = (c: any) =>
+    `  #${c.id} "${c.name}" | ${c.enabled ? 'ON' : 'OFF'} | ${c.cron_expression} | ${c.platforms?.join(', ')} | folder: ${c.folder_path || '(none)'}${c.end_at ? ` | ends: ${new Date(c.end_at).toLocaleString()}` : ''}`;
 
   const platformStatus = [];
   if (settings) {
@@ -379,13 +382,19 @@ async function getAppContext(supabase: any): Promise<string> {
 
   return `
 === LIVE APP DATA ===
-Platforms: ${platformStatus.join(', ') || 'None'}
+Platforms: ${platformStatus.join(', ') || 'None configured'}
+Upload Mode: ${settings?.upload_mode || 'local'}
+
 Queue: ${pendingJobs.length} pending, ${processingJobs.length} processing, ${completedJobs.length} done, ${failedJobs.length} failed
-${pendingJobs.length > 0 ? `Pending:\n${pendingJobs.map(formatJob).join('\n')}` : 'No pending jobs.'}
+${pendingJobs.length > 0 ? `Pending:\n${pendingJobs.map(formatJob).join('\n')}` : ''}
 ${failedJobs.length > 0 ? `Failed:\n${failedJobs.map(formatJob).join('\n')}` : ''}
-${completedJobs.length > 0 ? `Recent done:\n${completedJobs.slice(0, 3).map(formatJob).join('\n')}` : ''}
-Scheduled: ${upcomingScheduled.length} upcoming
+${completedJobs.length > 0 ? `Recent completed:\n${completedJobs.slice(0, 5).map(formatJob).join('\n')}` : ''}
+
+Scheduled uploads: ${upcomingScheduled.length} upcoming
 ${upcomingScheduled.length > 0 ? upcomingScheduled.map(formatScheduled).join('\n') : ''}
+
+Recurring schedules: ${(scheduleConfigs || []).length}
+${(scheduleConfigs || []).length > 0 ? (scheduleConfigs || []).map(formatRecurring).join('\n') : 'None'}
 ===`;
 }
 
