@@ -1014,12 +1014,25 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     // ===== PHASE 9: CLOSE POPUP & SCRAPE SHORTS STATS =====
     let recentStats = [];
     try {
-      // Close any success/processing popup/dialog
+      // Close any success/processing popup/dialog — try multiple selectors
       await page.evaluate(() => {
-        const closeButtons = document.querySelectorAll('[aria-label="Close"], #close-button, .close-button, ytcp-button[id="close-button"]');
-        for (const btn of closeButtons) { btn.click(); }
+        const closeSelectors = [
+          '[aria-label="Close"]',
+          '#close-button',
+          '.close-button',
+          'ytcp-button[id="close-button"]',
+          'paper-button[id="close-button"]',
+          'tp-yt-paper-button[id="close-button"]',
+        ];
+        for (const sel of closeSelectors) {
+          document.querySelectorAll(sel).forEach(btn => { try { btn.click(); } catch (_) {} });
+        }
       });
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(2000);
+
+      // Navigate to YouTube Studio home so the scraper starts from a clean page
+      await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 20000 }).catch(() => {});
+      await page.waitForTimeout(3000);
 
       const { scrapeYouTubeShortsStats } = require('./stats-scraper');
       recentStats = await scrapeYouTubeShortsStats(page, { maxVideos: 10 });

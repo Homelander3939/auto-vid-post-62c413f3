@@ -624,6 +624,84 @@ async function fixStaleJobs() {
   }
 }
 
+// --- Pending commands (from Telegram bot via Supabase) ---
+const runningCommands = new Set();
+
+async function processPendingCommands() {
+  try {
+    const { data: commands } = await supabase
+      .from('pending_commands')
+      .select('*')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true })
+      .limit(5);
+
+    for (const cmd of (commands || [])) {
+      if (runningCommands.has(cmd.id)) continue;
+      runningCommands.add(cmd.id);
+
+      // Mark as processing immediately
+      await supabase.from('pending_commands').update({ status: 'processing' }).eq('id', cmd.id);
+
+      // Execute asynchronously so cron is not blocked
+      (async () => {
+        try {
+          if (cmd.command === 'check_stats') {
+            const platform = cmd.args?.platform || 'all';
+            const settings = await getSettings();
+            const platforms = platform === 'all'
+              ? ['youtube', 'tiktok', 'instagram'].filter(p => settings[p]?.enabled && settings[p]?.email)
+              : [platform];
+
+            if (platforms.length === 0) {
+              await notifyTelegram(settings, `⚠️ No configured platforms found for stats check.`);
+              await supabase.from('pending_commands').update({
+                status: 'failed', result: 'No configured platforms', completed_at: new Date().toISOString(),
+              }).eq('id', cmd.id);
+              return;
+            }
+
+            const allStats = [];
+            for (const p of platforms) {
+              try {
+                const stats = await checkPlatformStats(p, {
+                  ...settings[p],
+                  telegram: settings.telegram,
+                  backend: settings.backend,
+                });
+                const pName = p === 'youtube' ? 'YouTube' : p === 'tiktok' ? 'TikTok' : 'Instagram';
+                allStats.push(formatStatsForTelegram(pName, stats));
+              } catch (err) {
+                allStats.push(`❌ ${p}: ${err.message}`);
+              }
+            }
+
+            await notifyTelegram(settings, allStats.join('\n\n'));
+            await supabase.from('pending_commands').update({
+              status: 'completed', result: 'sent', completed_at: new Date().toISOString(),
+            }).eq('id', cmd.id);
+          } else {
+            await supabase.from('pending_commands').update({
+              status: 'failed', result: `Unknown command: ${cmd.command}`, completed_at: new Date().toISOString(),
+            }).eq('id', cmd.id);
+          }
+        } catch (err) {
+          console.error(`[Commands] Command ${cmd.id} failed:`, err.message);
+          const settingsForError = await getSettings().catch(() => null);
+          if (settingsForError) await notifyTelegram(settingsForError, `❌ Stats check failed: ${err.message}`);
+          await supabase.from('pending_commands').update({
+            status: 'failed', result: err.message, completed_at: new Date().toISOString(),
+          }).eq('id', cmd.id).catch(() => {});
+        } finally {
+          runningCommands.delete(cmd.id);
+        }
+      })();
+    }
+  } catch (e) {
+    console.error('[Commands] Poll error:', e.message);
+  }
+}
+
 // --- Cron: poll every minute ---
 let cronJob = null;
 function setupCron() {
@@ -633,6 +711,7 @@ function setupCron() {
       await fixStaleJobs();
       await processScheduledUploads();
       await processRecurringSchedule();
+      await processPendingCommands();
       const { data: jobs } = await supabase
         .from('upload_jobs')
         .select('id')

@@ -286,26 +286,17 @@ async function executeTool(supabase: any, name: string, args: any): Promise<stri
       return '❌ Unknown action. Use create, update, or delete.';
     }
     case 'check_platform_stats': {
-      // This triggers the local server to open browser and scrape stats
+      // Queue a stats check via the pending_commands table so the local server
+      // (which runs on the user's machine) picks it up and opens the browser.
+      // Direct fetch to localhost:3001 cannot work from an edge function.
       const platform = args.platform || 'all';
-      const endpoint = platform === 'all' ? '/api/check-all-stats' : '/api/check-stats';
-      const body = platform === 'all' ? {} : { platform };
-      
-      // Try local server first
-      try {
-        const localResp = await fetch(`http://localhost:3001${endpoint}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (localResp.ok) {
-          const result = await localResp.json();
-          return `✅ Stats check started for ${platform === 'all' ? 'all platforms' : platform}. Results will be sent to you in Telegram shortly.`;
-        }
-      } catch {
-        // Local server not reachable
-      }
-      return `⚠️ Stats check requires the local server to be running (it opens a browser to scrape stats). Start your local server and try again.`;
+      const { error } = await supabase.from('pending_commands').insert({
+        command: 'check_stats',
+        args: { platform },
+        status: 'pending',
+      });
+      if (error) return `❌ Could not queue stats check: ${error.message}`;
+      return `✅ Stats check queued for ${platform === 'all' ? 'all platforms' : platform}. The local server will open the browser and send results to Telegram shortly (usually within 30 seconds).`;
     }
     default: return `Unknown tool: ${name}`;
   }
@@ -787,7 +778,7 @@ YOU CAN PERFORM ACTIONS via tool calls:
 8. delete_scheduled_upload — Cancel a scheduled upload by ID
 9. edit_scheduled_upload — Edit a scheduled upload's details or reschedule it
 10. manage_recurring_schedule — Create, update, or delete recurring schedules (action: create/update/delete)
-11. check_platform_stats — Check video stats (views, likes, comments) for YouTube Shorts, TikTok, or Instagram Reels. Use "all" to check all platforms. Requires local server.
+11. check_platform_stats — Check video stats (views, likes, comments) for YouTube Shorts, TikTok, or Instagram Reels. Use "all" to check all platforms. Results are sent to Telegram once the local server processes the request (usually within 30 seconds).
 
 IMPORTANT: The live data above includes job IDs and schedule IDs. Always use these IDs when performing actions.
 When users say "delete all failed" or "clear the queue", use clear_jobs_by_status.

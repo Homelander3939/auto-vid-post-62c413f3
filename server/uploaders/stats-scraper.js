@@ -12,7 +12,7 @@ async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
   try {
     // Navigate to YouTube Studio
     await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(3000);
 
     // Extract the channel ID from the Studio URL (format: /channel/UCXXXXXXX)
     const studioChannelId = await page.evaluate(() => {
@@ -61,40 +61,65 @@ async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
     }).catch(() => null);
 
     if (apiResult) {
-      const videoList = apiResult.videos || apiResult.items || [];
-      const apiStats = videoList.slice(0, maxVideos).map(v => {
-        const videoId = v.videoId || '';
+      // Try multiple response shapes the Studio API may use
+      const videoList =
+        apiResult.videos ||
+        apiResult.items ||
+        apiResult.videoItems ||
+        apiResult.videoList?.videoItems ||
+        [];
 
-        let title = '';
-        if (typeof v.title === 'string') title = v.title;
-        else if (v.title?.simpleText) title = v.title.simpleText;
-        else if (v.title?.runs) title = (v.title.runs).map(r => r.text || '').join('');
-        else if (v.snippet?.title) title = v.snippet.title;
+      if (videoList.length > 0) {
+        function isDurStr(t) { return /^\d{1,2}:\d{2}(:\d{2})?$/.test(String(t || '').trim()); }
 
-        let views = '—', likes = '—', comments = '—';
-        const m = v.metrics || v.statistics || {};
-        if (m.viewCount !== undefined) {
-          views = typeof m.viewCount === 'object'
-            ? String(m.viewCount.views ?? m.viewCount.displayValue ?? '—')
-            : String(m.viewCount);
+        const seenIds = new Set();
+        const apiStats = [];
+
+        for (const v of videoList) {
+          if (apiStats.length >= maxVideos) break;
+
+          // Video ID — try multiple field names
+          const videoId = v.videoId || v.id || v.video?.videoId || '';
+          if (!videoId || seenIds.has(videoId)) continue;
+          seenIds.add(videoId);
+
+          // Title — try multiple field shapes
+          let title = '';
+          if (typeof v.title === 'string' && v.title) title = v.title;
+          else if (v.title?.simpleText) title = v.title.simpleText;
+          else if (v.title?.runs?.length) title = v.title.runs.map(r => r.text || '').join('');
+          else if (typeof v.videoTitle === 'string' && v.videoTitle) title = v.videoTitle;
+          else if (v.snippet?.title) title = v.snippet.title;
+          else if (v.video?.videoTitle) title = v.video.videoTitle;
+
+          // Skip items whose title is actually a duration string
+          if (!title || isDurStr(title)) continue;
+
+          let views = '—', likes = '—', comments = '—';
+          const m = v.metrics || v.statistics || {};
+          if (m.viewCount !== undefined) {
+            views = typeof m.viewCount === 'object'
+              ? String(m.viewCount.views ?? m.viewCount.displayValue ?? '—')
+              : String(m.viewCount);
+          }
+          if (m.likeCount !== undefined) {
+            likes = typeof m.likeCount === 'object'
+              ? String(m.likeCount.likes ?? m.likeCount.displayValue ?? '—')
+              : String(m.likeCount);
+          }
+          if (m.commentCount !== undefined) {
+            comments = typeof m.commentCount === 'object'
+              ? String(m.commentCount.comments ?? m.commentCount.displayValue ?? '—')
+              : String(m.commentCount);
+          }
+
+          apiStats.push({ title, videoId, url: `https://youtube.com/shorts/${videoId}`, views, likes, comments });
         }
-        if (m.likeCount !== undefined) {
-          likes = typeof m.likeCount === 'object'
-            ? String(m.likeCount.likes ?? m.likeCount.displayValue ?? '—')
-            : String(m.likeCount);
-        }
-        if (m.commentCount !== undefined) {
-          comments = typeof m.commentCount === 'object'
-            ? String(m.commentCount.comments ?? m.commentCount.displayValue ?? '—')
-            : String(m.commentCount);
-        }
 
-        return { title: title || '', videoId, url: videoId ? `https://youtube.com/shorts/${videoId}` : '', views, likes, comments };
-      }).filter(v => v.title && v.videoId);
-
-      if (apiStats.length > 0) {
-        console.log(`[Stats] Found ${apiStats.length} YouTube Shorts via Studio Innertube API`);
-        return apiStats;
+        if (apiStats.length > 0) {
+          console.log(`[Stats] Found ${apiStats.length} YouTube Shorts via Studio Innertube API`);
+          return apiStats;
+        }
       }
     }
 
@@ -109,7 +134,7 @@ async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
     } else {
       await page.goto('https://studio.youtube.com/videos', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
     }
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(4000);
 
     // Click the Shorts tab if visible
     await page.evaluate(() => {
@@ -118,7 +143,7 @@ async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
         if ((tab.textContent || '').toLowerCase().trim() === 'shorts') { tab.click(); return; }
       }
     });
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(3000);
 
     // DOM scraping with shadow-DOM traversal and deduplication
     const domStats = await page.evaluate((max) => {
@@ -134,16 +159,27 @@ async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
         return found;
       }
 
-      function isDur(t) { return /^\d{1,2}:\d{2}(:\d{2})?$/.test((t || '').trim()); }
+      // Robust duration check: strip non-visible unicode whitespace before testing
+      function isDur(t) {
+        const cleaned = String(t || '').replace(/[\u00a0\u200b\u200c\u200d\ufeff]/g, ' ').trim();
+        return /^\d{1,2}:\d{2}(:\d{2})?$/.test(cleaned);
+      }
 
       function isInsideThumbnail(el) {
         let p = el;
-        for (let i = 0; i < 12; i++) { // traverse up to 12 ancestor levels
+        // 15 levels to reliably traverse nested shadow-DOM roots in YouTube Studio's
+        // Polymer component tree (ytcp-video-thumbnail may be several layers deep).
+        for (let i = 0; i < 15; i++) {
           if (!p) break;
           const tag = (p.tagName || '').toLowerCase();
           const cls = (p.className || '').toString().toLowerCase();
-          if (tag === 'ytcp-video-thumbnail' || cls.includes('thumbnail')) return true;
-          p = p.parentElement || (p.getRootNode && p.getRootNode().host) || null;
+          const id = (p.id || '').toLowerCase();
+          if (
+            tag === 'ytcp-video-thumbnail' ||
+            cls.includes('thumbnail') ||
+            id.includes('thumbnail')
+          ) return true;
+          p = p.parentElement || (p.getRootNode && p.getRootNode() !== document && p.getRootNode().host) || null;
         }
         return false;
       }
@@ -168,24 +204,32 @@ async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
         seenIds.add(videoId);
 
         // ── Title ─────────────────────────────────────────────────────────
-        // Priority: specific title elements that are NOT inside the thumbnail.
+        // Priority 1: aria-label of the row itself (YouTube Studio sets this to the video title)
         let title = '';
-        const titleCandidates = deepAll(row, '#video-title, [id="video-title"], [class*="title-text"], h3');
-        for (const el of titleCandidates) {
-          if (isInsideThumbnail(el)) continue;
-          const t = (el.textContent || '').trim();
-          if (!isDur(t) && t.length > 2) { title = t; break; }
+        const rowLabel = (row.getAttribute('aria-label') || '').trim();
+        if (rowLabel && !isDur(rowLabel) && rowLabel.length > 2) {
+          title = rowLabel;
         }
 
-        // Fallback: links to /edit or /details (these carry the real title text)
+        // Priority 2: edit/details link aria-label or text (most reliable non-DOM source)
         if (!title) {
           for (const link of deepAll(row, 'a[href*="/edit"], a[href*="/details"]')) {
-            const t = (link.textContent || '').trim();
-            if (!isDur(t) && t.length > 5) { title = t; break; }
+            const t = (link.getAttribute('aria-label') || link.textContent || '').trim();
+            if (!isDur(t) && t.length > 2) { title = t; break; }
           }
         }
 
-        // Last-resort: longest leaf-node text that isn't a duration or plain number
+        // Priority 3: specific title elements NOT inside the thumbnail
+        if (!title) {
+          const titleCandidates = deepAll(row, '#video-title, [id="video-title"], [class*="title-text"], h3');
+          for (const el of titleCandidates) {
+            if (isInsideThumbnail(el)) continue;
+            const t = (el.textContent || '').trim();
+            if (!isDur(t) && t.length > 2) { title = t; break; }
+          }
+        }
+
+        // Priority 4: longest leaf-node text that isn't a duration or plain number
         if (!title) {
           let best = '';
           for (const el of deepAll(row, 'span, div')) {
@@ -197,7 +241,7 @@ async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
           title = best;
         }
 
-        if (!title) continue;
+        if (!title || isDur(title)) continue;
 
         // ── Stats: aria-label first, positional fallback ──────────────────
         let views = '—', likes = '—', comments = '—';
@@ -292,7 +336,11 @@ async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '
     await page.waitForTimeout(2000);
 
     const results = await page.evaluate((max) => {
-      function isDur(t) { return /^\d{1,2}:\d{2}(:\d{2})?$/.test((t || '').trim()); }
+      // Robust duration check that handles unicode whitespace
+      function isDur(t) {
+        const cleaned = String(t || '').replace(/[\u00a0\u200b\u200c\u200d\ufeff]/g, ' ').trim();
+        return /^\d{1,2}:\d{2}(:\d{2})?$/.test(cleaned);
+      }
 
       const seenIds = new Set();
       const out = [];
@@ -304,27 +352,44 @@ async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '
       for (const item of items) {
         if (out.length >= max) break;
 
-        // Get the primary anchor (skip thumbnail overlays with duration text)
-        let titleEl = item.querySelector('a#video-title, h3 a#video-title');
-        if (!titleEl) {
-          // Try any anchor whose text is NOT a duration
-          for (const a of item.querySelectorAll('a[href*="/shorts/"], a[href*="/watch?"]')) {
-            const t = (a.textContent || '').trim();
-            if (t.length > 5 && !isDur(t)) { titleEl = a; break; }
+        // Extract video ID first — require a valid ID to avoid duplicates
+        const allLinks = Array.from(item.querySelectorAll('a[href*="/shorts/"], a[href*="/watch?"]'));
+        let href = '';
+        let shortId = '';
+        for (const a of allLinks) {
+          const h = a.getAttribute('href') || '';
+          const sid = h.match(/\/shorts\/([a-zA-Z0-9_-]+)/)?.[1] || h.match(/[?&]v=([a-zA-Z0-9_-]+)/)?.[1] || '';
+          if (sid) { href = h; shortId = sid; break; }
+        }
+        // Skip items without a valid video ID (prevents duplicates from empty IDs)
+        if (!shortId) continue;
+        if (seenIds.has(shortId)) continue;
+        seenIds.add(shortId);
+
+        const url = href.startsWith('http') ? href : `https://www.youtube.com${href}`;
+
+        // Title: prefer #video-title element text, then title attribute, then link text
+        let title = '';
+        const titleEl = item.querySelector('a#video-title, h3 a#video-title, yt-formatted-string#video-title, span#video-title');
+        if (titleEl) {
+          const t = (titleEl.getAttribute('title') || titleEl.textContent || '').trim();
+          if (t && !isDur(t)) title = t;
+        }
+        if (!title) {
+          // Try title attribute on any anchor link with the shortId
+          for (const a of allLinks) {
+            const t = (a.getAttribute('title') || a.getAttribute('aria-label') || '').trim();
+            if (t && !isDur(t) && t.length > 2) { title = t; break; }
           }
         }
-
-        const rawTitle = (titleEl?.textContent || item.querySelector('#video-title')?.textContent || '').trim();
-        const title = isDur(rawTitle) ? '' : rawTitle;
-        if (!title) continue;
-
-        // Extract video ID for dedup
-        const href = titleEl?.getAttribute('href') || item.querySelector('a[href*="/shorts/"], a[href*="/watch?"]')?.getAttribute('href') || '';
-        const shortId = href.match(/\/shorts\/([a-zA-Z0-9_-]+)/)?.[1] || href.match(/[?&]v=([a-zA-Z0-9_-]+)/)?.[1] || '';
-        if (shortId && seenIds.has(shortId)) continue;
-        if (shortId) seenIds.add(shortId);
-
-        const url = href.startsWith('http') ? href : href ? `https://www.youtube.com${href}` : '';
+        if (!title) {
+          // Fall back to link text, but only if it's not a duration
+          for (const a of allLinks) {
+            const t = (a.textContent || '').trim();
+            if (t && !isDur(t) && t.length > 2) { title = t; break; }
+          }
+        }
+        if (!title || isDur(title)) continue;
 
         // Views: first metadata span that contains a view count
         let views = '—';
@@ -501,15 +566,47 @@ function formatStatsForTelegram(platform, stats) {
 
 // ─── Standalone stats checker (opens its own browser) ───────
 async function checkPlatformStats(platform, credentials) {
+  // Use dedicated *-stats session directories to avoid conflicting with active
+  // upload browser sessions which use the bare platform name directory.
   const sessionDirs = {
-    youtube: path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube'),
-    tiktok: path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok'),
-    instagram: path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram'),
+    youtube: path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube-stats'),
+    tiktok: path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok-stats'),
+    instagram: path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram-stats'),
   };
 
   const sessionDir = sessionDirs[platform];
   if (!sessionDir) throw new Error(`Unknown platform: ${platform}`);
-  
+
+  // If the dedicated stats session doesn't exist yet, try to copy cookies from the
+  // main upload session so the user doesn't have to log in again.
+  const uploadSessionDir = path.join(__dirname, '..', 'data', 'browser-sessions', platform);
+  if (!fs.existsSync(sessionDir) && fs.existsSync(uploadSessionDir)) {
+    try {
+      fs.mkdirSync(sessionDir, { recursive: true });
+      // Skip Chromium lock / socket / temporary files that must not be copied
+      const SKIP_FILES = new Set([
+        'SingletonLock', 'SingletonSocket', 'SingletonCookie',
+        'lockfile', '.lock',
+      ]);
+      const files = fs.readdirSync(uploadSessionDir).filter(f => !SKIP_FILES.has(f) && !f.endsWith('.tmp'));
+      for (const file of files) {
+        const src = path.join(uploadSessionDir, file);
+        const dst = path.join(sessionDir, file);
+        try {
+          const stat = fs.statSync(src);
+          if (stat.isFile()) {
+            fs.copyFileSync(src, dst);
+          } else if (stat.isDirectory()) {
+            fs.cpSync(src, dst, { recursive: true });
+          }
+        } catch (_) {}
+      }
+      console.log(`[Stats] Copied browser session from ${platform} to ${platform}-stats`);
+    } catch (copyErr) {
+      console.warn(`[Stats] Could not copy session: ${copyErr.message}`);
+    }
+  }
+
   fs.mkdirSync(sessionDir, { recursive: true });
 
   console.log(`[Stats] Opening browser for ${platform} stats check...`);
@@ -523,7 +620,7 @@ async function checkPlatformStats(platform, credentials) {
 
   try {
     let stats = [];
-    
+
     if (platform === 'youtube') {
       stats = await scrapeYouTubeShortsStats(page, { maxVideos: 20 });
     } else if (platform === 'tiktok') {
