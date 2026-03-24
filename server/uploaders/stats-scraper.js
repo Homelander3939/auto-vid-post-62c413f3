@@ -1,153 +1,264 @@
 // Stats scraper — scrapes video stats from YouTube Shorts, TikTok, and Instagram Reels
 // using an existing Playwright page/context (reuses browser session from uploaders).
+// Agentic approach: navigates to each video's Studio analytics page for real data.
 
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 
+// ─── Helpers ────────────────────────────────────────────────
+
+function isDurStr(t) {
+  const cleaned = String(t || '').replace(/[\u00a0\u200b\u200c\u200d\ufeff]/g, ' ').trim();
+  return /^\d{1,2}:\d{2}(:\d{2})?$/.test(cleaned);
+}
+
+// Extract title from raw Innertube API video object — tries all known field shapes.
+function extractTitleFromApiItem(v) {
+  const candidates = [
+    // Standard YouTube Data API v3
+    v.snippet?.title,
+    // Innertube Creator Studio variants
+    v.titleFormattedString?.content,
+    v.titleFormattedString?.runs?.[0]?.text,
+    v.titleAndDescDetails?.basicDetails?.title,
+    v.titleAndDescDetails?.creatorVideo?.title,
+    v.titleAndDesc?.title,
+    v.videoDetails?.title,
+    v.metadata?.title,
+    v.title?.content,
+    // Simple string
+    typeof v.title === 'string' ? v.title : undefined,
+    // Nested text objects
+    v.title?.simpleText,
+    v.title?.runs?.map?.(r => r.text || '').join(''),
+    // Other known shapes
+    typeof v.videoTitle === 'string' ? v.videoTitle : undefined,
+    v.video?.videoTitle,
+    v.video?.title?.simpleText,
+    v.basicDetails?.title,
+  ];
+  for (const c of candidates) {
+    const s = String(c || '').trim();
+    if (s && !isDurStr(s) && s.length > 1) return s;
+  }
+  return '';
+}
+
+// Extract view/like/comment counts from raw Innertube API video object.
+function extractStatsFromApiItem(v) {
+  let views = '—', likes = '—', comments = '—';
+
+  // Try every known metrics wrapper
+  const metricsWrappers = [
+    v.metrics,
+    v.statistics,
+    v.metricsDetails,
+    v.stats,
+    v.analyticsStats,
+    v.videoStats,
+    v.videoAnalytics,
+  ];
+
+  for (const m of metricsWrappers) {
+    if (!m) continue;
+
+    if (views === '—' && m.viewCount !== undefined) {
+      views = typeof m.viewCount === 'object'
+        ? String(m.viewCount.views ?? m.viewCount.value ?? m.viewCount.displayValue ?? '—')
+        : String(m.viewCount);
+    }
+    if (likes === '—' && m.likeCount !== undefined) {
+      likes = typeof m.likeCount === 'object'
+        ? String(m.likeCount.likes ?? m.likeCount.value ?? m.likeCount.displayValue ?? '—')
+        : String(m.likeCount);
+    }
+    if (comments === '—' && m.commentCount !== undefined) {
+      comments = typeof m.commentCount === 'object'
+        ? String(m.commentCount.comments ?? m.commentCount.value ?? m.commentCount.displayValue ?? '—')
+        : String(m.commentCount);
+    }
+
+    // Flat numeric string fields
+    if (views === '—' && m.views) views = String(m.views);
+    if (likes === '—' && m.likes) likes = String(m.likes);
+    if (comments === '—' && m.comments) comments = String(m.comments);
+  }
+
+  // Try videoSummaryItems array (another Innertube shape)
+  const summaryItems = v.metricsDetails?.videoSummaryItems || v.videoSummaryItems || [];
+  for (const item of summaryItems) {
+    const label = String(item.label || item.labelText || item.title || '').toLowerCase();
+    const value = String(item.value || item.count || item.formattedValue || '').replace(/,/g, '');
+    if (/view/.test(label) && views === '—' && value) views = value;
+    if (/like/.test(label) && likes === '—' && value) likes = value;
+    if (/comment/.test(label) && comments === '—' && value) comments = value;
+  }
+
+  return { views, likes, comments };
+}
+
 // ─── YouTube Shorts Stats ───────────────────────────────────
 
 async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
-  console.log('[Stats] Scraping YouTube Shorts stats...');
-  try {
-    // Navigate to YouTube Studio
-    await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(3000);
+  console.log('[Stats] Starting agentic YouTube Shorts stats collection...');
 
-    // Extract the channel ID from the Studio URL (format: /channel/UCXXXXXXX)
-    const studioChannelId = await page.evaluate(() => {
-      const m = window.location.href.match(/\/channel\/(UC[a-zA-Z0-9_-]+)/);
-      return m ? m[1] : '';
-    }).catch(() => '');
+  // Use a decent viewport for full Studio rendering
+  try { await page.setViewportSize({ width: 1440, height: 900 }); } catch (_) {}
 
-    // Grab the @handle for the public Shorts page fallback
-    const channelHandle = await page.evaluate(() => {
-      const links = Array.from(document.querySelectorAll('a[href*="youtube.com/@"], a[href*="/@"]'));
-      for (const link of links) {
-        const m = (link.getAttribute('href') || '').match(/\/@([^/?&]+)/);
-        if (m) return '@' + m[1];
-      }
-      return '';
-    }).catch(() => '');
+  // ── Step 1: Navigate to YouTube Studio and collect session info ──────────
+  console.log('[Stats] Navigating to YouTube Studio...');
+  await page.goto('https://studio.youtube.com', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(4000);
 
-    // ── STRATEGY 1: YouTube Studio Innertube API (most reliable) ─────────────
-    // Studio is an SPA that uses the Innertube API internally. Since the page
-    // already holds a valid session, we can call the same endpoint directly.
-    const apiResult = await page.evaluate(async () => {
-      try {
-        const apiKey = (window.ytcfg && window.ytcfg.get('INNERTUBE_API_KEY')) || '';
-        const clientVer = (window.ytcfg && window.ytcfg.get('INNERTUBE_CLIENT_VERSION')) || '1.20250101.00.00';
-        if (!apiKey) return null;
+  const studioInfo = await page.evaluate(() => {
+    const apiKey = (window.ytcfg && window.ytcfg.get('INNERTUBE_API_KEY')) || '';
+    const clientVer = (window.ytcfg && window.ytcfg.get('INNERTUBE_CLIENT_VERSION')) || '1.20250101.00.00';
+    const m = window.location.href.match(/\/channel\/(UC[a-zA-Z0-9_-]+)/);
+    const channelId = m ? m[1] : '';
+    const handleLinks = Array.from(document.querySelectorAll('a[href*="/@"]'));
+    let channelHandle = '';
+    for (const link of handleLinks) {
+      const hm = (link.getAttribute('href') || '').match(/\/@([^/?&]+)/);
+      if (hm) { channelHandle = '@' + hm[1]; break; }
+    }
+    return { apiKey, clientVer, channelId, channelHandle };
+  }).catch(() => ({ apiKey: '', clientVer: '1.20250101.00.00', channelId: '', channelHandle: '' }));
 
-        const resp = await fetch(
-          `/youtubei/v1/creator/list_creator_videos?key=${apiKey}&prettyPrint=false`,
-          {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json', 'X-Goog-AuthUser': '0' },
-            body: JSON.stringify({
-              filter: { videoType: { type: 'VIDEO_TYPE_SHORT' } },
-              order: 'VIDEO_ORDER_DISPLAY_DATE_DESC',
-              pageSize: 30,
-              context: {
-                client: { clientName: 'CREATOR_STUDIO', clientVersion: clientVer },
-              },
-            }),
-          }
-        );
-        if (!resp.ok) return null;
-        return await resp.json();
-      } catch (_) { return null; }
-    }).catch(() => null);
+  console.log(`[Stats] channelId=${studioInfo.channelId || 'unknown'}, apiKey=${studioInfo.apiKey ? 'found' : 'missing'}`);
 
-    if (apiResult) {
-      // Try multiple response shapes the Studio API may use
-      const videoList =
-        apiResult.videos ||
-        apiResult.items ||
-        apiResult.videoItems ||
-        apiResult.videoList?.videoItems ||
-        [];
+  // ── Step 2: Get video IDs via Innertube API ──────────────────────────────
+  let videoIds = [];
+  const apiVideoDataMap = {}; // videoId → raw API item
 
-      if (videoList.length > 0) {
-        function isDurStr(t) { return /^\d{1,2}:\d{2}(:\d{2})?$/.test(String(t || '').trim()); }
+  if (studioInfo.apiKey) {
+    try {
+      const rawJson = await page.evaluate(async ({ apiKey, clientVer }) => {
+        try {
+          const resp = await fetch(
+            `/youtubei/v1/creator/list_creator_videos?key=${apiKey}&prettyPrint=false`,
+            {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'X-Goog-AuthUser': '0' },
+              body: JSON.stringify({
+                filter: { videoType: { type: 'VIDEO_TYPE_SHORT' } },
+                order: 'VIDEO_ORDER_DISPLAY_DATE_DESC',
+                pageSize: 30,
+                context: { client: { clientName: 'CREATOR_STUDIO', clientVersion: clientVer } },
+              }),
+            }
+          );
+          if (!resp.ok) return null;
+          return await resp.text();
+        } catch (_) { return null; }
+      }, { apiKey: studioInfo.apiKey, clientVer: studioInfo.clientVer });
+
+      if (rawJson) {
+        const data = JSON.parse(rawJson);
+        // Log first 500 chars of response to help with debugging
+        console.log('[Stats] Innertube API raw snippet:', rawJson.slice(0, 500));
+
+        const videoList =
+          data.videos ||
+          data.items ||
+          data.videoItems ||
+          data.videoList?.videoItems ||
+          data.content?.itemSectionRenderer?.contents ||
+          [];
 
         const seenIds = new Set();
-        const apiStats = [];
-
         for (const v of videoList) {
-          if (apiStats.length >= maxVideos) break;
-
-          // Video ID — try multiple field names
-          const videoId = v.videoId || v.id || v.video?.videoId || '';
-          if (!videoId || seenIds.has(videoId)) continue;
-          seenIds.add(videoId);
-
-          // Title — try multiple field shapes
-          let title = '';
-          if (typeof v.title === 'string' && v.title) title = v.title;
-          else if (v.title?.simpleText) title = v.title.simpleText;
-          else if (v.title?.runs?.length) title = v.title.runs.map(r => r.text || '').join('');
-          else if (typeof v.videoTitle === 'string' && v.videoTitle) title = v.videoTitle;
-          else if (v.snippet?.title) title = v.snippet.title;
-          else if (v.video?.videoTitle) title = v.video.videoTitle;
-
-          // Skip items whose title is actually a duration string
-          if (!title || isDurStr(title)) continue;
-
-          let views = '—', likes = '—', comments = '—';
-          const m = v.metrics || v.statistics || {};
-          if (m.viewCount !== undefined) {
-            views = typeof m.viewCount === 'object'
-              ? String(m.viewCount.views ?? m.viewCount.displayValue ?? '—')
-              : String(m.viewCount);
+          const vid = v.videoId || v.id || v.video?.videoId ||
+                      v.videoRenderer?.videoId || v.reel?.reelId || '';
+          if (vid && !seenIds.has(vid)) {
+            seenIds.add(vid);
+            videoIds.push(vid);
+            apiVideoDataMap[vid] = v;
           }
-          if (m.likeCount !== undefined) {
-            likes = typeof m.likeCount === 'object'
-              ? String(m.likeCount.likes ?? m.likeCount.displayValue ?? '—')
-              : String(m.likeCount);
-          }
-          if (m.commentCount !== undefined) {
-            comments = typeof m.commentCount === 'object'
-              ? String(m.commentCount.comments ?? m.commentCount.displayValue ?? '—')
-              : String(m.commentCount);
-          }
-
-          apiStats.push({ title, videoId, url: `https://youtube.com/shorts/${videoId}`, views, likes, comments });
         }
+        console.log(`[Stats] Innertube API returned ${videoIds.length} video IDs`);
+      }
+    } catch (e) {
+      console.warn('[Stats] Innertube API failed:', e.message);
+    }
+  }
 
-        if (apiStats.length > 0) {
-          console.log(`[Stats] Found ${apiStats.length} YouTube Shorts via Studio Innertube API`);
-          return apiStats;
-        }
+  // ── Step 3: Fall back to Studio DOM to collect video IDs ────────────────
+  if (videoIds.length === 0) {
+    console.log('[Stats] Falling back to Studio DOM scrape for video IDs...');
+    videoIds = await getVideoIdsFromStudioContentPage(page, studioInfo.channelId, maxVideos);
+    console.log(`[Stats] Studio DOM found ${videoIds.length} video IDs`);
+  }
+
+  // ── Step 4: Last-resort fallback to public Shorts page ──────────────────
+  if (videoIds.length === 0) {
+    console.log('[Stats] Falling back to public Shorts page...');
+    return scrapeYouTubeShortsPublic(page, maxVideos, studioInfo.channelHandle, studioInfo.channelId);
+  }
+
+  // ── Step 5: For each video ID get real stats (agentic per-video approach) ─
+  console.log(`[Stats] Fetching stats for up to ${Math.min(videoIds.length, maxVideos)} videos...`);
+  const stats = [];
+
+  for (const videoId of videoIds.slice(0, maxVideos)) {
+    // First try: parse from the Innertube API data if available
+    let entry = null;
+    if (apiVideoDataMap[videoId]) {
+      const t = extractTitleFromApiItem(apiVideoDataMap[videoId]);
+      if (t) {
+        const s = extractStatsFromApiItem(apiVideoDataMap[videoId]);
+        entry = { title: t.slice(0, 100), url: `https://youtube.com/shorts/${videoId}`, ...s };
+        console.log(`[Stats] API data for ${videoId}: "${t}" views=${s.views}`);
       }
     }
 
-    // ── STRATEGY 2: Navigate to Studio Shorts content page + DOM scraping ────
-    if (studioChannelId) {
-      await page.goto(
-        `https://studio.youtube.com/channel/${studioChannelId}/videos?filter=%5B%7B%22name%22%3A%22VIDEO_TYPE%22%2C%22value%22%3A%22VIDEO_TYPE_SHORT%22%7D%5D`,
-        { waitUntil: 'networkidle', timeout: 30000 }
-      ).catch(async () => {
-        await page.goto(`https://studio.youtube.com/channel/${studioChannelId}/videos`, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
-      });
-    } else {
-      await page.goto('https://studio.youtube.com/videos', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+    // Second try: navigate to Studio analytics page for this video (agentic)
+    if (!entry) {
+      console.log(`[Stats] Opening analytics page for video ${videoId}...`);
+      entry = await getVideoStatsFromStudioAnalytics(page, videoId);
     }
-    await page.waitForTimeout(4000);
 
-    // Click the Shorts tab if visible
-    await page.evaluate(() => {
-      const tabs = document.querySelectorAll('[role="tab"], tp-yt-paper-tab, a');
-      for (const tab of tabs) {
-        if ((tab.textContent || '').toLowerCase().trim() === 'shorts') { tab.click(); return; }
-      }
-    });
+    if (entry) stats.push(entry);
+  }
+
+  console.log(`[Stats] Collected stats for ${stats.length} YouTube Shorts`);
+  return stats;
+}
+
+// ── Get video IDs by navigating to Studio content page and scraping DOM ─────
+async function getVideoIdsFromStudioContentPage(page, channelId, maxVideos) {
+  try {
+    const url = channelId
+      ? `https://studio.youtube.com/channel/${channelId}/videos?filter=%5B%7B%22name%22%3A%22VIDEO_TYPE%22%2C%22value%22%3A%22VIDEO_TYPE_SHORT%22%7D%5D`
+      : 'https://studio.youtube.com/videos';
+
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    // Wait for video rows to appear
+    await page.waitForSelector('ytcp-video-row, tr.video-row, [class*="video-row"]', { timeout: 12000 }).catch(() => {});
     await page.waitForTimeout(3000);
 
-    // DOM scraping with shadow-DOM traversal and deduplication
-    const domStats = await page.evaluate((max) => {
-      // ── helpers (re-defined inside evaluate so they're serialisable) ─────
+    // Click Shorts filter tab if it exists (for non-pre-filtered URL)
+    await page.evaluate(() => {
+      const tabs = document.querySelectorAll('[role="tab"], tp-yt-paper-tab, a[role="tab"]');
+      for (const tab of tabs) {
+        if ((tab.textContent || '').toLowerCase().trim() === 'shorts') {
+          tab.click();
+          return;
+        }
+      }
+    });
+    await page.waitForTimeout(2500);
+
+    // Scroll down to trigger lazy-loading of more videos
+    for (let i = 0; i < 4; i++) {
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await page.waitForTimeout(1200);
+    }
+    await page.evaluate(() => window.scrollTo(0, 0));
+
+    // Extract video IDs via deep shadow-DOM traversal
+    return await page.evaluate((max) => {
       function deepAll(root, selector) {
         const found = [];
         try { found.push(...Array.from(root.querySelectorAll(selector))); } catch (_) {}
@@ -159,135 +270,145 @@ async function scrapeYouTubeShortsStats(page, { maxVideos = 10 } = {}) {
         return found;
       }
 
-      // Robust duration check: strip non-visible unicode whitespace before testing
-      function isDur(t) {
-        const cleaned = String(t || '').replace(/[\u00a0\u200b\u200c\u200d\ufeff]/g, ' ').trim();
-        return /^\d{1,2}:\d{2}(:\d{2})?$/.test(cleaned);
-      }
-
-      function isInsideThumbnail(el) {
-        let p = el;
-        // 15 levels to reliably traverse nested shadow-DOM roots in YouTube Studio's
-        // Polymer component tree (ytcp-video-thumbnail may be several layers deep).
-        for (let i = 0; i < 15; i++) {
-          if (!p) break;
-          const tag = (p.tagName || '').toLowerCase();
-          const cls = (p.className || '').toString().toLowerCase();
-          const id = (p.id || '').toLowerCase();
-          if (
-            tag === 'ytcp-video-thumbnail' ||
-            cls.includes('thumbnail') ||
-            id.includes('thumbnail')
-          ) return true;
-          p = p.parentElement || (p.getRootNode && p.getRootNode() !== document && p.getRootNode().host) || null;
-        }
-        return false;
-      }
-
-      const results = [];
+      const ids = [];
       const seenIds = new Set();
 
-      // Find video rows (try multiple selectors; shadow DOM included)
-      let rows = deepAll(document, 'ytcp-video-row');
-      if (rows.length === 0) rows = deepAll(document, 'tr.video-row, [class*="video-row"]');
-
+      // Primary: links inside ytcp-video-row elements
+      const rows = deepAll(document, 'ytcp-video-row');
       for (const row of rows) {
-        if (results.length >= max) break;
-
-        // ── Video ID ──────────────────────────────────────────────────────
-        let videoId = '';
+        if (ids.length >= max) break;
         for (const link of deepAll(row, 'a[href*="/video/"]')) {
           const m = (link.getAttribute('href') || '').match(/\/video\/([a-zA-Z0-9_-]+)/);
-          if (m) { videoId = m[1]; break; }
-        }
-        if (!videoId || seenIds.has(videoId)) continue;
-        seenIds.add(videoId);
-
-        // ── Title ─────────────────────────────────────────────────────────
-        // Priority 1: aria-label of the row itself (YouTube Studio sets this to the video title)
-        let title = '';
-        const rowLabel = (row.getAttribute('aria-label') || '').trim();
-        if (rowLabel && !isDur(rowLabel) && rowLabel.length > 2) {
-          title = rowLabel;
-        }
-
-        // Priority 2: edit/details link aria-label or text (most reliable non-DOM source)
-        if (!title) {
-          for (const link of deepAll(row, 'a[href*="/edit"], a[href*="/details"]')) {
-            const t = (link.getAttribute('aria-label') || link.textContent || '').trim();
-            if (!isDur(t) && t.length > 2) { title = t; break; }
+          if (m && !seenIds.has(m[1])) {
+            seenIds.add(m[1]);
+            ids.push(m[1]);
+            break;
           }
         }
-
-        // Priority 3: specific title elements NOT inside the thumbnail
-        if (!title) {
-          const titleCandidates = deepAll(row, '#video-title, [id="video-title"], [class*="title-text"], h3');
-          for (const el of titleCandidates) {
-            if (isInsideThumbnail(el)) continue;
-            const t = (el.textContent || '').trim();
-            if (!isDur(t) && t.length > 2) { title = t; break; }
-          }
-        }
-
-        // Priority 4: longest leaf-node text that isn't a duration or plain number
-        if (!title) {
-          let best = '';
-          for (const el of deepAll(row, 'span, div')) {
-            if (el.childElementCount > 0) continue;
-            if (isInsideThumbnail(el)) continue;
-            const t = (el.textContent || '').trim();
-            if (!isDur(t) && !/^\d+$/.test(t) && t.length > best.length && t.length > 5) best = t;
-          }
-          title = best;
-        }
-
-        if (!title || isDur(title)) continue;
-
-        // ── Stats: aria-label first, positional fallback ──────────────────
-        let views = '—', likes = '—', comments = '—';
-
-        for (const el of deepAll(row, '[aria-label]')) {
-          const label = (el.getAttribute('aria-label') || '').toLowerCase();
-          const numMatch = (el.textContent || '').trim().match(/[\d,.]+[KMBkmb]?/);
-          if (!numMatch) continue;
-          const val = numMatch[0].replace(/,/g, '');
-          if (/view/i.test(label) && views === '—') views = val;
-          else if (/like/i.test(label) && likes === '—') likes = val;
-          else if (/comment/i.test(label) && comments === '—') comments = val;
-        }
-
-        if (views === '—' || likes === '—' || comments === '—') {
-          const nums = [];
-          for (const cell of deepAll(row, 'td, [class*="stat"], ytcp-uploads-table-data-for-visibility')) {
-            const t = (cell.textContent || '').trim().replace(/,/g, '');
-            if (/^\d+(\.\d+)?[KMBkmb]?$/.test(t) && !isDur(t)) nums.push(t);
-          }
-          if (views === '—' && nums[0]) views = nums[0];
-          if (comments === '—' && nums[1]) comments = nums[1];
-          if (likes === '—' && nums[2]) likes = nums[2];
-        }
-
-        results.push({
-          title: title.slice(0, 100),
-          url: `https://youtube.com/shorts/${videoId}`,
-          views,
-          likes,
-          comments,
-        });
       }
-      return results;
+
+      // Secondary: any /video/ link in the entire page DOM
+      if (ids.length === 0) {
+        for (const link of deepAll(document, 'a[href*="/video/"]')) {
+          const m = (link.getAttribute('href') || '').match(/\/video\/([a-zA-Z0-9_-]+)/);
+          if (m && !seenIds.has(m[1])) {
+            seenIds.add(m[1]);
+            ids.push(m[1]);
+            if (ids.length >= max) break;
+          }
+        }
+      }
+
+      return ids;
     }, maxVideos);
-
-    if (domStats.length > 0) {
-      console.log(`[Stats] Found ${domStats.length} YouTube videos (Studio DOM)`);
-      return domStats;
-    }
-
-    // ── STRATEGY 3: Public channel Shorts page ────────────────────────────
-    return await scrapeYouTubeShortsPublic(page, maxVideos, channelHandle, studioChannelId);
   } catch (err) {
-    console.error('[Stats] YouTube scrape error:', err.message);
+    console.error('[Stats] Studio DOM ID scrape error:', err.message);
     return [];
+  }
+}
+
+// ── Navigate to a video's Studio analytics page and extract title + stats ───
+// This is the most reliable approach: the analytics page labels metrics clearly
+// and the page <title> always contains the video title.
+async function getVideoStatsFromStudioAnalytics(page, videoId) {
+  const analyticsUrl = `https://studio.youtube.com/video/${videoId}/analytics/tab-overview/period-default`;
+  try {
+    await page.goto(analyticsUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
+    // Wait for the analytics chart area or stats bars to render
+    await page.waitForSelector(
+      'ytcp-analytics-stats-bar, ytcp-analytics-chart-stats, [class*="stats-bar"], ytcp-analytics-main',
+      { timeout: 10000 }
+    ).catch(() => {});
+    await page.waitForTimeout(3000);
+
+    // Scroll a bit to trigger rendering of all metric cards
+    await page.evaluate(() => window.scrollTo(0, 400));
+    await page.waitForTimeout(1000);
+    await page.evaluate(() => window.scrollTo(0, 0));
+
+    return await page.evaluate((videoId) => {
+      // ── Title: most reliable source is the HTML <title> element ──────────
+      let title = (document.title || '')
+        .replace(/\s*[-–|]\s*YouTube Studio.*$/i, '')
+        .replace(/^YouTube Studio\s*[-–|]\s*/i, '')
+        .trim();
+
+      // Also try prominent heading elements as fallback
+      if (!title || title.toLowerCase() === 'youtube studio') {
+        const headingCandidates = [
+          document.querySelector('.ytcp-video-info-bar-details .title'),
+          document.querySelector('[slot="title"]'),
+          document.querySelector('yt-formatted-string.ytcp-analytics-identifiers-link'),
+          document.querySelector('[class*="video-title"] yt-formatted-string'),
+          document.querySelector('ytcp-ve[class*="title"] yt-formatted-string'),
+          document.querySelector('h2'),
+        ];
+        for (const el of headingCandidates) {
+          const t = (el ? el.textContent || '' : '').trim();
+          if (t && t.length > 2 && t.toLowerCase() !== 'youtube studio') {
+            title = t;
+            break;
+          }
+        }
+      }
+
+      // ── Stats: scan all stats-bar items for labeled metrics ───────────────
+      let views = '—', likes = '—', comments = '—';
+
+      // Helper: extract a clean number from a string
+      function cleanNum(s) {
+        const m = String(s || '').replace(/,/g, '').match(/([\d.]+\s*[KMBTkmbt]?)/);
+        return m ? m[1].trim() : '';
+      }
+
+      // Method 1: ytcp-analytics-stats-bar-item elements (Studio standard)
+      const statItems = document.querySelectorAll(
+        'ytcp-analytics-stats-bar-item, [class*="stats-bar-item"], ytcp-analytics-chart-stats-value'
+      );
+      for (const item of statItems) {
+        const labelEl = item.querySelector(
+          '[class*="label"], [class*="title"], [class*="header"], yt-formatted-string'
+        );
+        const valueEl = item.querySelector(
+          '[class*="value"], [class*="count"], [class*="formatted"], [class*="number"]'
+        );
+        const label = (labelEl ? labelEl.textContent : item.getAttribute('label') || '').toLowerCase();
+        const value = cleanNum(valueEl ? valueEl.textContent : item.getAttribute('value') || '');
+        if (!value) continue;
+        if (/\bviews?\b/.test(label) && views === '—') views = value;
+        else if (/\blikes?\b/.test(label) && likes === '—') likes = value;
+        else if (/\bcomments?\b/.test(label) && comments === '—') comments = value;
+        else if (/\bwatch\s*time\b/.test(label)) { /* skip watch time */ }
+      }
+
+      // Method 2: scan the entire innerText for "Metric\nValue" or "Value\nMetric" pairs
+      if (views === '—' || likes === '—' || comments === '—') {
+        const bodyText = (document.body ? document.body.innerText : '') || '';
+
+        // Match patterns like "Views\n1,234" or "1,234\nViews" or "Views 1,234"
+        const viewsM = bodyText.match(/\bviews?\b[\s\n:]*([0-9][0-9,. KMBTkmbt]*)/i)
+          || bodyText.match(/([0-9][0-9,. KMBTkmbt]*)\s*\n\s*\bviews?\b/i);
+        const likesM = bodyText.match(/\blikes?\b[\s\n:]*([0-9][0-9,. KMBTkmbt]*)/i)
+          || bodyText.match(/([0-9][0-9,. KMBTkmbt]*)\s*\n\s*\blikes?\b/i);
+        const commentsM = bodyText.match(/\bcomments?\b[\s\n:]*([0-9][0-9,. KMBTkmbt]*)/i)
+          || bodyText.match(/([0-9][0-9,. KMBTkmbt]*)\s*\n\s*\bcomments?\b/i);
+
+        if (views === '—' && viewsM) views = cleanNum(viewsM[1]);
+        if (likes === '—' && likesM) likes = cleanNum(likesM[1]);
+        if (comments === '—' && commentsM) comments = cleanNum(commentsM[1]);
+      }
+
+      return {
+        title: title ? title.slice(0, 100) : '(untitled)',
+        views,
+        likes,
+        comments,
+        url: `https://youtube.com/shorts/${videoId}`,
+      };
+    }, videoId);
+  } catch (err) {
+    console.error(`[Stats] Analytics page failed for ${videoId}:`, err.message);
+    return null;
   }
 }
 
@@ -300,8 +421,7 @@ async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '
     } else if (channelId) {
       shortsUrl = `https://www.youtube.com/channel/${channelId}/shorts`;
     } else {
-      // Last resort: navigate to Studio and pick up the channel link from the page
-      await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 20000 });
+      await page.goto('https://studio.youtube.com', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
       await page.waitForTimeout(2000);
 
       const detected = await page.evaluate(() => {
@@ -330,13 +450,21 @@ async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '
     }
 
     console.log(`[Stats] Navigating to public Shorts page: ${shortsUrl}`);
-    await page.goto(shortsUrl, { waitUntil: 'networkidle', timeout: 30000 });
-    // Wait for video items to appear
-    await page.waitForSelector('ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    await page.goto(shortsUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    await page.waitForSelector(
+      'ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer, ytd-shorts-item-renderer',
+      { timeout: 10000 }
+    ).catch(() => {});
+    await page.waitForTimeout(2500);
+
+    // Scroll to load more videos
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await page.waitForTimeout(1200);
+    }
+    await page.evaluate(() => window.scrollTo(0, 0));
 
     const results = await page.evaluate((max) => {
-      // Robust duration check that handles unicode whitespace
       function isDur(t) {
         const cleaned = String(t || '').replace(/[\u00a0\u200b\u200c\u200d\ufeff]/g, ' ').trim();
         return /^\d{1,2}:\d{2}(:\d{2})?$/.test(cleaned);
@@ -352,7 +480,6 @@ async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '
       for (const item of items) {
         if (out.length >= max) break;
 
-        // Extract video ID first — require a valid ID to avoid duplicates
         const allLinks = Array.from(item.querySelectorAll('a[href*="/shorts/"], a[href*="/watch?"]'));
         let href = '';
         let shortId = '';
@@ -361,29 +488,27 @@ async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '
           const sid = h.match(/\/shorts\/([a-zA-Z0-9_-]+)/)?.[1] || h.match(/[?&]v=([a-zA-Z0-9_-]+)/)?.[1] || '';
           if (sid) { href = h; shortId = sid; break; }
         }
-        // Skip items without a valid video ID (prevents duplicates from empty IDs)
         if (!shortId) continue;
         if (seenIds.has(shortId)) continue;
         seenIds.add(shortId);
 
         const url = href.startsWith('http') ? href : `https://www.youtube.com${href}`;
 
-        // Title: prefer #video-title element text, then title attribute, then link text
         let title = '';
-        const titleEl = item.querySelector('a#video-title, h3 a#video-title, yt-formatted-string#video-title, span#video-title');
+        const titleEl = item.querySelector(
+          'a#video-title, h3 a#video-title, yt-formatted-string#video-title, span#video-title'
+        );
         if (titleEl) {
           const t = (titleEl.getAttribute('title') || titleEl.textContent || '').trim();
           if (t && !isDur(t)) title = t;
         }
         if (!title) {
-          // Try title attribute on any anchor link with the shortId
           for (const a of allLinks) {
             const t = (a.getAttribute('title') || a.getAttribute('aria-label') || '').trim();
             if (t && !isDur(t) && t.length > 2) { title = t; break; }
           }
         }
         if (!title) {
-          // Fall back to link text, but only if it's not a duration
           for (const a of allLinks) {
             const t = (a.textContent || '').trim();
             if (t && !isDur(t) && t.length > 2) { title = t; break; }
@@ -391,9 +516,10 @@ async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '
         }
         if (!title || isDur(title)) continue;
 
-        // Views: first metadata span that contains a view count
         let views = '—';
-        const metaSpans = item.querySelectorAll('#metadata-line span, .inline-metadata-item, ytd-video-meta-block span, [class*="metadata"] span');
+        const metaSpans = item.querySelectorAll(
+          '#metadata-line span, .inline-metadata-item, ytd-video-meta-block span, [class*="metadata"] span'
+        );
         for (const span of metaSpans) {
           const t = (span.textContent || '').trim();
           if (/\d/.test(t) && (t.toLowerCase().includes('view') || /^\d[\d,.KMBkmb ]*$/i.test(t))) {
@@ -402,7 +528,7 @@ async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '
           }
         }
 
-        out.push({ title, url, views, comments: '—', likes: '—' });
+        out.push({ title: title.slice(0, 100), url, views, comments: '—', likes: '—' });
       }
       return out;
     }, maxVideos);
@@ -417,53 +543,104 @@ async function scrapeYouTubeShortsPublic(page, maxVideos = 10, channelHandle = '
 
 // ─── TikTok Stats ───────────────────────────────────────────
 async function scrapeTikTokStats(page, { maxVideos = 10 } = {}) {
-  console.log('[Stats] Scraping TikTok stats...');
+  console.log('[Stats] Scraping TikTok stats (agentic mode)...');
   try {
-    // Navigate to TikTok analytics/profile
-    await page.goto('https://www.tiktok.com/creator-center/analytics', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+    try { await page.setViewportSize({ width: 1440, height: 900 }); } catch (_) {}
+
+    // Step 1: Try to get username from current session or profile redirect
+    await page.goto('https://www.tiktok.com/profile', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
     await page.waitForTimeout(3000);
 
-    // If analytics page loaded, try to get video stats
-    let stats = await page.evaluate((max) => {
+    // If redirected to login, we're not authenticated — try creator-center
+    const currentUrl = page.url();
+    let profileUrl = currentUrl;
+
+    if (currentUrl.includes('login')) {
+      // Not logged in or profile URL unknown — try creator center
+      await page.goto('https://www.tiktok.com/creator-center/analytics', {
+        waitUntil: 'domcontentloaded', timeout: 20000,
+      }).catch(() => {});
+      await page.waitForTimeout(3000);
+    } else {
+      // On the profile page — wait for the video grid to load
+      await page.waitForSelector(
+        '[data-e2e="user-post-item"], [data-e2e="user-post-item-list"]',
+        { timeout: 10000 }
+      ).catch(() => {});
+    }
+
+    // Scroll down to load more videos
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await page.waitForTimeout(1200);
+    }
+    await page.evaluate(() => window.scrollTo(0, 0));
+
+    const stats = await page.evaluate((max) => {
       const results = [];
-      // Try analytics content tab
-      const videoItems = document.querySelectorAll('[class*="video-card"], [class*="VideoCard"], [data-e2e*="video"]');
-      
+      const seenIds = new Set();
+
+      // Try profile video grid items
+      const videoItems = document.querySelectorAll(
+        '[data-e2e="user-post-item"], [class*="DivItemContainer"], [class*="video-feed-item"]'
+      );
+
       for (const item of videoItems) {
         if (results.length >= max) break;
-        const title = (item.querySelector('[class*="title"], [class*="desc"], p, span')?.textContent || '').trim();
-        const viewsEl = item.querySelector('[class*="views"], [class*="play"]');
+
+        const link = item.querySelector('a[href*="/video/"]') || item.querySelector('a');
+        const href = link?.getAttribute('href') || '';
+        const vidMatch = href.match(/\/video\/(\d+)/);
+        const videoId = vidMatch ? vidMatch[1] : '';
+        if (videoId && seenIds.has(videoId)) continue;
+        if (videoId) seenIds.add(videoId);
+
+        const url = href.startsWith('http') ? href : href ? `https://www.tiktok.com${href}` : '';
+
+        // Description as title (aria-label or desc element)
+        const desc = (
+          item.getAttribute('aria-label') ||
+          item.querySelector('[data-e2e="video-desc"], [class*="desc"], [class*="caption"]')?.textContent ||
+          item.querySelector('img')?.getAttribute('alt') ||
+          ''
+        ).trim();
+
+        // View count overlay
+        const viewsEl = item.querySelector(
+          '[data-e2e="video-views"], strong[class*="count"], [class*="video-count"], [class*="play-count"]'
+        );
         const views = (viewsEl?.textContent || '').trim();
-        
-        if (title || views) {
-          results.push({ title: title || '(untitled)', views: views || '—', likes: '—', comments: '—', url: '' });
-        }
+
+        results.push({
+          title: (desc || '(untitled)').slice(0, 100),
+          views: views || '—',
+          likes: '—',
+          comments: '—',
+          url,
+        });
       }
-      return results;
-    }, maxVideos);
 
-    // Fallback: go to profile page
-    if (stats.length === 0) {
-      await page.goto('https://www.tiktok.com/profile', { waitUntil: 'networkidle', timeout: 20000 }).catch(() => {});
-      await page.waitForTimeout(3000);
-
-      stats = await page.evaluate((max) => {
-        const results = [];
-        const videoItems = document.querySelectorAll('[data-e2e="user-post-item"], [class*="DivItemContainer"], [class*="video-feed-item"]');
-        
-        for (const item of videoItems) {
+      // Also try creator center analytics video cards
+      if (results.length === 0) {
+        const analyticsItems = document.querySelectorAll(
+          '[class*="video-card"], [class*="VideoCard"], [class*="content-item"]'
+        );
+        for (const item of analyticsItems) {
           if (results.length >= max) break;
-          const desc = (item.getAttribute('aria-label') || item.querySelector('[class*="desc"]')?.textContent || '').trim();
-          const viewsEl = item.querySelector('[data-e2e="video-views"], [class*="video-count"], strong');
+          const titleEl = item.querySelector('[class*="title"], [class*="desc"], p');
+          const title = (titleEl?.textContent || '').trim();
+          const viewsEl = item.querySelector('[class*="views"], [class*="play"], [class*="count"]');
           const views = (viewsEl?.textContent || '').trim();
           const link = item.querySelector('a')?.getAttribute('href') || '';
           const url = link.startsWith('http') ? link : link ? `https://www.tiktok.com${link}` : '';
-
-          results.push({ title: desc || '(untitled)', views: views || '—', likes: '—', comments: '—', url });
+          if (title || views) {
+            results.push({ title: title ? title.slice(0, 100) : '(untitled)', views: views || '—', likes: '—', comments: '—', url });
+          }
         }
-        return results;
-      }, maxVideos);
-    }
+      }
+
+      return results;
+    }, maxVideos);
 
     console.log(`[Stats] Found ${stats.length} TikTok videos`);
     return stats;
@@ -475,62 +652,107 @@ async function scrapeTikTokStats(page, { maxVideos = 10 } = {}) {
 
 // ─── Instagram Reels Stats ──────────────────────────────────
 async function scrapeInstagramReelsStats(page, { maxVideos = 10 } = {}) {
-  console.log('[Stats] Scraping Instagram Reels stats...');
+  console.log('[Stats] Scraping Instagram Reels stats (agentic mode)...');
   try {
-    // Navigate to profile reels tab
-    // First get username
-    await page.goto('https://www.instagram.com/', { waitUntil: 'networkidle', timeout: 20000 });
-    await page.waitForTimeout(2000);
+    try { await page.setViewportSize({ width: 1440, height: 900 }); } catch (_) {}
 
-    // Click profile
-    await page.evaluate(() => {
-      const profileLink = document.querySelector('a[href*="/"][role="link"] img[alt*="profile"]')?.closest('a') 
-        || document.querySelector('[aria-label="Profile"]')
-        || Array.from(document.querySelectorAll('a[role="link"]')).find(a => {
-          const svg = a.querySelector('svg[aria-label="Profile"]');
-          return !!svg;
-        });
-      if (profileLink) profileLink.click();
-    });
-    await page.waitForTimeout(3000);
+    // Navigate to Instagram home to detect the logged-in username
+    await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(2500);
 
-    // Click Reels tab
-    await page.evaluate(() => {
-      const tabs = document.querySelectorAll('a[role="tab"], a[href*="/reels/"]');
-      for (const tab of tabs) {
-        const text = (tab.textContent || '').toLowerCase();
-        const href = tab.getAttribute('href') || '';
-        if (text.includes('reels') || href.includes('/reels')) {
-          tab.click();
-          return true;
+    // Get the profile username from the sidebar nav
+    const username = await page.evaluate(() => {
+      // Try to find the profile link in the nav (contains the username in href)
+      const profileAnchors = Array.from(document.querySelectorAll('a[href^="/"][href$="/"][role="link"]'));
+      for (const a of profileAnchors) {
+        const href = (a.getAttribute('href') || '').replace(/\//g, '');
+        if (href && href.length > 2 && !href.includes('.') && !/^(explore|reels|home|accounts|direct|stories)$/.test(href)) {
+          return href;
         }
       }
-      // Also try SVG-based tab
-      const svgTab = document.querySelector('svg[aria-label="Reels"]')?.closest('a');
-      if (svgTab) svgTab.click();
-      return false;
-    });
+      // Also try aria-label containing "profile" which often has the username
+      const profileLabel = document.querySelector('[aria-label*="profile" i][href]')?.getAttribute('href') || '';
+      return profileLabel.replace(/\//g, '') || '';
+    }).catch(() => '');
+
+    // Navigate directly to the Reels tab
+    const profileReelsUrl = username
+      ? `https://www.instagram.com/${username}/reels/`
+      : null;
+
+    if (profileReelsUrl) {
+      await page.goto(profileReelsUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+    } else {
+      // Try clicking the profile icon and then the Reels tab
+      await page.evaluate(() => {
+        const profileLink = document.querySelector('a[href*="/"][role="link"] img[alt*="profile"]')?.closest('a')
+          || document.querySelector('[aria-label="Profile"]')
+          || Array.from(document.querySelectorAll('a[role="link"]')).find(a => !!a.querySelector('svg[aria-label="Profile"]'));
+        if (profileLink) profileLink.click();
+      });
+      await page.waitForTimeout(2500);
+
+      await page.evaluate(() => {
+        const tabs = document.querySelectorAll('a[role="tab"], a[href*="/reels/"]');
+        for (const tab of tabs) {
+          const text = (tab.textContent || '').toLowerCase();
+          const href = tab.getAttribute('href') || '';
+          if (text.includes('reels') || href.includes('/reels')) { tab.click(); return; }
+        }
+        const svgTab = document.querySelector('svg[aria-label="Reels"]')?.closest('a');
+        if (svgTab) svgTab.click();
+      });
+    }
+
     await page.waitForTimeout(3000);
+
+    // Scroll to load more reels
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await page.waitForTimeout(1200);
+    }
+    await page.evaluate(() => window.scrollTo(0, 0));
 
     const stats = await page.evaluate((max) => {
       const results = [];
-      const items = document.querySelectorAll('article a[href*="/reel/"], div[class*="reel"] a, a[href*="/p/"]');
-      
-      for (const item of items) {
-        if (results.length >= max) break;
-        const href = item.getAttribute('href') || '';
-        if (!href.includes('/reel/') && !href.includes('/p/')) continue;
-        
-        const url = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
-        
-        // Instagram shows play count on hover - try to get from aria/overlay
-        const overlay = item.querySelector('[class*="overlay"], [class*="count"]');
-        const views = (overlay?.textContent || '').trim();
-        
-        const img = item.querySelector('img');
-        const title = img?.getAttribute('alt') || '(reel)';
+      const seenIds = new Set();
 
-        results.push({ title: title.slice(0, 80), url, views: views || '—', likes: '—', comments: '—' });
+      // Collect all reel links in the grid
+      const reelLinks = Array.from(document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
+
+      for (const link of reelLinks) {
+        if (results.length >= max) break;
+        const href = link.getAttribute('href') || '';
+        if (!href.includes('/reel/') && !href.includes('/p/')) continue;
+
+        const reelIdMatch = href.match(/\/(reel|p)\/([A-Za-z0-9_-]+)/);
+        const reelId = reelIdMatch ? reelIdMatch[2] : href;
+        if (seenIds.has(reelId)) continue;
+        seenIds.add(reelId);
+
+        const url = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+
+        // Title from image alt or aria-label
+        const img = link.querySelector('img');
+        const title = (img?.getAttribute('alt') || link.getAttribute('aria-label') || '(reel)').trim();
+
+        // Play/view count: Instagram shows this as an overlay on the thumbnail
+        const container = link.closest('div, article, li') || link;
+        const overlayEls = container.querySelectorAll('[class*="overlay"], [class*="count"], [class*="play"], [class*="view"]');
+        let views = '—';
+        for (const el of overlayEls) {
+          const t = (el.textContent || '').trim();
+          if (/\d/.test(t) && t.length <= 15) { views = t; break; }
+        }
+        // Also check span elements that are numeric near the link
+        if (views === '—') {
+          for (const span of container.querySelectorAll('span')) {
+            const t = (span.textContent || '').trim();
+            if (/^\d[\d,. KMBTkmbt]*$/.test(t)) { views = t; break; }
+          }
+        }
+
+        results.push({ title: title.slice(0, 80), url, views, likes: '—', comments: '—' });
       }
       return results;
     }, maxVideos);
@@ -612,8 +834,8 @@ async function checkPlatformStats(platform, credentials) {
   console.log(`[Stats] Opening browser for ${platform} stats check...`);
   const context = await chromium.launchPersistentContext(sessionDir, {
     headless: false,
-    args: ['--disable-blink-features=AutomationControlled'],
-    viewport: { width: 1280, height: 900 },
+    args: ['--disable-blink-features=AutomationControlled', '--start-maximized'],
+    viewport: { width: 1440, height: 900 },
   });
 
   const page = context.pages()[0] || await context.newPage();
