@@ -207,6 +207,7 @@ async function processJob(jobId, options = {}) {
         });
         platform.status = 'success';
         platform.url = result.url || '';
+        platform.recentStats = result.recentStats || [];
         console.log(`[Worker] ${platform.name} upload SUCCESS`);
       } catch (err) {
         platform.status = 'error';
