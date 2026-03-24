@@ -285,6 +285,28 @@ async function executeTool(supabase: any, name: string, args: any): Promise<stri
       }
       return '❌ Unknown action. Use create, update, or delete.';
     }
+    case 'check_platform_stats': {
+      // This triggers the local server to open browser and scrape stats
+      const platform = args.platform || 'all';
+      const endpoint = platform === 'all' ? '/api/check-all-stats' : '/api/check-stats';
+      const body = platform === 'all' ? {} : { platform };
+      
+      // Try local server first
+      try {
+        const localResp = await fetch(`http://localhost:3001${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (localResp.ok) {
+          const result = await localResp.json();
+          return `✅ Stats check started for ${platform === 'all' ? 'all platforms' : platform}. Results will be sent to you in Telegram shortly.`;
+        }
+      } catch {
+        // Local server not reachable
+      }
+      return `⚠️ Stats check requires the local server to be running (it opens a browser to scrape stats). Start your local server and try again.`;
+    }
     default: return `Unknown tool: ${name}`;
   }
 }
