@@ -335,6 +335,24 @@ async function assessYouTubePostPublishState(page) {
 }
 
 async function selectAudienceNotMadeForKids(page) {
+  // Strategy 1: Playwright getByLabel / getByText — these pierce Shadow DOM natively
+  try {
+    const label = page.getByLabel(/^no[,:]?\s*(it'?s\s*)?not made for kids/i);
+    if (await label.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await label.click();
+      return true;
+    }
+  } catch {}
+
+  try {
+    const radio = page.locator('[role="radio"]').filter({ hasText: /not made for kids/i }).first();
+    if (await radio.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await radio.click();
+      return true;
+    }
+  } catch {}
+
+  // Strategy 2: CSS attribute selectors via page.$() (Playwright pierces one Shadow DOM level)
   const clicked = await smartClick(page, [
     'ytcp-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]',
     'tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]',
@@ -344,13 +362,29 @@ async function selectAudienceNotMadeForKids(page) {
 
   if (clicked) return true;
 
+  // Strategy 3: Deep Shadow DOM traversal via page.evaluate
   return page.evaluate(() => {
-    const options = Array.from(document.querySelectorAll('ytcp-radio-button, tp-yt-paper-radio-button, [role="radio"], label, div'));
-    for (const node of options) {
-      const text = (node.textContent || '').toLowerCase();
+    function deepQueryAll(root) {
+      const results = [];
+      const candidates = Array.from(root.querySelectorAll(
+        'ytcp-radio-button, tp-yt-paper-radio-button, [role="radio"], label'
+      ));
+      results.push(...candidates);
+      const all = root.querySelectorAll('*');
+      for (const el of all) {
+        if (el.shadowRoot) results.push(...deepQueryAll(el.shadowRoot));
+      }
+      return results;
+    }
+
+    const nodes = deepQueryAll(document);
+    for (const node of nodes) {
+      const text = (node.textContent || node.innerText || '').toLowerCase().trim();
       if (!text) continue;
-      if (text.includes("not made for kids") || text.includes("no, it's not made for kids")) {
-        node.click();
+      if (text.includes('not made for kids') || text.includes("no, it's not")) {
+        // Prefer clicking the inner button/input if present
+        const inner = node.querySelector('button, input[type="radio"], [role="radio"]') || node;
+        inner.click();
         return true;
       }
     }
@@ -932,7 +966,12 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     await page.waitForTimeout(2000);
 
     // Audience is often mandatory before moving to the next step.
-    await selectAudienceNotMadeForKids(page);
+    // Retry a few times to ensure the Shadow DOM element is visible and clicked.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const picked = await selectAudienceNotMadeForKids(page);
+      if (picked) break;
+      await page.waitForTimeout(800);
+    }
     await page.waitForTimeout(1200);
 
     // ===== PHASE 5: NAVIGATE WIZARD (Next × 3) =====
@@ -943,7 +982,14 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       if (await isVisibilityStep(page)) break;
 
       await page.waitForTimeout(1200);
-      await selectAudienceNotMadeForKids(page);
+      // Re-attempt audience selection on every iteration — YouTube sometimes
+      // resets the selection after navigating or if the element was not yet
+      // rendered when the previous attempt ran.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const picked = await selectAudienceNotMadeForKids(page);
+        if (picked) break;
+        await page.waitForTimeout(600);
+      }
       await acceptUploadAgreements(page);
 
       const next = await clickNextWizardStep(page);

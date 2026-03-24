@@ -297,7 +297,7 @@ async function executeTool(supabase: any, name: string, args: any): Promise<stri
       });
       if (error) return `❌ Could not queue stats check: ${error.message}`;
       const platformLabel = platform === 'all' ? 'all platforms' : platform;
-      return `✅ Stats check queued for ${platformLabel}. The local server will open a browser window on your PC, log into ${platformLabel}, scrape your video stats, and send the results here via Telegram. This usually takes 30-60 seconds. Make sure the local server (smart-launcher.bat) is running on your computer.`;
+      return `✅ Stats check queued for ${platformLabel}! The browser will open on your computer and results will arrive here in Telegram within 60 seconds.`;
     }
     default: return `Unknown tool: ${name}`;
   }
@@ -790,10 +790,14 @@ HOW check_platform_stats WORKS (understand this architecture):
 - YOU NEVER connect directly to the browser — you only queue the command. The browser always runs on the user's machine.
 - ALWAYS call this tool immediately. NEVER say "the browser connection is failing" or "I can't connect to your local server".
 
-STATS CHECK RULES — CRITICAL:
-- ALWAYS call check_platform_stats immediately when user asks for stats, views, likes, comments, or video performance.
-- After calling it, tell the user: "Stats check queued! The browser will open on your computer and results will arrive here in Telegram in up to 60 seconds."
-- Do NOT explain why it might fail. Do NOT say "browser automation is failing". Just call the tool and reassure the user.
+STATS CHECK RULES — ABSOLUTE AND NON-NEGOTIABLE:
+- ALWAYS call check_platform_stats immediately when user asks for stats, views, likes, comments, or video performance. No exceptions.
+- After calling it, tell the user ONLY: "Stats check queued! The browser will open on your computer and results will arrive here in Telegram in up to 60 seconds."
+- YOU HAVE ZERO ABILITY to connect to the local server. You cannot ping it, test it, or detect whether it is running. You only queue commands via Supabase.
+- NEVER say the local server is "not responding", "offline", "unreachable", or any similar phrase. You have no such knowledge.
+- NEVER say you "attempted to scan" or "tried to connect" to anything. You cannot do that.
+- NEVER say "browser automation is failing" or "I can't access your stats directly". Just call the tool and reassure the user.
+- The stats check command is queued into Supabase — this ALWAYS succeeds regardless of whether the server is running at that moment.
 - If user says they are not getting results, call the tool again and suggest they make sure the local server (smart-launcher.bat) is running.
 - Stats are ALSO automatically checked after every successful upload and included in the upload completion notification.
 
