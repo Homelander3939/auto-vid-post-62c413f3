@@ -9,6 +9,7 @@ const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'ti
 // TikTok Studio upload URL (updated — old /creator-center/upload no longer works)
 const TIKTOK_UPLOAD_URL = 'https://www.tiktok.com/tiktokstudio/upload';
 const TIKTOK_UPLOAD_URL_ALT = 'https://www.tiktok.com/creator-center/upload';
+const MAX_CAPTION_LENGTH = 2200;
 
 async function extractTikTokVideoUrl(page) {
   // First try: look for direct video links in page
@@ -243,9 +244,13 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     let fileInput = await page.$('input[type="file"]');
     if (!fileInput) {
       // Also check all frames (TikTok may embed upload in iframe)
-      for (const frame of page.frames()) {
-        fileInput = await frame.$('input[type="file"]').catch(() => null);
-        if (fileInput) break;
+      try {
+        for (const frame of page.frames()) {
+          fileInput = await frame.$('input[type="file"]').catch(() => null);
+          if (fileInput) break;
+        }
+      } catch (e) {
+        console.warn('[TikTok] Frame search for file input failed:', e.message);
       }
     }
 
@@ -384,7 +389,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
           await page.waitForTimeout(100);
           await page.keyboard.press('Backspace');
           await page.waitForTimeout(100);
-          await page.keyboard.type(caption.slice(0, 2200), { delay: 5 });
+          await page.keyboard.type(caption.slice(0, MAX_CAPTION_LENGTH), { delay: 5 });
           captionFilled = true;
           console.log(`[TikTok] Caption filled via ${sel}`);
         } catch {}

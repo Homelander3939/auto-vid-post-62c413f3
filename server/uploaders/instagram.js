@@ -5,6 +5,7 @@ const { requestTelegramApproval, tryFillVerificationCode } = require('./approval
 const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } = require('./smart-agent');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
+const MAX_CAPTION_LENGTH = 2200;
 
 async function extractInstagramPostUrl(page) {
   return page.evaluate(() => {
@@ -411,7 +412,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           await page.waitForTimeout(100);
           await page.keyboard.press('Backspace');
           await page.waitForTimeout(100);
-          await page.keyboard.type(caption.slice(0, 2200), { delay: 5 });
+          await page.keyboard.type(caption.slice(0, MAX_CAPTION_LENGTH), { delay: 5 });
           captionFilled = true;
           console.log(`[Instagram] Caption filled via ${sel}`);
         } catch {}

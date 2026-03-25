@@ -564,11 +564,13 @@ async function executeAgentAction(page, action) {
           const clickTarget = selector || 'text=Select video';
           const [fileChooser] = await Promise.all([
             page.waitForEvent('filechooser', { timeout: 10000 }),
-            page.click(clickTarget).catch(() =>
+            page.click(clickTarget).catch((clickErr) =>
               page.evaluate((sel) => {
                 const el = document.querySelector(sel);
                 if (el) el.click();
-              }, clickTarget).catch(() => {})
+              }, clickTarget).catch((evalErr) => {
+                console.warn('[SmartAgent] upload_file click fallback failed:', evalErr.message);
+              })
             ),
           ]);
           await fileChooser.setFiles(value);
