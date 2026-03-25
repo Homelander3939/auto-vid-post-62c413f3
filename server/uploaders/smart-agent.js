@@ -33,8 +33,37 @@ const { getTikTokPageDescription, isTikTokPublishedUrl, isTikTokUploadUrl } = re
 const DEFAULT_LM_STUDIO_URL = 'http://localhost:1234';
 const DEFAULT_LM_STUDIO_MODEL = 'google/gemma-3-27b';
 
+// Track consecutive LLM failures to reduce log spam
+let _llmConsecutiveFailures = 0;
+// Log the first N failures verbosely, then every Nth failure thereafter to avoid spam
+const LLM_SPAM_THRESHOLD = 3;
+
+/**
+ * Returns a user-friendly hint for common LLM connection errors.
+ */
+function getLLMErrorHint(err) {
+  if (err.message === 'Invalid URL' || err.code === 'ERR_INVALID_URL') {
+    return '(check LM_STUDIO_URL in server/.env — must include http:// or https://)';
+  }
+  if (err.code === 'ECONNREFUSED' || err.message.includes('ECONNREFUSED')) {
+    return '(LM Studio not running — start LM Studio to enable AI assistance)';
+  }
+  return '';
+}
+
 function getLmStudioUrl() {
-  return (process.env.LM_STUDIO_URL || DEFAULT_LM_STUDIO_URL).replace(/\/$/, '') + '/v1/chat/completions';
+  let base = (process.env.LM_STUDIO_URL || DEFAULT_LM_STUDIO_URL).trim().replace(/\/$/, '');
+  // Auto-fix missing protocol prefix (common misconfiguration)
+  if (base && !base.startsWith('http://') && !base.startsWith('https://')) {
+    base = 'http://' + base;
+  }
+  try {
+    new URL(base); // throws if URL is still invalid
+    return base + '/v1/chat/completions';
+  } catch {
+    console.warn(`[SmartAgent] LM_STUDIO_URL "${base}" is not a valid URL, using default (${DEFAULT_LM_STUDIO_URL})`);
+    return DEFAULT_LM_STUDIO_URL + '/v1/chat/completions';
+  }
 }
 
 function getLmStudioModel() {
@@ -138,13 +167,19 @@ Respond ONLY with a JSON object:
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
+        _llmConsecutiveFailures = 0; // reset on success
         return JSON.parse(jsonMatch[0]);
       } catch {
         console.log('[SmartAgent] Failed to parse AI response, using DOM analysis');
       }
     }
   } catch (err) {
-    console.warn('[SmartAgent] LM Studio request failed, using DOM analysis:', err.message);
+    _llmConsecutiveFailures++;
+    if (_llmConsecutiveFailures <= LLM_SPAM_THRESHOLD ||
+        _llmConsecutiveFailures % LLM_SPAM_THRESHOLD === 0) {
+      const hint = getLLMErrorHint(err);
+      console.warn(`[SmartAgent] LM Studio request failed, using DOM analysis: ${err.message}${hint ? ' ' + hint : ''}`);
+    }
   }
 
   return analyzeDOMOnly(page, context);
@@ -534,10 +569,16 @@ Rules:
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
+      _llmConsecutiveFailures = 0; // reset on success
       return parsed;
     }
   } catch (err) {
-    console.error('[SmartAgent] planNextAction error:', err.message);
+    _llmConsecutiveFailures++;
+    if (_llmConsecutiveFailures <= LLM_SPAM_THRESHOLD ||
+        _llmConsecutiveFailures % LLM_SPAM_THRESHOLD === 0) {
+      const hint = getLLMErrorHint(err);
+      console.error(`[SmartAgent] planNextAction error: ${err.message}${hint ? ' ' + hint : ''}`);
+    }
   }
 
   return { action: 'failed', reason: 'Could not parse LLM response', goalReached: false };

@@ -15,6 +15,8 @@ const MAX_CAPTION_LENGTH = 2200;
 const MAX_FAILURE_VISIBLE_TEXT_LENGTH = 240;
 const MAX_FAILURE_MESSAGE_LENGTH = 500;
 const MAX_TELEGRAM_DIAGNOSTIC_CAPTION_LENGTH = 900;
+// How many 5-second polling intervals to wait for the Post button to become enabled (24 × 5s = 120s)
+const MAX_POST_BUTTON_WAIT_ATTEMPTS = 24;
 
 async function extractTikTokVideoUrl(page) {
   // First try: look for direct video links in page
@@ -251,30 +253,38 @@ async function waitForVideoProcessing(page, maxWaitSeconds = 240) {
         text.includes('video uploaded') ||
         (text.includes('uploaded') && !text.includes('uploading') && !hasProgressPercent && !hasTimeLeft && !hasProgressBar);
 
-      const hasPostBtn = !!(
+      // Check for an ENABLED Post button (not just existence — TikTok shows it disabled during upload)
+      const postBtnEl =
         document.querySelector('button[data-e2e="post-button"]') ||
         Array.from(document.querySelectorAll('button, div[role="button"]')).find(
           b => /^(post|publish)$/i.test((b.textContent || '').trim())
-        )
-      );
+        );
+      const hasPostBtn = !!postBtnEl;
+      const hasEnabledPostBtn = !!(postBtnEl &&
+        !postBtnEl.disabled &&
+        postBtnEl.getAttribute('aria-disabled') !== 'true' &&
+        !postBtnEl.classList.toString().toLowerCase().includes('disabled'));
+
       const hasCaption = !!(
         document.querySelector('[contenteditable="true"]') ||
         document.querySelector('textarea')
       );
-      return { isUploading, uploadDone, hasPostBtn, hasCaption, hasProgressPercent, hasProgressBar };
-    }).catch(() => ({ isUploading: false, uploadDone: false, hasPostBtn: false, hasCaption: false, hasProgressPercent: false, hasProgressBar: false }));
+      return { isUploading, uploadDone, hasPostBtn, hasEnabledPostBtn, hasCaption, hasProgressPercent, hasProgressBar };
+    }).catch(() => ({ isUploading: false, uploadDone: false, hasPostBtn: false, hasEnabledPostBtn: false, hasCaption: false, hasProgressPercent: false, hasProgressBar: false }));
 
     // Dismiss any exit dialog that may appear
     await dismissExitDialog(page);
 
-    // Only treat as done when there are no active progress indicators
+    // Only treat as done when there are no active progress indicators AND Post button is enabled
     if (state.uploadDone ||
-        (state.hasPostBtn && state.hasCaption && !state.isUploading && !state.hasProgressPercent && !state.hasProgressBar)) {
+        (state.hasEnabledPostBtn && state.hasCaption && !state.isUploading && !state.hasProgressPercent && !state.hasProgressBar)) {
       console.log(`[TikTok] Video processing complete (${Math.round((Date.now() - startTime) / 1000)}s)`);
       return true;
     }
 
-    if (state.isUploading || state.hasProgressPercent) {
+    if (state.hasPostBtn && !state.hasEnabledPostBtn && !state.isUploading) {
+      console.log(`[TikTok] Post button exists but is still disabled... (${Math.round((Date.now() - startTime) / 1000)}s elapsed)`);
+    } else if (state.isUploading || state.hasProgressPercent) {
       console.log(`[TikTok] Video still uploading... (${Math.round((Date.now() - startTime) / 1000)}s elapsed)`);
     }
 
@@ -647,6 +657,31 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     // ===== PHASE 4: POST =====
     console.log('[TikTok] Posting...');
 
+    // Wait for the Post button to become enabled (TikTok keeps it disabled while the video
+    // is still being processed, even after the progress bar disappears).
+    console.log('[TikTok] Waiting for Post button to become enabled...');
+    const postBtnEnabled = await (async () => {
+      for (let i = 0; i < MAX_POST_BUTTON_WAIT_ATTEMPTS; i++) {
+        const enabled = await page.evaluate(() => {
+          const allBtns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+          const btn = allBtns.find(b => /^(post|publish)$/i.test((b.textContent || '').trim()));
+          if (!btn) return false;
+          return !btn.disabled &&
+            btn.getAttribute('aria-disabled') !== 'true' &&
+            !btn.classList.toString().toLowerCase().includes('disabled');
+        }).catch(() => false);
+        if (enabled) return true;
+        await dismissExitDialog(page);
+        await page.waitForTimeout(5000);
+      }
+      return false;
+    })();
+    if (!postBtnEnabled) {
+      console.warn('[TikTok] Post button did not become enabled within wait period, attempting click anyway');
+    } else {
+      console.log('[TikTok] Post button is enabled, proceeding to click');
+    }
+
     // Scroll the Post button into view. TikTok Studio renders the upload form inside a
     // scrollable <div> — window.scrollTo() does not reach it. Prefer scrollIntoView() on
     // the button itself; fall back to scrolling every overflow:auto/scroll container.
@@ -695,22 +730,39 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       console.warn('[TikTok] Pre-post vision check failed (non-fatal):', e.message);
     }
 
-    // Strategy 1: Standard Playwright selectors on the main page
-    let postClicked = await smartClick(page, [
-      'button[data-e2e="post-button"]',
-      'button:has-text("Post")',
-      'button:has-text("Publish")',
-      '[class*="post"] button',
-      'button[type="submit"]',
-    ], 'Post');
+    // Strategy 1: Standard Playwright selectors on the main page (with force to bypass disabled state)
+    let postClicked = false;
+    try {
+      const btn = await page.$('button[data-e2e="post-button"]');
+      if (btn) {
+        await btn.scrollIntoViewIfNeeded().catch(() => {});
+        await btn.click({ force: true });
+        postClicked = true;
+        console.log('[TikTok] Post button clicked via data-e2e selector');
+      }
+    } catch (e) {
+      console.warn('[TikTok] data-e2e post-button click failed:', e.message);
+    }
 
-    // Strategy 2: DOM-based click with scrollIntoView before clicking
+    if (!postClicked) {
+      postClicked = await smartClick(page, [
+        'button[data-e2e="post-button"]',
+        'button:has-text("Post")',
+        'button:has-text("Publish")',
+        '[class*="post"] button',
+        'button[type="submit"]',
+      ], 'Post');
+    }
+
+    // Strategy 2: DOM-based click — remove disabled attribute and force-click
     if (!postClicked) {
       postClicked = await page.evaluate(() => {
         const buttons = document.querySelectorAll('button, div[role="button"]');
         for (const btn of buttons) {
           const text = (btn.textContent || '').trim().toLowerCase();
-          if (text === 'post' || text === 'publish' || text === 'upload') {
+          if (text.startsWith('post') || text.startsWith('publish') || text === 'upload') {
+            btn.removeAttribute('disabled');
+            btn.removeAttribute('aria-disabled');
             btn.scrollIntoView({ behavior: 'instant', block: 'center' });
             btn.click();
             return true;
@@ -726,21 +778,30 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       for (const frame of page.frames()) {
         if (postClicked) break;
         try {
-          // Try data-e2e selector first
+          // Try data-e2e selector first with force click
           const btnByAttr = await frame.$('button[data-e2e="post-button"]').catch(() => null);
-          if (btnByAttr && await btnByAttr.isVisible().catch(() => false)) {
-            await btnByAttr.scrollIntoViewIfNeeded().catch(() => {});
-            await btnByAttr.click();
+          if (btnByAttr) {
+            await frame.evaluate(btn => {
+              btn.removeAttribute('disabled');
+              btn.removeAttribute('aria-disabled');
+              btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+            }, btnByAttr).catch(() => {});
+            await btnByAttr.click({ force: true }).catch(async () => {
+              // Last resort: JS click
+              await frame.evaluate(btn => btn.click(), btnByAttr).catch(() => {});
+            });
             postClicked = true;
             console.log('[TikTok] Post button clicked via frame data-e2e selector');
             break;
           }
-          // Find by text inside the frame
+          // Find by text inside the frame — use startsWith match and force-click
           const clicked = await frame.evaluate(() => {
             const buttons = document.querySelectorAll('button, div[role="button"]');
             for (const btn of buttons) {
               const text = (btn.textContent || '').trim().toLowerCase();
-              if (text === 'post' || text === 'publish') {
+              if (text.startsWith('post') || text.startsWith('publish')) {
+                btn.removeAttribute('disabled');
+                btn.removeAttribute('aria-disabled');
                 btn.scrollIntoView({ behavior: 'instant', block: 'center' });
                 btn.click();
                 return true;
@@ -752,7 +813,12 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
             postClicked = true;
             console.log('[TikTok] Post button clicked inside frame');
           }
-        } catch { /* frame may be cross-origin or disposed — skip silently */ }
+        } catch (e) {
+          // Frame may be cross-origin or disposed — skip silently
+          if (e.message && !e.message.includes('cross-origin') && !e.message.includes('Target closed')) {
+            console.warn('[TikTok] Frame post-button search error:', e.message);
+          }
+        }
       }
     }
 
