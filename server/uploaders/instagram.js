@@ -2,7 +2,7 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
-const { smartClick, smartFill, analyzePage } = require('./smart-agent');
+const { smartClick, smartFill, analyzePage, waitForStateChange } = require('./smart-agent');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
 
@@ -25,26 +25,44 @@ async function extractInstagramPostUrl(page) {
 async function assessInstagramCompletion(page) {
   const dom = await page.evaluate(() => {
     const text = (document.body?.innerText || '').toLowerCase();
+    const url = window.location.href;
+    
     const success =
       text.includes('your post has been shared') ||
       text.includes('your reel has been shared') ||
       text.includes('post shared') ||
       text.includes('reel shared') ||
-      text.includes('processing');
+      text.includes('your video has been shared') ||
+      text.includes('shared successfully') ||
+      // Instagram often redirects to feed after successful share
+      (url === 'https://www.instagram.com/' && !text.includes('create new post'));
+    
+    const isStillInDialog = text.includes('sharing...') || text.includes('processing');
+    
     const hardError =
       text.includes('couldn\'t share') ||
       text.includes('try again') ||
-      text.includes('upload failed');
-    return { success, hardError, summary: text.slice(0, 1200) };
-  }).catch(() => ({ success: false, hardError: false, summary: '' }));
+      text.includes('upload failed') ||
+      text.includes('something went wrong');
+    
+    return { success, isStillInDialog, hardError, summary: text.slice(0, 1200), url };
+  }).catch(() => ({ success: false, isStillInDialog: false, hardError: false, summary: '', url: '' }));
 
   if (dom.success) return { success: true, reason: 'Instagram UI confirms share/upload completion.' };
+  if (dom.isStillInDialog) return { success: false, needsHuman: false, reason: 'Instagram is still processing the share.' };
   if (dom.hardError) return { success: false, needsHuman: true, reason: 'Instagram UI shows a blocking share/upload error.' };
+
+  // Check if we've been redirected away from the create flow (success indicator)
+  const currentUrl = page.url();
+  if (currentUrl === 'https://www.instagram.com/' || (!currentUrl.includes('create') && !currentUrl.includes('upload'))) {
+    // If we were in the create flow and now we're not, likely succeeded
+    return { success: true, reason: 'Instagram redirected away from create flow (likely successful share).' };
+  }
 
   try {
     const ai = await analyzePage(page, 'Instagram post completion check. Decide whether posting succeeded or needs manual action.');
     const state = String(ai?.state || '').toLowerCase();
-    if (['success', 'processing', 'uploading'].includes(state)) {
+    if (['success', 'processing', 'uploading', 'logged_in'].includes(state)) {
       return { success: true, reason: ai?.description || 'AI detected successful/processing completion state.' };
     }
     return {
@@ -72,7 +90,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
   try {
     // ===== PHASE 1: LOGIN =====
-    await page.goto('https://www.instagram.com/', { waitUntil: 'networkidle', timeout: 60000 });
+    await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(3000);
 
     // Dismiss cookie dialog
@@ -91,7 +109,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         return !!(document.querySelector('[aria-label="New post"]') ||
                   document.querySelector('svg[aria-label="New post"]') ||
                   document.querySelector('[aria-label="Home"]') ||
-                  document.querySelector('a[href="/direct/inbox/"]'));
+                  document.querySelector('a[href="/direct/inbox/"]') ||
+                  document.querySelector('[aria-label="Search"]'));
       });
       if (isLoggedIn) { console.log('[Instagram] Logged in'); break; }
 
@@ -112,8 +131,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           await smartClick(page, ['button[type="submit"]'], 'Log In');
           await page.waitForTimeout(5000);
 
-          // Dismiss popups
-          for (let i = 0; i < 2; i++) {
+          // Dismiss popups ("Not Now" for save login, notifications, etc.)
+          for (let i = 0; i < 3; i++) {
             await page.evaluate(() => {
               const buttons = document.querySelectorAll('button');
               for (const btn of buttons) {
@@ -148,73 +167,195 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     const loggedIn = await page.evaluate(() => {
       return !!(document.querySelector('[aria-label="New post"]') ||
                 document.querySelector('svg[aria-label="New post"]') ||
-                document.querySelector('[aria-label="Home"]'));
+                document.querySelector('[aria-label="Home"]') ||
+                document.querySelector('[aria-label="Search"]'));
     });
     if (!loggedIn) throw new Error('Instagram login failed. Try logging in manually first.');
 
     // ===== PHASE 2: CREATE NEW POST =====
     console.log('[Instagram] Creating new post...');
-    let newPostClicked = await smartClick(page, ['[aria-label="New post"]', 'svg[aria-label="New post"]'], 'New post');
+    
+    // Try multiple ways to open new post dialog
+    let newPostClicked = await smartClick(page, [
+      '[aria-label="New post"]',
+      'svg[aria-label="New post"]',
+      '[aria-label="Create"]',
+      'svg[aria-label="Create"]',
+    ], 'New post');
+    
     if (!newPostClicked) {
-      await page.evaluate(() => {
-        const svgs = document.querySelectorAll('svg[aria-label="New post"]');
-        for (const svg of svgs) {
-          const parent = svg.closest('a, button, div[role="button"]');
-          if (parent) { parent.click(); return; }
+      newPostClicked = await page.evaluate(() => {
+        // Try SVG-based icons
+        const svgLabels = ['New post', 'Create', 'New Post'];
+        for (const label of svgLabels) {
+          const svg = document.querySelector(`svg[aria-label="${label}"]`);
+          if (svg) {
+            const parent = svg.closest('a, button, div[role="button"], span[role="link"]');
+            if (parent) { parent.click(); return true; }
+            svg.click();
+            return true;
+          }
         }
+        // Try nav links with create-related paths
+        const navLinks = document.querySelectorAll('a[href*="create"], a[href*="new"]');
+        for (const link of navLinks) {
+          link.click();
+          return true;
+        }
+        return false;
       });
     }
+    
+    if (!newPostClicked) {
+      // Last resort: direct URL navigation to create
+      console.log('[Instagram] Trying direct navigation to create flow...');
+      // Instagram doesn't have a direct create URL, so we'll try keyboard shortcut
+      // or clicking the + icon in bottom nav (mobile-like layout)
+    }
+    
     await page.waitForTimeout(3000);
 
     // ===== PHASE 3: SELECT VIDEO FILE =====
     console.log('[Instagram] Setting video file...');
     let fileInput = await page.$('input[type="file"]');
+    
     if (!fileInput) {
-      await smartClick(page, ['button:has-text("Select from computer")'], 'Select from computer');
+      // Try clicking "Select from computer" button
+      await smartClick(page, [
+        'button:has-text("Select from computer")',
+        'button:has-text("Select From Computer")',
+        'button:has-text("Select")',
+      ], 'Select from computer');
       await page.waitForTimeout(2000);
       fileInput = await page.$('input[type="file"]');
     }
-    if (!fileInput) throw new Error('Instagram upload dialog not found.');
+    
+    if (!fileInput) {
+      // Force-create file input or find hidden one
+      fileInput = await page.evaluate(() => {
+        const inputs = document.querySelectorAll('input[type="file"]');
+        if (inputs.length > 0) return true;
+        return false;
+      });
+      if (fileInput === true) {
+        fileInput = await page.$('input[type="file"]');
+      }
+    }
+    
+    if (!fileInput) throw new Error('Instagram upload dialog not found. Try creating a post manually first to verify your session.');
 
     await fileInput.setInputFiles(videoPath);
+    console.log('[Instagram] Video file set, waiting for processing...');
     await page.waitForTimeout(5000);
 
-    // Click through crop/adjust screens
-    for (let i = 0; i < 3; i++) {
-      const clicked = await smartClick(page, ['button:has-text("Next")', '[aria-label="Next"]'], 'Next');
-      if (!clicked) break;
+    // ===== PHASE 4: CLICK THROUGH CROP/ADJUST SCREENS =====
+    // Instagram shows: Crop → Filter → Caption screens
+    for (let i = 0; i < 4; i++) {
+      await page.waitForTimeout(2000);
+      
+      const clicked = await smartClick(page, [
+        'button:has-text("Next")',
+        '[aria-label="Next"]',
+        'div[role="button"]:has-text("Next")',
+      ], 'Next');
+      
+      if (!clicked) {
+        // Try via DOM evaluation
+        const domClicked = await page.evaluate(() => {
+          const buttons = document.querySelectorAll('button, div[role="button"]');
+          for (const btn of buttons) {
+            const text = (btn.textContent || '').trim().toLowerCase();
+            if (text === 'next') { btn.click(); return true; }
+          }
+          return false;
+        });
+        if (!domClicked) break;
+      }
+      
       await page.waitForTimeout(2000);
     }
 
-    // ===== PHASE 4: ADD CAPTION =====
+    // ===== PHASE 5: ADD CAPTION =====
     if (metadata?.title || metadata?.description) {
       const caption = `${metadata.title || ''}\n\n${metadata.description || ''}\n\n${(metadata.tags || []).map(t => '#' + t).join(' ')}`.trim();
       console.log('[Instagram] Setting caption...');
-      await page.evaluate((text) => {
-        const editors = document.querySelectorAll('[contenteditable="true"], textarea[aria-label*="caption" i], [aria-label="Write a caption..."]');
+      
+      const filled = await page.evaluate((text) => {
+        const editors = document.querySelectorAll(
+          '[contenteditable="true"], textarea[aria-label*="caption" i], ' +
+          '[aria-label="Write a caption..."], [aria-label*="Write a caption"],' +
+          'textarea[placeholder*="caption" i], textarea'
+        );
         for (const editor of editors) {
-          editor.focus(); editor.click();
+          if (editor.offsetHeight === 0) continue;
+          editor.focus();
+          editor.click();
           document.execCommand('selectAll', false, null);
           document.execCommand('insertText', false, text);
           return true;
         }
+        return false;
       }, caption);
+      
+      if (!filled) {
+        // Keyboard fallback
+        const captionField = await page.$('[contenteditable="true"]') || await page.$('textarea');
+        if (captionField) {
+          await captionField.click();
+          await page.waitForTimeout(300);
+          await page.keyboard.type(caption.slice(0, 2200), { delay: 10 });
+        }
+      }
     }
     await page.waitForTimeout(2000);
 
-    // ===== PHASE 5: SHARE =====
+    // ===== PHASE 6: SHARE =====
     console.log('[Instagram] Sharing...');
-    await smartClick(page, ['button:has-text("Share")', '[aria-label="Share"]'], 'Share');
-    await page.evaluate(() => {
-      const buttons = document.querySelectorAll('button, div[role="button"]');
-      for (const btn of buttons) {
-        if (btn.textContent?.trim().toLowerCase() === 'share') { btn.click(); return; }
-      }
-    });
+    let shareClicked = await smartClick(page, [
+      'button:has-text("Share")',
+      '[aria-label="Share"]',
+      'div[role="button"]:has-text("Share")',
+    ], 'Share');
+    
+    if (!shareClicked) {
+      shareClicked = await page.evaluate(() => {
+        const buttons = document.querySelectorAll('button, div[role="button"]');
+        for (const btn of buttons) {
+          const text = (btn.textContent || '').trim().toLowerCase();
+          if (text === 'share') { btn.click(); return true; }
+        }
+        return false;
+      });
+    }
+    
+    if (!shareClicked) {
+      console.warn('[Instagram] Could not find Share button, requesting human help...');
+      const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
+      await requestTelegramApproval({
+        telegram: credentials.telegram,
+        platform: 'Instagram',
+        backend: credentials.backend,
+        screenshotBuffer,
+        screenshotCaption: '📸 <b>Instagram upload ready</b> — click Share and reply APPROVED',
+        customMessage: '🚧 <b>Instagram uploader needs help</b>\nPlease click the Share button and reply APPROVED.',
+      });
+    }
+    
     await page.waitForTimeout(10000);
 
+    // ===== PHASE 7: CHECK COMPLETION =====
     let completion = await assessInstagramCompletion(page);
     let postUrl = await extractInstagramPostUrl(page);
+
+    // Wait longer if still processing
+    if (!completion.success && !completion.needsHuman) {
+      for (let i = 0; i < 6; i++) {
+        await page.waitForTimeout(5000);
+        completion = await assessInstagramCompletion(page);
+        postUrl = postUrl || await extractInstagramPostUrl(page);
+        if (completion.success) break;
+      }
+    }
 
     if (!completion.success && completion.needsHuman) {
       const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);

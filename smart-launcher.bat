@@ -29,9 +29,27 @@ IF NOT EXIST "node_modules" (
 )
 cd ..
 
+:: ===== LOVABLE API KEY =====
+:: The smart-agent uses the Lovable AI gateway for browser automation intelligence.
+:: Without this key, AI vision falls back to basic DOM analysis (less reliable).
+:: Get the key from your Lovable Cloud project settings.
+IF NOT DEFINED LOVABLE_API_KEY (
+    IF EXIST "%ROOT_DIR%\server\.env" (
+        echo [*] Loading LOVABLE_API_KEY from server\.env...
+        for /f "tokens=1,* delims==" %%A in ('findstr /I "LOVABLE_API_KEY" "%ROOT_DIR%\server\.env"') do (
+            SET "LOVABLE_API_KEY=%%B"
+        )
+    )
+    IF NOT DEFINED LOVABLE_API_KEY (
+        echo [!] WARNING: LOVABLE_API_KEY not set. AI-powered browser automation will use basic DOM analysis only.
+        echo     To enable full AI vision, create server\.env with: LOVABLE_API_KEY=your_key_here
+        echo     Or set it as an environment variable before running this script.
+    )
+)
+
 echo [3/4] Launching services...
-:: Start Backend
-start "Uploader_SERVER" cmd /k "cd server && npm start"
+:: Start Backend with LOVABLE_API_KEY passed through
+start "Uploader_SERVER" cmd /k "cd server && SET LOVABLE_API_KEY=%LOVABLE_API_KEY% && npm start"
 
 :: Start Frontend (LOCKED TO PORT 8081)
 start "Uploader_FRONTEND" cmd /k "npm run dev -- --port 8081 --strictPort"

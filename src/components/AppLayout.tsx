@@ -8,7 +8,7 @@ import { getSettings, saveSettings } from '@/lib/storage';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/queue', icon: Upload, label: 'Upload Queue' },
+  { to: '/queue', icon: Upload, label: 'Job Queue' },
   { to: '/schedule', icon: Clock, label: 'Schedule' },
   { to: '/chat', icon: MessageSquare, label: 'AI Chat' },
   { to: '/browser', icon: Globe, label: 'Browser' },

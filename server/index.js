@@ -1,6 +1,23 @@
 // Local server — autonomous browser automation worker.
 // Reads jobs from Supabase, downloads videos, and uploads via Playwright.
 
+// Load .env file if present (for LOVABLE_API_KEY and other env vars)
+const dotenvPath = require('path').join(__dirname, '.env');
+if (require('fs').existsSync(dotenvPath)) {
+  const envContent = require('fs').readFileSync(dotenvPath, 'utf-8');
+  for (const line of envContent.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx > 0) {
+      const key = trimmed.slice(0, eqIdx).trim();
+      const val = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, '');
+      if (!process.env[key]) process.env[key] = val;
+    }
+  }
+  console.log('[Server] Loaded .env file');
+}
+
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
