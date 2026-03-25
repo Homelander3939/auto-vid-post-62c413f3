@@ -7,11 +7,20 @@ echo ======================================================
 echo           VIDEO UPLOADER - SMART LAUNCHER
 echo ======================================================
 
-echo [1/4] Pulling latest updates from Lovable...
+echo [1/5] Pulling latest updates from Lovable...
 cd /d "%ROOT_DIR%"
 git pull origin main
 
-echo [2/4] Checking Dependencies...
+:: --- 2. Start LM Studio Server & Model ---
+echo [2/5] Starting LM Studio Server...
+start "LM Studio API" cmd /k "lms server start --port 1234 --cors --bind 0.0.0.0"
+echo Waiting for LM Studio server to become ready...
+timeout /t 8 /nobreak
+
+echo [2b/5] Loading Gemma 3 27B model...
+start "LM Studio Load Model" cmd /c "lms load google/gemma-3-27b"
+
+echo [3/5] Checking Dependencies...
 IF NOT EXIST "node_modules" (
     echo [!] Missing frontend packages. Installing now...
     call npm install
@@ -29,32 +38,14 @@ IF NOT EXIST "node_modules" (
 )
 cd ..
 
-:: ===== LOVABLE API KEY =====
-:: The smart-agent uses the Lovable AI gateway for browser automation intelligence.
-:: Without this key, AI vision falls back to basic DOM analysis (less reliable).
-:: Get the key from your Lovable Cloud project settings.
-IF NOT DEFINED LOVABLE_API_KEY (
-    IF EXIST "%ROOT_DIR%\server\.env" (
-        echo [*] Loading LOVABLE_API_KEY from server\.env...
-        for /f "tokens=1,* delims==" %%A in ('findstr /I "LOVABLE_API_KEY" "%ROOT_DIR%\server\.env"') do (
-            SET "LOVABLE_API_KEY=%%B"
-        )
-    )
-    IF NOT DEFINED LOVABLE_API_KEY (
-        echo [!] WARNING: LOVABLE_API_KEY not set. AI-powered browser automation will use basic DOM analysis only.
-        echo     To enable full AI vision, create server\.env with: LOVABLE_API_KEY=your_key_here
-        echo     Or set it as an environment variable before running this script.
-    )
-)
-
-echo [3/4] Launching services...
-:: Start Backend with LOVABLE_API_KEY passed through
-start "Uploader_SERVER" cmd /k "cd server && SET LOVABLE_API_KEY=%LOVABLE_API_KEY% && npm start"
+echo [4/5] Launching services...
+:: Start Backend — use localhost:1234 for LM Studio (running on this machine)
+start "Uploader_SERVER" cmd /k "cd server && SET LM_STUDIO_URL=http://localhost:1234 && SET LM_STUDIO_MODEL=google/gemma-3-27b && npm start"
 
 :: Start Frontend (LOCKED TO PORT 8081)
 start "Uploader_FRONTEND" cmd /k "npm run dev -- --port 8081 --strictPort"
 
-echo [4/4] Waiting 10 seconds for services to compile...
+echo [5/5] Waiting 10 seconds for services to compile...
 timeout /t 10 /nobreak
 
 echo Opening Brave Browser...

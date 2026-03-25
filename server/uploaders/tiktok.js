@@ -122,16 +122,23 @@ async function navigateToTikTokUpload(page) {
 }
 
 async function dismissExitDialog(page) {
-  // TikTok shows a custom modal "Are you sure that you want to exit?" with Exit/Cancel buttons.
-  // Always click Cancel to stay on the page and let the upload finish.
+  // TikTok shows custom modals when navigating away or cancelling an upload.
+  // "Sure you want to cancel your upload?" → click "No"
+  // "Are you sure you want to exit?" → click "Cancel" / "Stay"
+  // Always dismiss these to stay on the page and let the upload finish.
   try {
     const dismissed = await page.evaluate(() => {
       const text = (document.body?.innerText || '').toLowerCase();
-      if (text.includes('are you sure') && (text.includes('exit') || text.includes('leave'))) {
+      const isExitDialog =
+        (text.includes('sure you want to cancel') && text.includes('upload')) ||
+        (text.includes('are you sure') && (text.includes('exit') || text.includes('leave') || text.includes('cancel')));
+
+      if (isExitDialog) {
         const buttons = document.querySelectorAll('button, div[role="button"]');
         for (const btn of buttons) {
           const btnText = (btn.textContent || '').trim().toLowerCase();
-          if (btnText === 'cancel' || btnText === 'stay' || btnText === 'keep editing') {
+          // "No" dismisses the cancel-upload dialog; "Cancel"/"Stay"/"Keep editing" dismiss the exit dialogs
+          if (btnText === 'no' || btnText === 'cancel' || btnText === 'stay' || btnText === 'keep editing') {
             btn.click();
             return true;
           }
@@ -144,9 +151,12 @@ async function dismissExitDialog(page) {
   } catch { return false; }
 }
 
-async function waitForVideoProcessing(page, maxWaitSeconds = 180) {
+async function waitForVideoProcessing(page, maxWaitSeconds = 240) {
   // Wait for TikTok to finish processing the uploaded video file before attempting to post.
-  // Checks for "Uploaded" indicator and absence of progress/uploading text.
+  // Checks for explicit upload-complete indicator and absence of any active progress signals.
+  // NOTE: TikTok shows the caption editor and Post button even while the upload is still in
+  // progress, so we must NOT rely solely on their presence — we must also confirm that there
+  // is no active upload percentage or progress bar visible.
   console.log('[TikTok] Waiting for video processing to complete...');
   const startTime = Date.now();
   const maxWaitMs = maxWaitSeconds * 1000;
@@ -155,10 +165,30 @@ async function waitForVideoProcessing(page, maxWaitSeconds = 180) {
     if (Date.now() - startTime > maxWaitMs) break;
 
     const state = await page.evaluate(() => {
-      const text = (document.body?.innerText || '').toLowerCase();
-      const isUploading = text.includes('uploading') || text.includes('% uploaded') || 
-                          text.includes('processing video');
-      const uploadDone = text.includes('uploaded') && !text.includes('uploading');
+      const rawText = document.body?.innerText || '';
+      const text = rawText.toLowerCase();
+
+      // Active upload: percentage like "45.77%" or "seconds left" / "minutes left" are strong signals
+      const hasProgressPercent = /\b\d+(\.\d+)?%/.test(rawText) && !rawText.includes('100%');
+      const hasTimeLeft = text.includes('seconds left') || text.includes('minutes left');
+      const hasProgressBar = !!(
+        document.querySelector('[role="progressbar"]') ||
+        document.querySelector('progress')
+      );
+
+      const isUploading =
+        text.includes('uploading') ||
+        text.includes('% uploaded') ||
+        text.includes('processing video') ||
+        hasProgressPercent ||
+        hasTimeLeft;
+
+      // Explicit upload-done signal (not just presence of "uploaded" which can appear in filenames)
+      const uploadDone =
+        text.includes('upload complete') ||
+        text.includes('video uploaded') ||
+        (text.includes('uploaded') && !text.includes('uploading') && !hasProgressPercent && !hasTimeLeft && !hasProgressBar);
+
       const hasPostBtn = !!(
         document.querySelector('button[data-e2e="post-button"]') ||
         Array.from(document.querySelectorAll('button, div[role="button"]')).find(
@@ -169,19 +199,21 @@ async function waitForVideoProcessing(page, maxWaitSeconds = 180) {
         document.querySelector('[contenteditable="true"]') ||
         document.querySelector('textarea')
       );
-      return { isUploading, uploadDone, hasPostBtn, hasCaption };
-    }).catch(() => ({ isUploading: false, uploadDone: false, hasPostBtn: false, hasCaption: false }));
+      return { isUploading, uploadDone, hasPostBtn, hasCaption, hasProgressPercent, hasProgressBar };
+    }).catch(() => ({ isUploading: false, uploadDone: false, hasPostBtn: false, hasCaption: false, hasProgressPercent: false, hasProgressBar: false }));
 
     // Dismiss any exit dialog that may appear
     await dismissExitDialog(page);
 
-    if (state.uploadDone || (state.hasPostBtn && state.hasCaption && !state.isUploading)) {
+    // Only treat as done when there are no active progress indicators
+    if (state.uploadDone ||
+        (state.hasPostBtn && state.hasCaption && !state.isUploading && !state.hasProgressPercent && !state.hasProgressBar)) {
       console.log(`[TikTok] Video processing complete (${Math.round((Date.now() - startTime) / 1000)}s)`);
       return true;
     }
 
-    if (state.isUploading) {
-      console.log(`[TikTok] Video still uploading... (${Math.round((Date.now() - startTime) / 1000)}s)`);
+    if (state.isUploading || state.hasProgressPercent) {
+      console.log(`[TikTok] Video still uploading... (${Math.round((Date.now() - startTime) / 1000)}s elapsed)`);
     }
 
     await page.waitForTimeout(5000);
@@ -191,9 +223,9 @@ async function waitForVideoProcessing(page, maxWaitSeconds = 180) {
   return false;
 }
 
-async function waitForPublishConfirmation(page, maxWaitSeconds = 120) {
-  // After clicking Post, wait for TikTok to confirm the video is published.
-  // This is critical — the old code exited too early, triggering "Are you sure you want to exit?"
+async function waitForPublishConfirmation(page, maxWaitSeconds = 180) {
+  // After clicking Post, wait for TikTok to confirm the video is published/queued.
+  // This is critical — exiting too early triggers "Sure you want to cancel your upload?"
   console.log('[TikTok] Waiting for publish confirmation...');
   const startTime = Date.now();
   const maxWaitMs = maxWaitSeconds * 1000;
@@ -206,24 +238,34 @@ async function waitForPublishConfirmation(page, maxWaitSeconds = 120) {
 
     const state = await page.evaluate(() => {
       const text = (document.body?.innerText || '').toLowerCase();
-      const isPublishing = text.includes('posting') || text.includes('publishing') ||
-                           text.includes('sharing') || text.includes('uploading to tiktok') ||
-                           text.includes('your video is being uploaded to tiktok');
-      const isPublished = text.includes('your video has been published') ||
-                          text.includes('post published') ||
-                          text.includes('uploaded successfully') ||
-                          text.includes('your post is now live') ||
-                          text.includes('manage your posts');
-      // Check if we're back on the upload page (TikTok redirects after successful publish)
-      const backToUpload = text.includes('select video to upload') || text.includes('select video');
-      // Check for the success checkmark or redirect to manage page
+      const isPublishing =
+        text.includes('posting') ||
+        text.includes('publishing') ||
+        text.includes('sharing') ||
+        text.includes('uploading to tiktok');
+      // TikTok success: explicit published messages OR redirect back to upload/manage page
+      const isPublished =
+        text.includes('your video has been published') ||
+        text.includes('post published') ||
+        text.includes('uploaded successfully') ||
+        text.includes('your post is now live') ||
+        text.includes('manage your posts') ||
+        // "your video is being uploaded to tiktok" means it was accepted and is now processing in background
+        text.includes('your video is being uploaded to tiktok') ||
+        text.includes('video is being processed') ||
+        text.includes('video is being uploaded');
+      // TikTok often redirects back to the upload page or content page after a successful post
+      const backToUpload =
+        text.includes('select video to upload') ||
+        text.includes('select video') ||
+        text.includes('drag and drop');
       const url = window.location.href;
       const onManagePage = url.includes('/content') || url.includes('/manage');
       return { isPublishing, isPublished, backToUpload, onManagePage, url };
     }).catch(() => ({ isPublishing: false, isPublished: false, backToUpload: false, onManagePage: false, url: '' }));
 
     if (state.isPublished || state.backToUpload || state.onManagePage) {
-      console.log(`[TikTok] Video published! (${Math.round((Date.now() - startTime) / 1000)}s)`);
+      console.log(`[TikTok] Video published/queued! (${Math.round((Date.now() - startTime) / 1000)}s)`);
       return true;
     }
 
@@ -461,7 +503,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     console.log('[TikTok] Video file set, waiting for processing...');
     
     // Wait for video to fully upload and process before proceeding
-    await waitForVideoProcessing(page, 180);
+    await waitForVideoProcessing(page, 240);
 
     // ===== PHASE 3: FILL CAPTION =====
     if (metadata?.title || metadata?.description) {

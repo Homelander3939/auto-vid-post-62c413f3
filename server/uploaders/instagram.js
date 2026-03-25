@@ -35,7 +35,7 @@ async function assessInstagramCompletion(page) {
       text.includes('reel shared') ||
       text.includes('your video has been shared') ||
       text.includes('shared successfully') ||
-      // Instagram often redirects to feed after successful share
+      // Instagram redirects to feed after a successful share
       (url === 'https://www.instagram.com/' && !text.includes('create new post'));
     
     const isStillInDialog = text.includes('sharing...') || text.includes('processing');
@@ -53,11 +53,11 @@ async function assessInstagramCompletion(page) {
   if (dom.isStillInDialog) return { success: false, needsHuman: false, reason: 'Instagram is still processing the share.' };
   if (dom.hardError) return { success: false, needsHuman: true, reason: 'Instagram UI shows a blocking share/upload error.' };
 
-  // Check if we've been redirected away from the create flow (success indicator)
+  // Only treat a redirect to the homepage as success — do NOT treat other non-create
+  // pages (e.g., the profile/reels page we navigate to for URL extraction) as success.
   const currentUrl = page.url();
-  if (currentUrl === 'https://www.instagram.com/' || (!currentUrl.includes('create') && !currentUrl.includes('upload'))) {
-    // If we were in the create flow and now we're not, likely succeeded
-    return { success: true, reason: 'Instagram redirected away from create flow (likely successful share).' };
+  if (currentUrl === 'https://www.instagram.com/') {
+    return { success: true, reason: 'Instagram redirected to home feed after share (success).' };
   }
 
   try {
@@ -555,23 +555,31 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     console.log('[Instagram] Waiting for share to complete...');
     await page.waitForTimeout(5000);
 
-    // Wait for the "sharing..." or "Your reel has been shared" confirmation
+    // Wait for Instagram to process and confirm the share (up to 120 seconds).
+    // Do NOT break early based on absence of "sharing..." text — Instagram often
+    // silently processes without displaying any progress text.
     let shareWaitAttempts = 0;
     while (shareWaitAttempts++ < 24) {
       const shareState = await page.evaluate(() => {
         const text = (document.body?.innerText || '').toLowerCase();
+        const url = window.location.href;
         const isSharing = text.includes('sharing...') || text.includes('processing') || text.includes('posting');
-        const isShared = text.includes('your reel has been shared') || text.includes('your post has been shared') ||
-                         text.includes('post shared') || text.includes('reel shared') || 
-                         text.includes('your video has been shared') || text.includes('shared successfully');
-        return { isSharing, isShared };
-      }).catch(() => ({ isSharing: false, isShared: false }));
+        const isShared =
+          text.includes('your reel has been shared') ||
+          text.includes('your post has been shared') ||
+          text.includes('post shared') ||
+          text.includes('reel shared') ||
+          text.includes('your video has been shared') ||
+          text.includes('shared successfully');
+        // Instagram often redirects to feed after a successful share
+        const redirectedToFeed = url === 'https://www.instagram.com/';
+        return { isSharing, isShared, redirectedToFeed };
+      }).catch(() => ({ isSharing: false, isShared: false, redirectedToFeed: false }));
 
-      if (shareState.isShared) {
-        console.log(`[Instagram] Post shared successfully! (${shareWaitAttempts * 5}s)`);
+      if (shareState.isShared || shareState.redirectedToFeed) {
+        console.log(`[Instagram] Post shared/redirected (${shareWaitAttempts * 5}s)`);
         break;
       }
-      if (!shareState.isSharing && shareWaitAttempts > 6) break;
       if (shareState.isSharing) {
         console.log(`[Instagram] Still sharing... (${shareWaitAttempts * 5}s)`);
       }
@@ -579,8 +587,19 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     }
 
     // ===== PHASE 7: CHECK COMPLETION AND EXTRACT URL =====
+    // First try: look for a "View Post" / "View Reel" link in the success dialog
+    let postUrl = await page.evaluate(() => {
+      const links = Array.from(document.querySelectorAll('a[href]'));
+      for (const a of links) {
+        const href = a.getAttribute('href') || '';
+        if (href.includes('/reel/') || href.includes('/p/')) {
+          return href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+        }
+      }
+      return '';
+    }).catch(() => '');
+
     let completion = await assessInstagramCompletion(page);
-    let postUrl = await extractInstagramPostUrl(page);
 
     // Wait longer if still processing
     if (!completion.success && !completion.needsHuman) {
@@ -592,52 +611,62 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       }
     }
 
-    // If no URL found yet, navigate to profile to find the latest post/reel
+    // If no URL found yet, navigate to the user's own profile to find the latest reel
     if (!postUrl || postUrl === '') {
       try {
-        // Get username from the page
+        // Extract the logged-in username from the Instagram left-sidebar profile link.
+        // Instagram renders a nav link like <a href="/username/" aria-label="Profile"> 
         const username = await page.evaluate(() => {
-          // Try to get username from profile link in nav
-          const profileLink = document.querySelector('a[href*="instagram.com/"][role="link"]');
-          if (profileLink) {
-            const href = profileLink.getAttribute('href') || '';
-            const match = href.match(/instagram\.com\/([^/?]+)/);
-            if (match && !['explore', 'reels', 'direct', 'accounts', 'p', 'reel'].includes(match[1])) return match[1];
+          // Strategy 1: profile nav link (most reliable — always present when logged in)
+          const navSelectors = [
+            'nav a[href^="/"][aria-label*="Profile" i]',
+            'nav a[href^="/"][role="link"]',
+            'a[href^="/"][aria-label*="Profile" i]',
+          ];
+          for (const sel of navSelectors) {
+            const el = document.querySelector(sel);
+            if (el) {
+              const href = (el.getAttribute('href') || '').replace(/\/$/, '');
+              const m = href.match(/^\/([a-zA-Z0-9._]+)$/);
+              if (m && !['explore', 'reels', 'direct', 'accounts', 'p', 'reel', 'create', 'stories'].includes(m[1])) {
+                return m[1];
+              }
+            }
           }
-          // Try from meta tags
-          const meta = document.querySelector('meta[property="al:android:url"]');
-          if (meta) {
-            const content = meta.getAttribute('content') || '';
-            const match = content.match(/user\?username=([^&]+)/);
-            if (match) return match[1];
-          }
-          // Try from any link with profile pattern
-          const links = Array.from(document.querySelectorAll('a[href]'));
-          for (const link of links) {
-            const href = link.getAttribute('href') || '';
-            const match = href.match(/^\/([a-zA-Z0-9._]+)\/?$/);
-            if (match && !['explore', 'reels', 'direct', 'accounts', 'p', 'reel', 'create'].includes(match[1])) {
-              return match[1];
+          // Strategy 2: scan all sidebar / nav links for a short username-like path
+          const allLinks = Array.from(document.querySelectorAll('a[href]'));
+          for (const link of allLinks) {
+            const href = (link.getAttribute('href') || '').replace(/\/$/, '');
+            const m = href.match(/^\/([a-zA-Z0-9._]{3,30})$/);
+            if (m && !['explore', 'reels', 'direct', 'accounts', 'p', 'reel', 'create', 'stories', 'inbox'].includes(m[1])) {
+              return m[1];
             }
           }
           return '';
         }).catch(() => '');
 
         if (username) {
-          console.log(`[Instagram] Navigating to profile @${username} to find published reel...`);
-          await page.goto(`https://www.instagram.com/${username}/reels/`, { waitUntil: 'domcontentloaded', timeout: 15000 });
-          await page.waitForTimeout(3000);
-          
+          console.log(`[Instagram] Navigating to @${username}/reels/ to find the published reel...`);
+          await page.goto(`https://www.instagram.com/${username}/reels/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+          // Wait for the reels grid to load
+          await page.waitForTimeout(4000);
+
+          // Pick the first (newest) reel from the main content grid, not sidebar/header links
           postUrl = await page.evaluate(() => {
-            const reelLinks = Array.from(document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
+            // Instagram reels grid: the main article/section contains <a href="/reel/…"> tiles
+            // Collect all reel/post links then take the one with the shortest surrounding element
+            // depth from the main content area to avoid sidebar duplicates.
+            const mainEl = document.querySelector('main, [role="main"]');
+            const scope = mainEl || document;
+            const reelLinks = Array.from(scope.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
             if (reelLinks.length > 0) {
               const href = reelLinks[0].getAttribute('href') || '';
               return href.startsWith('http') ? href : `https://www.instagram.com${href}`;
             }
             return '';
           }).catch(() => '');
-          
-          if (postUrl) console.log(`[Instagram] Found published reel URL: ${postUrl}`);
+
+          if (postUrl) console.log(`[Instagram] Found published reel URL from profile: ${postUrl}`);
         }
       } catch (e) {
         console.warn('[Instagram] Could not navigate to profile for URL:', e.message);
