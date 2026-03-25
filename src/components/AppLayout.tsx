@@ -202,6 +202,13 @@ export default function AppLayout() {
 
           <p className="text-xs text-muted-foreground px-1">
             {isCloud ? 'Cloud DB · Cloud uploads' : 'Cloud DB · Local uploads'}
+            {(__BUILD_NUMBER__ || __BUILD_NAME__) && (
+              <span className="block text-[10px] opacity-60 mt-0.5">
+                {__BUILD_NAME__ && <span>{__BUILD_NAME__}</span>}
+                {__BUILD_NAME__ && __BUILD_NUMBER__ && <span> · </span>}
+                {__BUILD_NUMBER__ && <span>Build #{__BUILD_NUMBER__}</span>}
+              </span>
+            )}
           </p>
         </div>
       </aside>

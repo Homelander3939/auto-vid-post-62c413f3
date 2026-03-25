@@ -89,6 +89,12 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
   const page = context.pages()[0] || await context.newPage();
 
+  // Handle native browser beforeunload dialogs
+  page.on('dialog', async (dialog) => {
+    console.log(`[Instagram] Browser dialog: "${dialog.message()}" — dismissing`);
+    await dialog.dismiss().catch(() => {});
+  });
+
   try {
     // ===== PHASE 1: LOGIN =====
     await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -381,9 +387,32 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     }
 
     // ===== PHASE 5: ADD CAPTION =====
+    // First verify we're on the caption/share screen
+    const onCaptionScreen = await page.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      return text.includes('caption') || text.includes('write a caption') || 
+             text.includes('share') || text.includes('create new post') ||
+             !!document.querySelector('[aria-label*="caption" i], textarea[placeholder*="caption" i], [contenteditable="true"]');
+    }).catch(() => false);
+
+    if (!onCaptionScreen) {
+      console.log('[Instagram] Not on caption screen yet, trying to advance...');
+      // Try one more "Next" click
+      await smartClick(page, [
+        'button:has-text("Next")',
+        '[aria-label="Next"]',
+        'div[role="button"]:has-text("Next")',
+      ], 'Next');
+      await page.waitForTimeout(2000);
+    }
+
     if (metadata?.title || metadata?.description) {
-      const caption = `${metadata.title || ''}\n\n${metadata.description || ''}\n\n${(metadata.tags || []).map(t => '#' + t).join(' ')}`.trim();
-      console.log('[Instagram] Setting caption...');
+      const captionParts = [];
+      if (metadata.title) captionParts.push(metadata.title);
+      if (metadata.description) captionParts.push(metadata.description);
+      if (metadata.tags?.length) captionParts.push(metadata.tags.map(t => '#' + t).join(' '));
+      const caption = captionParts.join('\n\n').trim();
+      console.log(`[Instagram] Setting caption (${caption.length} chars)...`);
       
       let captionFilled = false;
 
@@ -407,14 +436,29 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           if (!visible) continue;
           
           await el.click();
-          await page.waitForTimeout(300);
+          await page.waitForTimeout(500);
+          // Select all existing text and replace
           await page.keyboard.press('Control+a');
-          await page.waitForTimeout(100);
+          await page.waitForTimeout(200);
           await page.keyboard.press('Backspace');
-          await page.waitForTimeout(100);
-          await page.keyboard.type(caption.slice(0, MAX_CAPTION_LENGTH), { delay: 5 });
-          captionFilled = true;
-          console.log(`[Instagram] Caption filled via ${sel}`);
+          await page.waitForTimeout(200);
+          // Type the caption character by character for reliability
+          await page.keyboard.type(caption.slice(0, MAX_CAPTION_LENGTH), { delay: 10 });
+          await page.waitForTimeout(500);
+          
+          // Verify the caption was actually typed
+          const typed = await page.evaluate((selector) => {
+            const el = document.querySelector(selector);
+            if (!el) return '';
+            return el.textContent || el.value || '';
+          }, sel).catch(() => '');
+          
+          if (typed.length > 0) {
+            captionFilled = true;
+            console.log(`[Instagram] Caption filled via ${sel} (${typed.length} chars written)`);
+          } else {
+            console.log(`[Instagram] Caption via ${sel} may not have been applied, trying next method...`);
+          }
         } catch {}
       }
 
@@ -432,10 +476,13 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             editor.click();
             document.execCommand('selectAll', false, null);
             document.execCommand('insertText', false, text);
-            return true;
+            // Verify text was set
+            const content = editor.textContent || editor.value || '';
+            if (content.length > 0) return true;
           }
           return false;
         }, caption);
+        if (captionFilled) console.log('[Instagram] Caption filled via execCommand');
       }
 
       // Strategy 3: Agent fallback
@@ -443,11 +490,16 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         console.warn('[Instagram] Could not fill caption with standard methods, trying agent...');
         try {
           await runAgentTask(page,
-            `Fill the caption field with: "${caption.slice(0, 300)}"`,
+            `Find the caption text field (it may say "Write a caption...") and type the following text into it: "${caption.slice(0, 300)}"`,
             { maxSteps: 5, stepDelayMs: 500 });
+          captionFilled = true;
         } catch (e) {
           console.warn('[Instagram] Agent caption fill failed:', e.message);
         }
+      }
+
+      if (!captionFilled) {
+        console.warn('[Instagram] WARNING: Caption could not be filled. The post will be shared without a description.');
       }
     }
     await page.waitForTimeout(2000);
@@ -499,19 +551,96 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       });
     }
     
-    await page.waitForTimeout(10000);
+    // Wait for Instagram to process and share the post
+    console.log('[Instagram] Waiting for share to complete...');
+    await page.waitForTimeout(5000);
 
-    // ===== PHASE 7: CHECK COMPLETION =====
+    // Wait for the "sharing..." or "Your reel has been shared" confirmation
+    let shareWaitAttempts = 0;
+    while (shareWaitAttempts++ < 24) {
+      const shareState = await page.evaluate(() => {
+        const text = (document.body?.innerText || '').toLowerCase();
+        const isSharing = text.includes('sharing...') || text.includes('processing') || text.includes('posting');
+        const isShared = text.includes('your reel has been shared') || text.includes('your post has been shared') ||
+                         text.includes('post shared') || text.includes('reel shared') || 
+                         text.includes('your video has been shared') || text.includes('shared successfully');
+        return { isSharing, isShared };
+      }).catch(() => ({ isSharing: false, isShared: false }));
+
+      if (shareState.isShared) {
+        console.log(`[Instagram] Post shared successfully! (${shareWaitAttempts * 5}s)`);
+        break;
+      }
+      if (!shareState.isSharing && shareWaitAttempts > 6) break;
+      if (shareState.isSharing) {
+        console.log(`[Instagram] Still sharing... (${shareWaitAttempts * 5}s)`);
+      }
+      await page.waitForTimeout(5000);
+    }
+
+    // ===== PHASE 7: CHECK COMPLETION AND EXTRACT URL =====
     let completion = await assessInstagramCompletion(page);
     let postUrl = await extractInstagramPostUrl(page);
 
     // Wait longer if still processing
     if (!completion.success && !completion.needsHuman) {
-      for (let i = 0; i < 6; i++) {
+      for (let i = 0; i < 10; i++) {
         await page.waitForTimeout(5000);
         completion = await assessInstagramCompletion(page);
         postUrl = postUrl || await extractInstagramPostUrl(page);
         if (completion.success) break;
+      }
+    }
+
+    // If no URL found yet, navigate to profile to find the latest post/reel
+    if (!postUrl || postUrl === '') {
+      try {
+        // Get username from the page
+        const username = await page.evaluate(() => {
+          // Try to get username from profile link in nav
+          const profileLink = document.querySelector('a[href*="instagram.com/"][role="link"]');
+          if (profileLink) {
+            const href = profileLink.getAttribute('href') || '';
+            const match = href.match(/instagram\.com\/([^/?]+)/);
+            if (match && !['explore', 'reels', 'direct', 'accounts', 'p', 'reel'].includes(match[1])) return match[1];
+          }
+          // Try from meta tags
+          const meta = document.querySelector('meta[property="al:android:url"]');
+          if (meta) {
+            const content = meta.getAttribute('content') || '';
+            const match = content.match(/user\?username=([^&]+)/);
+            if (match) return match[1];
+          }
+          // Try from any link with profile pattern
+          const links = Array.from(document.querySelectorAll('a[href]'));
+          for (const link of links) {
+            const href = link.getAttribute('href') || '';
+            const match = href.match(/^\/([a-zA-Z0-9._]+)\/?$/);
+            if (match && !['explore', 'reels', 'direct', 'accounts', 'p', 'reel', 'create'].includes(match[1])) {
+              return match[1];
+            }
+          }
+          return '';
+        }).catch(() => '');
+
+        if (username) {
+          console.log(`[Instagram] Navigating to profile @${username} to find published reel...`);
+          await page.goto(`https://www.instagram.com/${username}/reels/`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          await page.waitForTimeout(3000);
+          
+          postUrl = await page.evaluate(() => {
+            const reelLinks = Array.from(document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
+            if (reelLinks.length > 0) {
+              const href = reelLinks[0].getAttribute('href') || '';
+              return href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+            }
+            return '';
+          }).catch(() => '');
+          
+          if (postUrl) console.log(`[Instagram] Found published reel URL: ${postUrl}`);
+        }
+      } catch (e) {
+        console.warn('[Instagram] Could not navigate to profile for URL:', e.message);
       }
     }
 
@@ -535,7 +664,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       throw new Error(`Instagram publish was not confirmed. ${completion.reason}`);
     }
 
-    console.log('[Instagram] Upload complete!');
+    console.log(`[Instagram] Upload complete! URL: ${postUrl || '(no URL extracted)'}`);
 
     // ===== POST-UPLOAD: SCRAPE STATS =====
     let recentStats = [];

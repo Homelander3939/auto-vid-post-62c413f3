@@ -121,6 +121,123 @@ async function navigateToTikTokUpload(page) {
   return false;
 }
 
+async function dismissExitDialog(page) {
+  // TikTok shows a custom modal "Are you sure that you want to exit?" with Exit/Cancel buttons.
+  // Always click Cancel to stay on the page and let the upload finish.
+  try {
+    const dismissed = await page.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      if (text.includes('are you sure') && (text.includes('exit') || text.includes('leave'))) {
+        const buttons = document.querySelectorAll('button, div[role="button"]');
+        for (const btn of buttons) {
+          const btnText = (btn.textContent || '').trim().toLowerCase();
+          if (btnText === 'cancel' || btnText === 'stay' || btnText === 'keep editing') {
+            btn.click();
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+    if (dismissed) console.log('[TikTok] Dismissed exit confirmation dialog');
+    return dismissed;
+  } catch { return false; }
+}
+
+async function waitForVideoProcessing(page, maxWaitSeconds = 180) {
+  // Wait for TikTok to finish processing the uploaded video file before attempting to post.
+  // Checks for "Uploaded" indicator and absence of progress/uploading text.
+  console.log('[TikTok] Waiting for video processing to complete...');
+  const startTime = Date.now();
+  const maxWaitMs = maxWaitSeconds * 1000;
+
+  for (let attempt = 0; attempt < Math.ceil(maxWaitSeconds / 5); attempt++) {
+    if (Date.now() - startTime > maxWaitMs) break;
+
+    const state = await page.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      const isUploading = text.includes('uploading') || text.includes('% uploaded') || 
+                          text.includes('processing video');
+      const uploadDone = text.includes('uploaded') && !text.includes('uploading');
+      const hasPostBtn = !!(
+        document.querySelector('button[data-e2e="post-button"]') ||
+        Array.from(document.querySelectorAll('button, div[role="button"]')).find(
+          b => /^(post|publish)$/i.test((b.textContent || '').trim())
+        )
+      );
+      const hasCaption = !!(
+        document.querySelector('[contenteditable="true"]') ||
+        document.querySelector('textarea')
+      );
+      return { isUploading, uploadDone, hasPostBtn, hasCaption };
+    }).catch(() => ({ isUploading: false, uploadDone: false, hasPostBtn: false, hasCaption: false }));
+
+    // Dismiss any exit dialog that may appear
+    await dismissExitDialog(page);
+
+    if (state.uploadDone || (state.hasPostBtn && state.hasCaption && !state.isUploading)) {
+      console.log(`[TikTok] Video processing complete (${Math.round((Date.now() - startTime) / 1000)}s)`);
+      return true;
+    }
+
+    if (state.isUploading) {
+      console.log(`[TikTok] Video still uploading... (${Math.round((Date.now() - startTime) / 1000)}s)`);
+    }
+
+    await page.waitForTimeout(5000);
+  }
+
+  console.warn('[TikTok] Video processing wait timed out, proceeding anyway');
+  return false;
+}
+
+async function waitForPublishConfirmation(page, maxWaitSeconds = 120) {
+  // After clicking Post, wait for TikTok to confirm the video is published.
+  // This is critical — the old code exited too early, triggering "Are you sure you want to exit?"
+  console.log('[TikTok] Waiting for publish confirmation...');
+  const startTime = Date.now();
+  const maxWaitMs = maxWaitSeconds * 1000;
+
+  for (let attempt = 0; attempt < Math.ceil(maxWaitSeconds / 5); attempt++) {
+    if (Date.now() - startTime > maxWaitMs) break;
+
+    // Dismiss any exit dialog that may appear
+    await dismissExitDialog(page);
+
+    const state = await page.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      const isPublishing = text.includes('posting') || text.includes('publishing') ||
+                           text.includes('sharing') || text.includes('uploading to tiktok') ||
+                           text.includes('your video is being uploaded to tiktok');
+      const isPublished = text.includes('your video has been published') ||
+                          text.includes('post published') ||
+                          text.includes('uploaded successfully') ||
+                          text.includes('your post is now live') ||
+                          text.includes('manage your posts');
+      // Check if we're back on the upload page (TikTok redirects after successful publish)
+      const backToUpload = text.includes('select video to upload') || text.includes('select video');
+      // Check for the success checkmark or redirect to manage page
+      const url = window.location.href;
+      const onManagePage = url.includes('/content') || url.includes('/manage');
+      return { isPublishing, isPublished, backToUpload, onManagePage, url };
+    }).catch(() => ({ isPublishing: false, isPublished: false, backToUpload: false, onManagePage: false, url: '' }));
+
+    if (state.isPublished || state.backToUpload || state.onManagePage) {
+      console.log(`[TikTok] Video published! (${Math.round((Date.now() - startTime) / 1000)}s)`);
+      return true;
+    }
+
+    if (state.isPublishing) {
+      console.log(`[TikTok] Still publishing... (${Math.round((Date.now() - startTime) / 1000)}s)`);
+    }
+
+    await page.waitForTimeout(5000);
+  }
+
+  console.warn('[TikTok] Publish confirmation timed out');
+  return false;
+}
+
 async function uploadToTikTok(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
   fs.mkdirSync(USER_DATA_DIR, { recursive: true });
@@ -133,6 +250,12 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
   });
 
   const page = context.pages()[0] || await context.newPage();
+
+  // Handle native browser beforeunload dialogs (auto-dismiss to stay on page)
+  page.on('dialog', async (dialog) => {
+    console.log(`[TikTok] Browser dialog: "${dialog.message()}" — dismissing to stay on page`);
+    await dialog.dismiss().catch(() => {});
+  });
 
   try {
     // ===== PHASE 1: NAVIGATE TO UPLOAD PAGE =====
@@ -337,23 +460,8 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
 
     console.log('[TikTok] Video file set, waiting for processing...');
     
-    // Wait for video to process - TikTok needs more time
-    await page.waitForTimeout(10000);
-
-    // Wait for upload progress to complete
-    let uploadWaitAttempts = 0;
-    while (uploadWaitAttempts++ < 30) {
-      const uploadState = await page.evaluate(() => {
-        const text = (document.body?.innerText || '').toLowerCase();
-        const isUploading = text.includes('uploading') || text.includes('processing') || text.includes('% uploaded');
-        const uploadDone = text.includes('post') || text.includes('caption') || text.includes('description') || text.includes('cover');
-        return { isUploading, uploadDone };
-      });
-      if (uploadState.uploadDone && !uploadState.isUploading) break;
-      if (!uploadState.isUploading && uploadWaitAttempts > 3) break;
-      console.log(`[TikTok] Video still processing... (attempt ${uploadWaitAttempts})`);
-      await page.waitForTimeout(5000);
-    }
+    // Wait for video to fully upload and process before proceeding
+    await waitForVideoProcessing(page, 180);
 
     // ===== PHASE 3: FILL CAPTION =====
     if (metadata?.title || metadata?.description) {
@@ -484,7 +592,8 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       });
     }
     
-    await page.waitForTimeout(10000);
+    // Wait for the publish to fully complete — this is critical to avoid the "exit" dialog
+    await waitForPublishConfirmation(page, 120);
 
     // ===== PHASE 5: CHECK COMPLETION =====
     let completion = await assessTikTokCompletion(page);
@@ -492,11 +601,34 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
 
     // Wait longer if still uploading/processing
     if (!completion.success && !completion.needsHuman) {
-      for (let i = 0; i < 6; i++) {
+      for (let i = 0; i < 12; i++) {
+        await dismissExitDialog(page);
         await page.waitForTimeout(5000);
         completion = await assessTikTokCompletion(page);
         videoUrl = videoUrl || await extractTikTokVideoUrl(page);
         if (completion.success) break;
+      }
+    }
+
+    // If still no URL, try navigating to the profile to get the latest video URL
+    if (!videoUrl || videoUrl === 'https://www.tiktok.com') {
+      try {
+        // Navigate to TikTok profile/manage page to find the published video
+        await page.goto('https://www.tiktok.com/tiktokstudio/content', { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.waitForTimeout(3000);
+        videoUrl = await page.evaluate(() => {
+          const links = Array.from(document.querySelectorAll('a[href*="/video/"]'));
+          for (const link of links) {
+            const href = link.getAttribute('href') || '';
+            if (href.includes('/video/')) {
+              return href.startsWith('http') ? href : `https://www.tiktok.com${href}`;
+            }
+          }
+          return '';
+        }).catch(() => '');
+        if (videoUrl) console.log(`[TikTok] Found published video URL from content page: ${videoUrl}`);
+      } catch (e) {
+        console.warn('[TikTok] Could not navigate to content page for URL:', e.message);
       }
     }
 
@@ -512,6 +644,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       });
 
       await page.waitForTimeout(8000);
+      await dismissExitDialog(page);
       completion = await assessTikTokCompletion(page);
       videoUrl = videoUrl || await extractTikTokVideoUrl(page);
     }
@@ -520,7 +653,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       throw new Error(`TikTok publish was not confirmed. ${completion.reason}`);
     }
 
-    console.log('[TikTok] Upload complete!');
+    console.log(`[TikTok] Upload complete! URL: ${videoUrl || '(no URL extracted)'}`);
 
     // ===== POST-UPLOAD: SCRAPE STATS =====
     let recentStats = [];
@@ -531,10 +664,13 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       console.warn('[TikTok] Stats scraping failed (non-fatal):', statsErr.message);
     }
 
+    // Dismiss any exit dialog before closing
+    await dismissExitDialog(page);
     await context.close();
     return { url: videoUrl || 'https://www.tiktok.com', recentStats };
   } catch (err) {
     console.error('[TikTok] Upload failed:', err.message);
+    try { await dismissExitDialog(page); } catch {}
     await context.close();
     throw err;
   }

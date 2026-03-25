@@ -12,6 +12,10 @@ export default defineConfig(({ mode }) => ({
       overlay: false,
     },
   },
+  define: {
+    __BUILD_NUMBER__: JSON.stringify(process.env.VITE_BUILD_NUMBER || ''),
+    __BUILD_NAME__: JSON.stringify(process.env.VITE_BUILD_NAME || ''),
+  },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {
     alias: {

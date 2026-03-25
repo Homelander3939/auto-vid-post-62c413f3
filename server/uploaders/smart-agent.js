@@ -162,10 +162,35 @@ async function analyzeDOMOnly(page, context) {
       hasCodeInput: !!document.querySelector('input[type="tel"][autocomplete="one-time-code"], input[name*="code" i]'),
       hasFileInput: !!document.querySelector('input[type="file"]'),
       hasCreateButton: !!document.querySelector('#create-icon, [aria-label="Create"], [aria-label="New post"]'),
+      hasCaptcha: !!(
+        document.querySelector('iframe[src*="recaptcha"], iframe[src*="captcha"], iframe[title*="recaptcha" i]') ||
+        document.querySelector('.g-recaptcha, .h-captcha, #captcha, [data-sitekey]') ||
+        document.querySelector('[class*="captcha" i], [id*="captcha" i]')
+      ),
+      hasRobotCheck: text.includes('not a robot') || text.includes('are you a robot') ||
+                     text.includes('verify you are human') || text.includes('unusual traffic') ||
+                     text.includes('automated queries') || text.includes('bot detection') ||
+                     text.includes('security check') || text.includes('prove you') ||
+                     text.includes('confirm you are not') || text.includes('human verification'),
+      hasCheckbox: !!(
+        document.querySelector('iframe[src*="recaptcha"] + div, .recaptcha-checkbox') ||
+        document.querySelector('[role="checkbox"]')
+      ),
       bodyText: text,
       title: document.title,
     };
   });
+
+  // CAPTCHA / robot detection — use LLM vision to try to solve
+  if (info.hasCaptcha || info.hasRobotCheck) {
+    return {
+      state: 'captcha',
+      description: info.hasRobotCheck ? 'Robot/human verification challenge detected' : 'CAPTCHA challenge detected',
+      needs_human: false,
+      next_action: 'Attempt to solve the challenge using vision analysis',
+      has_checkbox: info.hasCheckbox,
+    };
+  }
 
   if (url.includes('accounts.google.com')) {
     if (info.hasPasswordInput) return { state: 'login_password', description: 'Google password entry', needs_human: false, next_action: 'Enter password' };
@@ -596,8 +621,195 @@ async function executeAgentAction(page, action) {
 }
 
 /**
- * Run a full agentic task loop:  plan → execute → repeat until the goal is
- * reached, a "failed"/"done" action is returned, or the step budget runs out.
+ * Detect and attempt to solve CAPTCHA/robot challenges on the current page.
+ * Uses LLM vision to analyze the challenge and decide how to interact with it.
+ * 
+ * Handles:
+ * - reCAPTCHA "I'm not a robot" checkbox
+ * - Cloudflare "Verify you are human" challenges
+ * - Generic "are you a robot" text challenges
+ * - Cookie/security consent screens that block progress
+ *
+ * @param {import('playwright').Page} page
+ * @returns {Promise<{detected:boolean, handled:boolean, reason:string}>}
+ */
+async function detectAndHandleCaptcha(page) {
+  const info = await page.evaluate(() => {
+    const text = (document.body?.innerText || '').substring(0, 3000).toLowerCase();
+    const hasCaptchaFrame = !!(
+      document.querySelector('iframe[src*="recaptcha"], iframe[src*="captcha"], iframe[title*="recaptcha" i]') ||
+      document.querySelector('.g-recaptcha, .h-captcha, #captcha, [data-sitekey]') ||
+      document.querySelector('[class*="captcha" i], [id*="captcha" i]')
+    );
+    const hasRobotText = text.includes('not a robot') || text.includes('are you a robot') ||
+                         text.includes('verify you are human') || text.includes('unusual traffic') ||
+                         text.includes('automated queries') || text.includes('bot detection') ||
+                         text.includes('security check') || text.includes('prove you') ||
+                         text.includes('confirm you are not') || text.includes('human verification') ||
+                         text.includes('verify you\'re human') || text.includes('verification challenge');
+    const hasCheckbox = !!(
+      document.querySelector('[role="checkbox"]') ||
+      document.querySelector('input[type="checkbox"]') ||
+      document.querySelector('.recaptcha-checkbox-border')
+    );
+    const hasVerifyButton = !!(
+      Array.from(document.querySelectorAll('button, [role="button"], a')).find(el => {
+        const t = (el.textContent || '').toLowerCase();
+        return t.includes('verify') || t.includes('continue') || t.includes('confirm') || t.includes('i am human');
+      })
+    );
+    return { hasCaptchaFrame, hasRobotText, hasCheckbox, hasVerifyButton };
+  }).catch(() => ({ hasCaptchaFrame: false, hasRobotText: false, hasCheckbox: false, hasVerifyButton: false }));
+
+  if (!info.hasCaptchaFrame && !info.hasRobotText) {
+    return { detected: false, handled: false, reason: 'No CAPTCHA detected' };
+  }
+
+  console.log('[SmartAgent] CAPTCHA/robot challenge detected, attempting to solve...');
+
+  // Strategy 1: Click "I'm not a robot" checkbox (reCAPTCHA v2)
+  if (info.hasCheckbox) {
+    try {
+      const clicked = await page.evaluate(() => {
+        const checkbox = document.querySelector('[role="checkbox"], input[type="checkbox"], .recaptcha-checkbox-border');
+        if (checkbox) { checkbox.click(); return true; }
+        return false;
+      });
+      if (clicked) {
+        await page.waitForTimeout(3000);
+        console.log('[SmartAgent] Clicked CAPTCHA checkbox');
+        return { detected: true, handled: true, reason: 'Clicked CAPTCHA checkbox' };
+      }
+
+      // Try clicking inside reCAPTCHA iframe
+      for (const frame of page.frames()) {
+        const frameCheckbox = await frame.$('[role="checkbox"], .recaptcha-checkbox-border, #recaptcha-anchor').catch(() => null);
+        if (frameCheckbox) {
+          await frameCheckbox.click();
+          await page.waitForTimeout(3000);
+          console.log('[SmartAgent] Clicked CAPTCHA checkbox in iframe');
+          return { detected: true, handled: true, reason: 'Clicked CAPTCHA checkbox in iframe' };
+        }
+      }
+    } catch (e) {
+      console.warn('[SmartAgent] Checkbox click failed:', e.message);
+    }
+  }
+
+  // Strategy 2: Click verify/continue button
+  if (info.hasVerifyButton) {
+    try {
+      const clicked = await page.evaluate(() => {
+        const buttons = document.querySelectorAll('button, [role="button"], a');
+        for (const btn of buttons) {
+          const t = (btn.textContent || '').trim().toLowerCase();
+          if (t.includes('verify') || t.includes('continue') || t.includes('confirm') || t.includes('i am human')) {
+            btn.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      if (clicked) {
+        await page.waitForTimeout(3000);
+        console.log('[SmartAgent] Clicked verify/continue button');
+        return { detected: true, handled: true, reason: 'Clicked verify button' };
+      }
+    } catch (e) {
+      console.warn('[SmartAgent] Verify button click failed:', e.message);
+    }
+  }
+
+  // Strategy 3: Use LLM vision to analyze the CAPTCHA and decide what to do
+  if (isVisionEnabled()) {
+    try {
+      const screenshotB64 = await takeScreenshot(page);
+      const ctx = await extractPageContext(page).catch(() => ({ url: page.url(), title: '', interactive: [], bodyText: '' }));
+      
+      const response = await fetch(getLmStudioUrl(), {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${getApiKey()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: getLmStudioModel(),
+          messages: [
+            {
+              role: 'system',
+              content: `You are a browser automation expert helping to navigate past CAPTCHA/robot verification challenges.
+Analyze the screenshot and page content. Determine the best action to take to pass this verification.
+
+Interactive elements on page:
+${ctx.interactive.slice(0, 30).map(e => `  [${e.tag}] selector="${e.selector}" text="${e.text}"`).join('\n')}
+
+Respond ONLY with JSON:
+{
+  "action": "click|wait|failed",
+  "selector": "<CSS selector to click, or null>",
+  "reason": "brief explanation",
+  "canSolve": true
+}
+
+If you see a simple checkbox ("I'm not a robot"), provide the selector to click it.
+If you see a Cloudflare challenge, try clicking the checkbox or verify button.
+If the challenge requires solving visual puzzles (image selection), respond with action "failed" and canSolve false.`,
+            },
+            {
+              role: 'user',
+              content: [
+                { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${screenshotB64}` } },
+                { type: 'text', text: 'What should I do to pass this verification challenge?' },
+              ],
+            },
+          ],
+          max_tokens: 300,
+          temperature: 0.1,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const text = data.choices?.[0]?.message?.content || '';
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed.action === 'click' && parsed.selector) {
+            try {
+              await page.click(parsed.selector, { timeout: 5000 });
+              await page.waitForTimeout(3000);
+              console.log(`[SmartAgent] LLM-guided CAPTCHA click: ${parsed.selector} — ${parsed.reason}`);
+              return { detected: true, handled: true, reason: `LLM solved: ${parsed.reason}` };
+            } catch (clickErr) {
+              console.warn('[SmartAgent] LLM CAPTCHA click failed:', clickErr.message);
+            }
+          }
+          if (!parsed.canSolve) {
+            console.warn('[SmartAgent] LLM says CAPTCHA cannot be auto-solved:', parsed.reason);
+            return { detected: true, handled: false, reason: `Cannot auto-solve: ${parsed.reason}` };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[SmartAgent] LLM CAPTCHA analysis failed:', e.message);
+    }
+  }
+
+  // Strategy 4: Wait and hope it auto-resolves (some challenges just need time)
+  await page.waitForTimeout(5000);
+  const stillBlocked = await page.evaluate(() => {
+    const text = (document.body?.innerText || '').toLowerCase();
+    return text.includes('not a robot') || text.includes('verify you are human') || text.includes('captcha');
+  }).catch(() => true);
+
+  if (!stillBlocked) {
+    return { detected: true, handled: true, reason: 'Challenge resolved after waiting' };
+  }
+
+  return { detected: true, handled: false, reason: 'Could not automatically solve CAPTCHA challenge' };
+}
+
+/**
  *
  * This is the equivalent of page-agent's `agent.execute()` method, adapted for
  * server-side Playwright where we control the browser externally rather than
@@ -633,6 +845,24 @@ async function runAgentTask(page, goal, options = {}) {
   for (let step = 1; step <= maxSteps; step++) {
     // Give the page a moment to settle before planning
     await page.waitForTimeout(stepDelayMs).catch(() => {});
+
+    // Check for CAPTCHA/robot challenges before planning the next action
+    let captchaHandled = false;
+    try {
+      const captchaCheck = await detectAndHandleCaptcha(page);
+      if (captchaCheck.detected) {
+        if (verbose) console.log(`[AgentTask] Step ${step}: CAPTCHA/robot check detected — attempting to solve...`);
+        captchaHandled = captchaCheck.handled;
+        if (captchaHandled) {
+          if (verbose) console.log('[AgentTask] CAPTCHA challenge resolved, continuing...');
+          history.push({ action: 'captcha_solve', reason: 'Solved CAPTCHA/robot challenge', step });
+          await page.waitForTimeout(2000);
+          continue;
+        }
+      }
+    } catch (err) {
+      if (verbose) console.warn('[AgentTask] CAPTCHA detection error:', err.message);
+    }
 
     let action;
     try {
@@ -693,4 +923,5 @@ module.exports = {
   planNextAction,
   executeAgentAction,
   runAgentTask,
+  detectAndHandleCaptcha,
 };
