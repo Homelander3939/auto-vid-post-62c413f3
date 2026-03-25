@@ -190,7 +190,11 @@ export default function AppLayout() {
               ) : (
                 <>
                   <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/40" />
-                  <span className="text-xs text-muted-foreground">Local server offline</span>
+                  <span className="text-xs text-muted-foreground">
+                    {typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+                      ? 'Preview mode — use localhost:8081'
+                      : 'Local server offline'}
+                  </span>
                 </>
               )}
             </div>
