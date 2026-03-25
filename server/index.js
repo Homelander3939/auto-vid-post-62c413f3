@@ -724,16 +724,23 @@ async function processPendingCommands() {
   }
 }
 
-// --- Cron: poll every minute ---
+// --- Cron: poll every minute for uploads, every 15s for commands ---
 let cronJob = null;
+let commandPollInterval = null;
 function setupCron() {
   if (cronJob) { cronJob.stop(); cronJob = null; }
+  if (commandPollInterval) { clearInterval(commandPollInterval); commandPollInterval = null; }
+
+  // Fast poll: check pending_commands every 15 seconds for responsive bot
+  commandPollInterval = setInterval(async () => {
+    try { await processPendingCommands(); } catch (e) { console.error('[Commands] Poll error:', e.message); }
+  }, 15000);
+
   cronJob = cron.schedule('* * * * *', async () => {
     try {
       await fixStaleJobs();
       await processScheduledUploads();
       await processRecurringSchedule();
-      await processPendingCommands();
       const { data: jobs } = await supabase
         .from('upload_jobs')
         .select('id')
@@ -747,7 +754,7 @@ function setupCron() {
       console.error('[Cron] Error:', e.message);
     }
   });
-  console.log('[Cron] Active: checking every minute');
+  console.log('[Cron] Active: uploads every minute, commands every 15s');
 }
 
 app.post('/api/refresh-cron', (req, res) => {
