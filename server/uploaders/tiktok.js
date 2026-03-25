@@ -647,13 +647,28 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     // ===== PHASE 4: POST =====
     console.log('[TikTok] Posting...');
 
-    // Scroll to the bottom to reveal the red Post button (it appears at the bottom of the form)
+    // Scroll the Post button into view. TikTok Studio renders the upload form inside a
+    // scrollable <div> — window.scrollTo() does not reach it. Prefer scrollIntoView() on
+    // the button itself; fall back to scrolling every overflow:auto/scroll container.
     await page.evaluate(() => {
-      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-      // Also scroll within any scrollable form containers
-      document.querySelectorAll('[class*="editor-container"], [class*="form"], [class*="content"]').forEach(el => {
-        el.scrollTop = el.scrollHeight;
-      });
+      const allBtns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+      const postBtn = allBtns.find(b => /^(post|publish)$/i.test((b.textContent || '').trim()));
+      if (postBtn) {
+        postBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else {
+        // Fallback: scroll every scrollable container to its bottom.
+        // Limit to common container element types to avoid traversing every DOM node.
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        document.querySelectorAll('div, section, main, form, article').forEach(el => {
+          // getComputedStyle can throw on detached/special elements — ignore those
+          try {
+            const style = window.getComputedStyle(el);
+            if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) {
+              el.scrollTop = el.scrollHeight;
+            }
+          } catch { /* safe to skip — element may be detached or cross-origin */ }
+        });
+      }
     });
     await page.waitForTimeout(1500);
 
@@ -667,15 +682,20 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       if (desc.includes('processing') || desc.includes('uploading') || desc.includes('progress')) {
         console.log('[TikTok] LLM detected upload still in progress, waiting extra 15s...');
         await page.waitForTimeout(15000);
-        // Scroll to bottom again after extra wait
-        await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+        // Scroll to Post button again after extra wait
+        await page.evaluate(() => {
+          const allBtns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+          const postBtn = allBtns.find(b => /^(post|publish)$/i.test((b.textContent || '').trim()));
+          if (postBtn) postBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          else window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        });
         await page.waitForTimeout(1000);
       }
     } catch (e) {
       console.warn('[TikTok] Pre-post vision check failed (non-fatal):', e.message);
     }
 
-    // Try multiple strategies to find and click the Post button
+    // Strategy 1: Standard Playwright selectors on the main page
     let postClicked = await smartClick(page, [
       'button[data-e2e="post-button"]',
       'button:has-text("Post")',
@@ -683,13 +703,15 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       '[class*="post"] button',
       'button[type="submit"]',
     ], 'Post');
-    
+
+    // Strategy 2: DOM-based click with scrollIntoView before clicking
     if (!postClicked) {
       postClicked = await page.evaluate(() => {
         const buttons = document.querySelectorAll('button, div[role="button"]');
         for (const btn of buttons) {
           const text = (btn.textContent || '').trim().toLowerCase();
           if (text === 'post' || text === 'publish' || text === 'upload') {
+            btn.scrollIntoView({ behavior: 'instant', block: 'center' });
             btn.click();
             return true;
           }
@@ -698,7 +720,43 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       });
     }
 
-    // Agent fallback: use LLM with vision to find and click the Post button
+    // Strategy 3: Search inside all frames (TikTok Studio may embed the form in an iframe)
+    if (!postClicked) {
+      console.log('[TikTok] Searching for Post button inside page frames...');
+      for (const frame of page.frames()) {
+        if (postClicked) break;
+        try {
+          // Try data-e2e selector first
+          const btnByAttr = await frame.$('button[data-e2e="post-button"]').catch(() => null);
+          if (btnByAttr && await btnByAttr.isVisible().catch(() => false)) {
+            await btnByAttr.scrollIntoViewIfNeeded().catch(() => {});
+            await btnByAttr.click();
+            postClicked = true;
+            console.log('[TikTok] Post button clicked via frame data-e2e selector');
+            break;
+          }
+          // Find by text inside the frame
+          const clicked = await frame.evaluate(() => {
+            const buttons = document.querySelectorAll('button, div[role="button"]');
+            for (const btn of buttons) {
+              const text = (btn.textContent || '').trim().toLowerCase();
+              if (text === 'post' || text === 'publish') {
+                btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                btn.click();
+                return true;
+              }
+            }
+            return false;
+          }).catch(() => false);
+          if (clicked) {
+            postClicked = true;
+            console.log('[TikTok] Post button clicked inside frame');
+          }
+        } catch { /* frame may be cross-origin or disposed — skip silently */ }
+      }
+    }
+
+    // Strategy 4: Agent fallback with vision
     if (!postClicked) {
       console.log('[TikTok] Standard Post button not found, trying agent with vision...');
       try {
