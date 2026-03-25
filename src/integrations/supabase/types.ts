@@ -74,6 +74,36 @@ export type Database = {
         }
         Relationships: []
       }
+      pending_commands: {
+        Row: {
+          args: Json | null
+          command: string
+          completed_at: string | null
+          created_at: string
+          id: string
+          result: string | null
+          status: string
+        }
+        Insert: {
+          args?: Json | null
+          command: string
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          result?: string | null
+          status?: string
+        }
+        Update: {
+          args?: Json | null
+          command?: string
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          result?: string | null
+          status?: string
+        }
+        Relationships: []
+      }
       schedule_config: {
         Row: {
           cron_expression: string

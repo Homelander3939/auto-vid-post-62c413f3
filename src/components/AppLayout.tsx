@@ -19,9 +19,15 @@ const navItems = [
 type ServerStatus = 'connected' | 'disconnected' | 'checking';
 
 function useLocalServerStatus() {
-  const [status, setStatus] = useState<ServerStatus>('checking');
+  const isLocalhost = typeof window !== 'undefined' && (
+    window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  );
+  const [status, setStatus] = useState<ServerStatus>(isLocalhost ? 'checking' : 'disconnected');
 
   useEffect(() => {
+    // Skip health checks when running in the cloud preview — localhost:3001 is unreachable
+    if (!isLocalhost) return;
+
     let mounted = true;
     const check = async () => {
       try {
@@ -34,7 +40,7 @@ function useLocalServerStatus() {
     check();
     const interval = setInterval(check, 10000);
     return () => { mounted = false; clearInterval(interval); };
-  }, []);
+  }, [isLocalhost]);
 
   return status;
 }
@@ -184,7 +190,11 @@ export default function AppLayout() {
               ) : (
                 <>
                   <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/40" />
-                  <span className="text-xs text-muted-foreground">Local server offline</span>
+                  <span className="text-xs text-muted-foreground">
+                    {typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+                      ? 'Preview mode — use localhost:8081'
+                      : 'Local server offline'}
+                  </span>
                 </>
               )}
             </div>
