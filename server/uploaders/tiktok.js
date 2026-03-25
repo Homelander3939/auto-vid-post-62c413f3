@@ -584,7 +584,35 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
 
     // ===== PHASE 4: POST =====
     console.log('[TikTok] Posting...');
-    
+
+    // Scroll to the bottom to reveal the red Post button (it appears at the bottom of the form)
+    await page.evaluate(() => {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      // Also scroll within any scrollable form containers
+      document.querySelectorAll('[class*="editor-container"], [class*="form"], [class*="content"]').forEach(el => {
+        el.scrollTop = el.scrollHeight;
+      });
+    });
+    await page.waitForTimeout(1500);
+
+    // Use LLM vision to verify the page is ready to post (processing done, Post button visible)
+    try {
+      const readyCheck = await analyzePage(page,
+        'TikTok upload form: Is the video processing complete and is the red Post (or Publish) button visible and enabled at the bottom of the form? Describe what you see.');
+      console.log(`[TikTok] Pre-post vision check: ${readyCheck?.description || 'no response'}`);
+      // If processing is still ongoing, wait a bit more
+      const desc = String(readyCheck?.description || '').toLowerCase();
+      if (desc.includes('processing') || desc.includes('uploading') || desc.includes('progress')) {
+        console.log('[TikTok] LLM detected upload still in progress, waiting extra 15s...');
+        await page.waitForTimeout(15000);
+        // Scroll to bottom again after extra wait
+        await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+        await page.waitForTimeout(1000);
+      }
+    } catch (e) {
+      console.warn('[TikTok] Pre-post vision check failed (non-fatal):', e.message);
+    }
+
     // Try multiple strategies to find and click the Post button
     let postClicked = await smartClick(page, [
       'button[data-e2e="post-button"]',
@@ -608,13 +636,13 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       });
     }
 
-    // Agent fallback: use LLM to find and click the Post button
+    // Agent fallback: use LLM with vision to find and click the Post button
     if (!postClicked) {
-      console.log('[TikTok] Standard Post button not found, trying agent...');
+      console.log('[TikTok] Standard Post button not found, trying agent with vision...');
       try {
         const agentResult = await runAgentTask(page, 
-          'Find and click the Post or Publish button to publish this TikTok video. Look for a prominent button at the bottom of the form.', 
-          { maxSteps: 5, stepDelayMs: 500 });
+          'Scroll to the bottom of the TikTok upload form and click the red Post or Publish button to publish this video. Do NOT scroll the background — click the Post button directly.', 
+          { maxSteps: 8, stepDelayMs: 800, useVision: true });
         postClicked = agentResult.success;
       } catch (e) {
         console.warn('[TikTok] Agent post-click failed:', e.message);

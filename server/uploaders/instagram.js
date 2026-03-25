@@ -345,39 +345,81 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     
     if (!fileUploaded) throw new Error('Instagram upload dialog not found. Try creating a post manually first to verify your session.');
 
-    console.log('[Instagram] Video file set, waiting for processing...');
+    console.log('[Instagram] Video file set, waiting for upload dialog to render...');
     await page.waitForTimeout(5000);
+
+    // Wait for the upload dialog/modal to appear and transition past the file-select state.
+    // Instagram shows a popup with a "Next" button at the top of the dialog (not a page scroll).
+    // We must click within the dialog — NOT scroll the background page.
+    const dialogAppeared = await page.waitForSelector('[role="dialog"], [aria-label*="create" i], [aria-label*="post" i]', { timeout: 15000 })
+      .then(() => true).catch(() => false);
+    if (dialogAppeared) {
+      console.log('[Instagram] Upload dialog detected');
+    } else {
+      console.log('[Instagram] Dialog not detected by selector, proceeding anyway');
+    }
+
+    // Use LLM vision to understand the current dialog state
+    try {
+      const dialogCheck = await analyzePage(page,
+        'Instagram post creation: A dialog/popup is visible. Describe what step we are on (crop, filter, caption, or file select). Is there a "Next" button visible at the top of the dialog?');
+      console.log(`[Instagram] Dialog state check: ${dialogCheck?.description || 'no response'}`);
+    } catch (e) {
+      console.warn('[Instagram] Dialog vision check failed (non-fatal):', e.message);
+    }
 
     // ===== PHASE 4: CLICK THROUGH CROP/ADJUST SCREENS =====
     // Instagram shows: Crop → Filter → Caption screens
+    // The "Next" button is at the TOP of the dialog popup — do NOT scroll the page background.
     for (let i = 0; i < 4; i++) {
       await page.waitForTimeout(2000);
-      
-      let clicked = await smartClick(page, [
-        'button:has-text("Next")',
-        '[aria-label="Next"]',
-        'div[role="button"]:has-text("Next")',
-        'button:has-text("Continue")',
-      ], 'Next');
-      
-      if (!clicked) {
-        // Try via DOM evaluation
-        clicked = await page.evaluate(() => {
-          const buttons = document.querySelectorAll('button, div[role="button"]');
-          for (const btn of buttons) {
-            const text = (btn.textContent || '').trim().toLowerCase();
-            if (text === 'next' || text === 'continue') { btn.click(); return true; }
-          }
-          return false;
-        });
+
+      // Stop early if we've reached the caption/share screen
+      const alreadyOnCaption = await page.evaluate(() => {
+        const text = (document.body?.innerText || '').toLowerCase();
+        return text.includes('write a caption') || text.includes('caption') ||
+               !!document.querySelector('[aria-label*="caption" i], textarea[placeholder*="caption" i]');
+      }).catch(() => false);
+      if (alreadyOnCaption) {
+        console.log('[Instagram] Already on caption screen, stopping Next clicks');
+        break;
       }
-      
-      // Agent fallback for Next button
+
+      // Strategy 1: Scope the click to within the dialog to avoid background page interactions
+      let clicked = await page.evaluate(() => {
+        // Look for Next button specifically inside the dialog/modal
+        const dialogEl = document.querySelector('[role="dialog"]') || document.body;
+        const buttons = dialogEl.querySelectorAll('button, div[role="button"]');
+        for (const btn of buttons) {
+          const text = (btn.textContent || '').trim().toLowerCase();
+          const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+          if (text === 'next' || text === 'continue' || label === 'next' || label === 'continue') {
+            btn.click();
+            return true;
+          }
+        }
+        return false;
+      });
+
+      // Strategy 2: Playwright-level click with dialog-scoped selector
+      if (!clicked) {
+        clicked = await smartClick(page, [
+          '[role="dialog"] button:has-text("Next")',
+          '[role="dialog"] [aria-label="Next"]',
+          '[role="dialog"] div[role="button"]:has-text("Next")',
+          'button:has-text("Next")',
+          '[aria-label="Next"]',
+          'div[role="button"]:has-text("Next")',
+          'button:has-text("Continue")',
+        ], 'Next');
+      }
+
+      // Agent fallback — instruct it NOT to scroll the page background
       if (!clicked) {
         try {
           const result = await runAgentTask(page,
-            'Click the "Next" button in the Instagram post creation dialog to advance to the next step.',
-            { maxSteps: 3, stepDelayMs: 500 });
+            'There is an Instagram post creation dialog/popup open. Click the "Next" button that is visible at the TOP of the dialog to advance to the next step. Do NOT scroll the page background. Only interact with the dialog popup.',
+            { maxSteps: 4, stepDelayMs: 600, useVision: true });
           clicked = result.success;
         } catch {}
       }
@@ -397,8 +439,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
     if (!onCaptionScreen) {
       console.log('[Instagram] Not on caption screen yet, trying to advance...');
-      // Try one more "Next" click
       await smartClick(page, [
+        '[role="dialog"] button:has-text("Next")',
         'button:has-text("Next")',
         '[aria-label="Next"]',
         'div[role="button"]:has-text("Next")',
@@ -506,32 +548,50 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
     // ===== PHASE 6: SHARE =====
     console.log('[Instagram] Sharing...');
-    let shareClicked = await smartClick(page, [
-      'button:has-text("Share")',
-      '[aria-label="Share"]',
-      'div[role="button"]:has-text("Share")',
-      'button:has-text("Post")',
-      'button:has-text("Publish")',
-    ], 'Share');
-    
-    if (!shareClicked) {
-      shareClicked = await page.evaluate(() => {
-        const buttons = document.querySelectorAll('button, div[role="button"]');
-        for (const btn of buttons) {
-          const text = (btn.textContent || '').trim().toLowerCase();
-          if (text === 'share' || text === 'post' || text === 'publish') { btn.click(); return true; }
-        }
-        return false;
-      });
+
+    // Use LLM vision to confirm we are on the caption/share screen before clicking Share
+    try {
+      const shareCheck = await analyzePage(page,
+        'Instagram post creation dialog: Are we on the final "Share" step where the caption has been filled? Is the blue "Share" button visible in the dialog? Describe the current state.');
+      console.log(`[Instagram] Pre-share vision check: ${shareCheck?.description || 'no response'}`);
+    } catch (e) {
+      console.warn('[Instagram] Pre-share vision check failed (non-fatal):', e.message);
     }
 
-    // Agent fallback: use LLM to find Share button
+    // Click Share within the dialog (scoped to avoid background interactions)
+    let shareClicked = await page.evaluate(() => {
+      const dialogEl = document.querySelector('[role="dialog"]') || document.body;
+      const buttons = dialogEl.querySelectorAll('button, div[role="button"]');
+      for (const btn of buttons) {
+        const text = (btn.textContent || '').trim().toLowerCase();
+        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+        if (text === 'share' || text === 'post' || text === 'publish' || label === 'share') {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
     if (!shareClicked) {
-      console.log('[Instagram] Standard Share button not found, trying agent...');
+      shareClicked = await smartClick(page, [
+        '[role="dialog"] button:has-text("Share")',
+        '[role="dialog"] [aria-label="Share"]',
+        'button:has-text("Share")',
+        '[aria-label="Share"]',
+        'div[role="button"]:has-text("Share")',
+        'button:has-text("Post")',
+        'button:has-text("Publish")',
+      ], 'Share');
+    }
+
+    // Agent fallback: use LLM with vision to find Share button in dialog
+    if (!shareClicked) {
+      console.log('[Instagram] Standard Share button not found, trying agent with vision...');
       try {
         const agentResult = await runAgentTask(page,
-          'Find and click the "Share" button to publish this Instagram post/reel. It should be a blue button in the dialog.',
-          { maxSteps: 5, stepDelayMs: 500 });
+          'Find and click the blue "Share" button inside the Instagram post creation dialog to publish this reel. Do NOT scroll the page background — only interact with the dialog popup.',
+          { maxSteps: 5, stepDelayMs: 600, useVision: true });
         shareClicked = agentResult.success;
       } catch (e) {
         console.warn('[Instagram] Agent share-click failed:', e.message);
