@@ -453,11 +453,11 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             return el.textContent || el.value || '';
           }, sel).catch(() => '');
           
-          if (typed.length > 10) {
+          if (typed.length > 0) {
             captionFilled = true;
             console.log(`[Instagram] Caption filled via ${sel} (${typed.length} chars written)`);
           } else {
-            console.log(`[Instagram] Caption via ${sel} may not have been applied (${typed.length} chars), trying next method...`);
+            console.log(`[Instagram] Caption via ${sel} may not have been applied, trying next method...`);
           }
         } catch {}
       }
@@ -478,7 +478,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             document.execCommand('insertText', false, text);
             // Verify text was set
             const content = editor.textContent || editor.value || '';
-            if (content.length > 10) return true;
+            if (content.length > 0) return true;
           }
           return false;
         }, caption);

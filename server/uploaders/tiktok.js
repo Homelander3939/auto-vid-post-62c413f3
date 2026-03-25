@@ -207,9 +207,9 @@ async function waitForPublishConfirmation(page, maxWaitSeconds = 120) {
     const state = await page.evaluate(() => {
       const text = (document.body?.innerText || '').toLowerCase();
       const isPublishing = text.includes('posting') || text.includes('publishing') ||
-                           text.includes('sharing') || text.includes('uploading to tiktok');
+                           text.includes('sharing') || text.includes('uploading to tiktok') ||
+                           text.includes('your video is being uploaded to tiktok');
       const isPublished = text.includes('your video has been published') ||
-                          text.includes('your video is being uploaded to tiktok') ||
                           text.includes('post published') ||
                           text.includes('uploaded successfully') ||
                           text.includes('your post is now live') ||

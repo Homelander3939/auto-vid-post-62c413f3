@@ -646,7 +646,7 @@ async function detectAndHandleCaptcha(page) {
                          text.includes('automated queries') || text.includes('bot detection') ||
                          text.includes('security check') || text.includes('prove you') ||
                          text.includes('confirm you are not') || text.includes('human verification') ||
-                         text.includes('verify you\'re human') || text.includes('challenge');
+                         text.includes('verify you\'re human') || text.includes('verification challenge');
     const hasCheckbox = !!(
       document.querySelector('[role="checkbox"]') ||
       document.querySelector('input[type="checkbox"]') ||
