@@ -31,9 +31,17 @@ jobs:
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: npm run build
 
+      - name: Prepare artifact name
+        id: artifact
+        shell: bash
+        run: |
+          REF_NAME="${{ github.ref_name }}"
+          SAFE_REF_NAME="${REF_NAME//\//-}"
+          echo "name=dist-${SAFE_REF_NAME}-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ github.ref_name }}-${{ github.run_number }}
+          name: ${{ steps.artifact.outputs.name }}
           path: dist/
           retention-days: 14
