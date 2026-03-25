@@ -632,27 +632,22 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       });
     }
     
-    // Wait for Instagram to process and share the post
+    // Wait for Instagram to process and share the post.
+    // Poll for the success-dialog URL frequently right after clicking Share — Instagram's
+    // "Your reel has been shared" confirmation screen can close/redirect within 2-3 seconds.
     console.log('[Instagram] Waiting for share to complete...');
-    await page.waitForTimeout(5000);
+    let postUrl = '';
 
-    // Capture URL from the success dialog as early as possible — the dialog may close quickly.
-    let postUrl = await extractInstagramPostUrl(page);
-
-    // Wait for Instagram to process and confirm the share (up to 120 seconds).
-    // Do NOT break early based on absence of "sharing..." text — Instagram often
-    // silently processes without displaying any progress text.
-    let shareWaitAttempts = 0;
-    while (shareWaitAttempts++ < 24) {
-      // Try to grab the URL from the success dialog on every iteration
+    // High-frequency poll for the first 15 seconds to catch the success dialog URL
+    // before Instagram auto-redirects to the feed.
+    for (let quickPoll = 0; quickPoll < 30; quickPoll++) {
+      await page.waitForTimeout(500);
       if (!postUrl) {
         postUrl = await extractInstagramPostUrl(page);
       }
-
-      const shareState = await page.evaluate(() => {
+      const quickState = await page.evaluate(() => {
         const text = (document.body?.innerText || '').toLowerCase();
         const url = window.location.href;
-        const isSharing = text.includes('sharing...') || text.includes('processing') || text.includes('posting');
         const isShared =
           text.includes('your reel has been shared') ||
           text.includes('your post has been shared') ||
@@ -660,25 +655,58 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           text.includes('reel shared') ||
           text.includes('your video has been shared') ||
           text.includes('shared successfully');
-        // Instagram often redirects to feed after a successful share
         const redirectedToFeed = url === 'https://www.instagram.com/';
-        return { isSharing, isShared, redirectedToFeed };
-      }).catch(() => ({ isSharing: false, isShared: false, redirectedToFeed: false }));
+        return { isShared, redirectedToFeed };
+      }).catch(() => ({ isShared: false, redirectedToFeed: false }));
 
-      if (shareState.isShared) {
-        // The success dialog is still visible — try once more to grab the URL
+      if (quickState.isShared) {
         postUrl = postUrl || await extractInstagramPostUrl(page);
-        console.log(`[Instagram] Post shared! (${shareWaitAttempts * 5}s)`);
+        console.log(`[Instagram] Post shared! (${((quickPoll + 1) * 0.5).toFixed(1)}s)`);
         break;
       }
-      if (shareState.redirectedToFeed) {
-        console.log(`[Instagram] Redirected to feed after share (${shareWaitAttempts * 5}s)`);
+      if (quickState.redirectedToFeed) {
+        console.log(`[Instagram] Redirected to feed after share (${((quickPoll + 1) * 0.5).toFixed(1)}s)`);
         break;
       }
-      if (shareState.isSharing) {
-        console.log(`[Instagram] Still sharing... (${shareWaitAttempts * 5}s)`);
+    }
+
+    // If still processing, continue polling up to 120 additional seconds (5s intervals)
+    if (!postUrl) {
+      let shareWaitAttempts = 0;
+      while (shareWaitAttempts++ < 24) {
+        if (!postUrl) {
+          postUrl = await extractInstagramPostUrl(page);
+        }
+
+        const shareState = await page.evaluate(() => {
+          const text = (document.body?.innerText || '').toLowerCase();
+          const url = window.location.href;
+          const isSharing = text.includes('sharing...') || text.includes('processing') || text.includes('posting');
+          const isShared =
+            text.includes('your reel has been shared') ||
+            text.includes('your post has been shared') ||
+            text.includes('post shared') ||
+            text.includes('reel shared') ||
+            text.includes('your video has been shared') ||
+            text.includes('shared successfully');
+          const redirectedToFeed = url === 'https://www.instagram.com/';
+          return { isSharing, isShared, redirectedToFeed };
+        }).catch(() => ({ isSharing: false, isShared: false, redirectedToFeed: false }));
+
+        if (shareState.isShared) {
+          postUrl = postUrl || await extractInstagramPostUrl(page);
+          console.log(`[Instagram] Post shared! (${shareWaitAttempts * 5}s)`);
+          break;
+        }
+        if (shareState.redirectedToFeed) {
+          console.log(`[Instagram] Redirected to feed after share (${shareWaitAttempts * 5}s)`);
+          break;
+        }
+        if (shareState.isSharing) {
+          console.log(`[Instagram] Still sharing... (${shareWaitAttempts * 5}s)`);
+        }
+        await page.waitForTimeout(5000);
       }
-      await page.waitForTimeout(5000);
     }
 
     // ===== PHASE 7: CHECK COMPLETION AND EXTRACT URL =====
@@ -753,27 +781,35 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         if (username) {
           console.log(`[Instagram] Navigating to @${username}/reels/ to find the published reel...`);
           await page.goto(`https://www.instagram.com/${username}/reels/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
-          // Wait for the reels grid to load and show the newly uploaded reel
-          await page.waitForTimeout(PROFILE_REELS_LOAD_WAIT_MS);
 
-          // Pick the first (newest) reel from the main content grid, not sidebar/header links
-          const profileUrl = await page.evaluate(() => {
-            // Instagram reels grid: the main article/section contains <a href="/reel/…"> tiles
-            // Collect all reel/post links then take the one with the shortest surrounding element
-            // depth from the main content area to avoid sidebar duplicates.
-            const mainEl = document.querySelector('main, [role="main"]');
-            const scope = mainEl || document;
-            const reelLinks = Array.from(scope.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
-            if (reelLinks.length > 0) {
-              const href = reelLinks[0].getAttribute('href') || '';
-              return href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+          // Retry loop: newly-uploaded reels may take a few seconds to appear in the grid.
+          // Retry up to 4 times (total ~40s) with a 10s wait between attempts.
+          for (let reelRetry = 0; reelRetry < 4; reelRetry++) {
+            // Wait for the reels grid to load
+            await page.waitForTimeout(reelRetry === 0 ? PROFILE_REELS_LOAD_WAIT_MS : 10000);
+
+            // Scroll to make sure lazy-loaded tiles are rendered
+            await page.evaluate(() => window.scrollTo({ top: 300, behavior: 'smooth' })).catch(() => {});
+            await page.waitForTimeout(1000);
+
+            // Pick the first (newest) reel from the main content grid
+            const profileUrl = await page.evaluate(() => {
+              const mainEl = document.querySelector('main, [role="main"]');
+              const scope = mainEl || document;
+              const reelLinks = Array.from(scope.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
+              if (reelLinks.length > 0) {
+                const href = reelLinks[0].getAttribute('href') || '';
+                return href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+              }
+              return '';
+            }).catch(() => '');
+
+            if (profileUrl) {
+              postUrl = profileUrl;
+              console.log(`[Instagram] Found published reel URL from profile: ${postUrl}`);
+              break;
             }
-            return '';
-          }).catch(() => '');
-
-          if (profileUrl) {
-            postUrl = profileUrl;
-            console.log(`[Instagram] Found published reel URL from profile: ${postUrl}`);
+            console.log(`[Instagram] Reel not yet visible in grid, retrying... (${reelRetry + 1}/4)`);
           }
         }
       } catch (e) {

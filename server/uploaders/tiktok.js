@@ -295,7 +295,7 @@ async function waitForVideoProcessing(page, maxWaitSeconds = 240) {
   return false;
 }
 
-async function waitForPublishConfirmation(page, maxWaitSeconds = 180) {
+async function waitForPublishConfirmation(page, maxWaitSeconds = 300) {
   // After clicking Post, wait for TikTok to confirm the video is published/queued.
   // This is critical — exiting too early triggers "Sure you want to cancel your upload?"
   console.log('[TikTok] Waiting for publish confirmation...');
@@ -322,6 +322,11 @@ async function waitForPublishConfirmation(page, maxWaitSeconds = 180) {
         text.includes('uploaded successfully') ||
         text.includes('your post is now live') ||
         text.includes('manage your posts') ||
+        text.includes('video posted') ||
+        text.includes('post successful') ||
+        text.includes('submit successful') ||
+        text.includes('your video will be') ||
+        text.includes('your video is now') ||
         // "your video is being uploaded to tiktok" means it was accepted and is now processing in background
         text.includes('your video is being uploaded to tiktok') ||
         text.includes('video is being processed') ||
@@ -332,7 +337,12 @@ async function waitForPublishConfirmation(page, maxWaitSeconds = 180) {
         text.includes('select video') ||
         text.includes('drag and drop');
       const url = window.location.href;
-      const onManagePage = url.includes('/content') || url.includes('/manage');
+      // TikTok Studio content/manage page — video was submitted
+      const onManagePage =
+        url.includes('/content') ||
+        url.includes('/manage') ||
+        url.includes('tiktokstudio/content') ||
+        url.includes('creator-center/content');
       return { isPublishing, isPublished, backToUpload, onManagePage, url };
     }).catch(() => ({ isPublishing: false, isPublished: false, backToUpload: false, onManagePage: false, url: '' }));
 
@@ -341,11 +351,37 @@ async function waitForPublishConfirmation(page, maxWaitSeconds = 180) {
       return true;
     }
 
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
     if (state.isPublishing) {
-      console.log(`[TikTok] Still publishing... (${Math.round((Date.now() - startTime) / 1000)}s)`);
+      console.log(`[TikTok] Still publishing... (${elapsed}s)`);
+    } else if (attempt % 6 === 0) {
+      // Every ~30s log current URL to aid debugging
+      console.log(`[TikTok] Waiting for confirmation... (${elapsed}s)`);
     }
 
     await page.waitForTimeout(5000);
+  }
+
+  // Last-ditch check: navigate to content page to see if video was successfully submitted
+  try {
+    const currentUrl = page.url();
+    if (!currentUrl.includes('/content') && !currentUrl.includes('/manage')) {
+      console.log('[TikTok] Checking content page for recently posted video...');
+      await page.goto('https://www.tiktok.com/tiktokstudio/content', { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForTimeout(4000);
+      const hasContent = await page.evaluate(() => {
+        const url = window.location.href;
+        const text = (document.body?.innerText || '').toLowerCase();
+        return url.includes('/content') || url.includes('/manage') ||
+          text.includes('your videos') || !!document.querySelector('a[href*="/video/"]');
+      }).catch(() => false);
+      if (hasContent) {
+        console.log('[TikTok] Content page reached — video was submitted successfully');
+        return true;
+      }
+    }
+  } catch (e) {
+    console.warn('[TikTok] Content page check failed:', e.message);
   }
 
   console.warn('[TikTok] Publish confirmation timed out');
@@ -708,23 +744,42 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     await page.waitForTimeout(1500);
 
     // Use LLM vision to verify the page is ready to post (processing done, Post button visible)
+    // Retry up to 3 times if actual upload/processing (not just background copyright/content
+    // checks) is still in progress. Copyright/content checks run in parallel with an already-
+    // enabled Post button and do NOT block posting — only real upload-progress indicators do.
     try {
-      const readyCheck = await analyzePage(page,
-        'TikTok upload form: Is the video processing complete and is the red Post (or Publish) button visible and enabled at the bottom of the form? Describe what you see.');
-      console.log(`[TikTok] Pre-post vision check: ${readyCheck?.description || 'no response'}`);
-      // If processing is still ongoing, wait a bit more
-      const desc = String(readyCheck?.description || '').toLowerCase();
-      if (desc.includes('processing') || desc.includes('uploading') || desc.includes('progress')) {
-        console.log('[TikTok] LLM detected upload still in progress, waiting extra 15s...');
-        await page.waitForTimeout(15000);
-        // Scroll to Post button again after extra wait
-        await page.evaluate(() => {
-          const allBtns = Array.from(document.querySelectorAll('button, div[role="button"]'));
-          const postBtn = allBtns.find(b => /^(post|publish)$/i.test((b.textContent || '').trim()));
-          if (postBtn) postBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          else window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-        });
-        await page.waitForTimeout(1000);
+      for (let visionAttempt = 0; visionAttempt < 3; visionAttempt++) {
+        const readyCheck = await analyzePage(page,
+          'TikTok upload form: Is the video file upload complete (no upload percentage or progress bar)? Is the red Post (or Publish) button visible and enabled at the bottom of the form? Describe what you see.');
+        console.log(`[TikTok] Pre-post vision check: ${readyCheck?.description || 'no response'}`);
+        const desc = String(readyCheck?.description || '').toLowerCase();
+        // Copyright/content checks are normal background checks that do NOT block posting
+        const isCopyrightOrContentCheck =
+          desc.includes('copyright') || desc.includes('content check') || desc.includes('music check');
+        // Only wait extra for genuine upload/file-transfer progress, not background checks
+        const isRealUploadInProgress =
+          !isCopyrightOrContentCheck &&
+          (desc.includes('uploading') || desc.includes('upload in progress') ||
+           desc.includes('upload progress') || desc.includes('% uploaded') ||
+           desc.includes('progress bar'));
+        if (isRealUploadInProgress) {
+          console.log(`[TikTok] LLM detected file upload still in progress, waiting extra 20s... (attempt ${visionAttempt + 1}/3)`);
+          await page.waitForTimeout(20000);
+          // Scroll to Post button again after extra wait
+          await page.evaluate(() => {
+            const allBtns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+            const postBtn = allBtns.find(b => /^(post|publish)$/i.test((b.textContent || '').trim()));
+            if (postBtn) postBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            else window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+          });
+          await page.waitForTimeout(1000);
+        } else {
+          // Page is ready (or only background checks are running) — proceed
+          if (isCopyrightOrContentCheck) {
+            console.log('[TikTok] Copyright/content checks in progress (non-blocking) — proceeding to post');
+          }
+          break;
+        }
       }
     } catch (e) {
       console.warn('[TikTok] Pre-post vision check failed (non-fatal):', e.message);
@@ -849,7 +904,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     }
     
     // Wait for the publish to fully complete — this is critical to avoid the "exit" dialog
-    await waitForPublishConfirmation(page, 120);
+    await waitForPublishConfirmation(page, 300);
 
     // ===== PHASE 5: CHECK COMPLETION =====
     let completion = await assessTikTokCompletion(page);

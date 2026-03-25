@@ -205,7 +205,7 @@ export default function AppLayout() {
           <p className="text-xs text-muted-foreground px-1">
             {isCloud ? 'Cloud DB · Cloud uploads' : 'Cloud DB · Local uploads'}
             <span className="block text-[10px] opacity-60 mt-0.5">
-              <span>{buildLabel}</span>
+              {[buildLabel, isCloud ? 'Cloud Mode' : 'Local Mode'].filter(Boolean).join(' · ')}
             </span>
           </p>
         </div>
