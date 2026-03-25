@@ -7,7 +7,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { uploadToYouTube } = require('./uploaders/youtube');
 const { uploadToTikTok } = require('./uploaders/tiktok');
 const { uploadToInstagram } = require('./uploaders/instagram');
-const { checkPlatformStats, formatStatsForTelegram } = require('./uploaders/stats-scraper');
+const { checkPlatformStats, formatStatsForTelegram, runBrowserTask } = require('./uploaders/stats-scraper');
 const { sendTelegram } = require('./telegram');
 const { scanFolder } = require('./folderWatcher');
 const { parseTextFile } = require('./textParser');
@@ -685,6 +685,17 @@ async function processPendingCommands() {
             await supabase.from('pending_commands').update({
               status: 'completed', result: 'sent', completed_at: new Date().toISOString(),
             }).eq('id', cmd.id);
+          } else if (cmd.command === 'open_browser') {
+            const task = cmd.args?.task || 'Open the browser and navigate to Google';
+            const startUrl = cmd.args?.url || null;
+            const settings = await getSettings();
+
+            console.log(`[Commands] open_browser: task="${task}"${startUrl ? `, url="${startUrl}"` : ''}`);
+            const { summary } = await runBrowserTask(task, startUrl);
+            await notifyTelegram(settings, summary);
+            await supabase.from('pending_commands').update({
+              status: 'completed', result: 'done', completed_at: new Date().toISOString(),
+            }).eq('id', cmd.id);
           } else {
             await supabase.from('pending_commands').update({
               status: 'failed', result: `Unknown command: ${cmd.command}`, completed_at: new Date().toISOString(),
@@ -694,7 +705,11 @@ async function processPendingCommands() {
           console.error(`[Commands] Command ${cmd.id} failed:`, err.message);
           const settingsForError = await getSettings().catch(() => null);
           if (settingsForError) {
-            await notifyTelegram(settingsForError, `❌ Stats check failed: ${err.message}\n\nThis usually means:\n1. The browser could not open (Playwright not installed?)\n2. The platform session needs login — upload a video first to save the session\n3. The platform website changed its layout\n\nTip: Make sure smart-launcher.bat is running and you have uploaded at least one video to the platform.`);
+            const isStats = cmd.command === 'check_stats';
+            const errMsg = isStats
+              ? `❌ Stats check failed: ${err.message}\n\nThis usually means:\n1. The browser could not open (Playwright not installed?)\n2. The platform session needs login — upload a video first to save the session\n3. The platform website changed its layout\n\nTip: Make sure smart-launcher.bat is running and you have uploaded at least one video to the platform.`
+              : `❌ Browser task failed: ${err.message}\n\nTip: Make sure smart-launcher.bat is running and Playwright is installed (run install-browsers.bat).`;
+            await notifyTelegram(settingsForError, errMsg);
           }
           await supabase.from('pending_commands').update({
             status: 'failed', result: err.message, completed_at: new Date().toISOString(),

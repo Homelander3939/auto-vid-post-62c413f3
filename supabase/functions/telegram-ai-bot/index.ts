@@ -157,13 +157,34 @@ const tools = [
     type: 'function',
     function: {
       name: 'check_platform_stats',
-      description: 'Queue a stats check (views, likes, comments) for YouTube Shorts, TikTok videos, or Instagram Reels. This ALWAYS works — it queues a command via Supabase and the local server opens the browser on the user\'s computer to scrape stats, then sends the results back to Telegram. Use "all" to check all configured platforms at once. ALWAYS call this tool immediately when the user asks about stats, views, likes, or video performance — never explain why it might fail.',
+      description: 'Queue a stats check (views, likes, comments) for YouTube Shorts, TikTok videos, or Instagram Reels. This ALWAYS works — it queues a command via Supabase and the local server opens the browser on the user\'s computer to scrape stats, then sends the results back to Telegram. Use "all" to check all configured platforms at once. ALWAYS call this tool immediately when the user asks about stats, views, likes, or video performance — never explain why it might fail. Also use this when the user says "open browser and check my YouTube/TikTok/Instagram" or "open browser and see my stats".',
       parameters: {
         type: 'object',
         properties: {
           platform: { type: 'string', enum: ['youtube', 'tiktok', 'instagram', 'all'], description: 'Platform to check stats for, or "all" to check all platforms' },
         },
         required: ['platform'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'open_browser',
+      description: 'Open a browser on the user\'s local computer to perform any general web task: searching the web, browsing a website, checking a page, looking up information, navigating to a URL, etc. Use this for ANY "open browser" request that is NOT specifically about checking YouTube/TikTok/Instagram video stats/views/likes/comments. Examples: "open browser and search for X", "open browser and go to google.com", "open browser and check my email", "open browser and look up Y", "open browser and visit Z". ALWAYS call this tool immediately — never say the browser cannot be opened.',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: {
+            type: 'string',
+            description: 'Full natural-language description of the web task to perform. Be specific — include the URL, search query, or step-by-step instructions.',
+          },
+          url: {
+            type: 'string',
+            description: 'Optional starting URL (e.g., "https://www.google.com"). Defaults to Google if not provided.',
+          },
+        },
+        required: ['task'],
       },
     },
   },
@@ -298,6 +319,17 @@ async function executeTool(supabase: any, name: string, args: any): Promise<stri
       if (error) return `❌ Could not queue stats check: ${error.message}`;
       const platformLabel = platform === 'all' ? 'all platforms' : platform;
       return `✅ Stats check queued for ${platformLabel}! The browser will open on your computer and results will arrive here in Telegram within 60 seconds.`;
+    }
+    case 'open_browser': {
+      // Queue a general browser task via the pending_commands table so the
+      // local server picks it up and opens the browser on the user's machine.
+      const { error } = await supabase.from('pending_commands').insert({
+        command: 'open_browser',
+        args: { task: args.task, url: args.url || null },
+        status: 'pending',
+      });
+      if (error) return `❌ Could not queue browser task: ${error.message}`;
+      return `✅ Browser task queued! The browser will open on your computer and I will report back the results here in Telegram within 60 seconds.`;
     }
     default: return `Unknown tool: ${name}`;
   }
@@ -693,10 +725,38 @@ serve(async (req) => {
         .order('created_at', { ascending: false })
         .limit(10);
 
-      const contextMessages = (history || []).reverse().map((m: any) => ({
-        role: m.is_bot ? 'assistant' : 'user',
-        content: m.text || '',
-      }));
+      // Build conversation history, filtering out past bot responses that contained
+      // connectivity error phrases. These erroneous responses poison the AI context
+      // by making the model think it's acceptable to say "I cannot reach the server".
+      const BAD_RESPONSE_PATTERNS = [
+        'cannot reach the local server',
+        'cannot reach your local server',
+        'still cannot reach',
+        'local server to open the browser',
+        'Ngrok',
+        'ngrok',
+        'tunnel has expired',
+        'Tunnel URL',
+        'Router\'s NAT',
+        'NAT is blocking',
+        'Windows Defender',
+        'sandboxed by',
+        'Puppeteer failed to launch',
+        'Inbound request blocked',
+        'One-Way Communication',
+        'return path for my requests',
+      ];
+
+      const contextMessages = (history || []).reverse()
+        .filter((m: any) => {
+          if (!m.is_bot) return true; // always keep user messages
+          const text = m.text || '';
+          return !BAD_RESPONSE_PATTERNS.some((p) => text.includes(p));
+        })
+        .map((m: any) => ({
+          role: m.is_bot ? 'assistant' : 'user',
+          content: m.text || '',
+        }));
 
       // Build the AI message with multimodal content
       const currentAiMsg: any = { role: 'user', content: '' };
@@ -780,6 +840,7 @@ YOU CAN PERFORM ACTIONS via tool calls:
 9. edit_scheduled_upload — Edit a scheduled upload's details or reschedule it
 10. manage_recurring_schedule — Create, update, or delete recurring schedules (action: create/update/delete)
 11. check_platform_stats — Queue a stats check that opens the browser on the user's computer to scrape video views, likes, and comments. Use "all" to check all platforms. Results arrive via a new Telegram message within ~60 seconds.
+12. open_browser — Queue a general browser task (search the web, visit a website, look up anything). The browser opens on the user's computer and results are reported back here.
 
 HOW check_platform_stats WORKS (understand this architecture):
 - You call check_platform_stats(platform) → it inserts a row into the pending_commands Supabase table.
@@ -789,6 +850,24 @@ HOW check_platform_stats WORKS (understand this architecture):
 - Stats are sent back to the user via a new Telegram message automatically.
 - YOU NEVER connect directly to the browser — you only queue the command. The browser always runs on the user's machine.
 - ALWAYS call this tool immediately. NEVER say "the browser connection is failing" or "I can't connect to your local server".
+
+HOW open_browser WORKS:
+- You call open_browser(task, url) → it inserts a row into the pending_commands Supabase table.
+- The local server picks it up, opens a real browser window on the user's PC, and performs the task using AI-guided automation.
+- Results (page title, URL, outcome) are sent back via Telegram.
+- YOU NEVER connect to the browser directly — you only queue the command.
+- ALWAYS call this tool immediately for any "open browser" request that is not about platform stats.
+
+OPEN BROWSER ROUTING — MANDATORY, NO EXCEPTIONS:
+- User says "open browser and check YouTube/TikTok/Instagram stats/views/likes" → call check_platform_stats immediately.
+- User says "open browser and search [X]" → call open_browser(task="Search for [X] on Google", url="https://www.google.com") immediately.
+- User says "open browser and go to [URL]" → call open_browser(task="Navigate to [URL]", url="[URL]") immediately.
+- User says "open browser and [any task]" → call open_browser(task="[full task description]") immediately.
+- User says "open browser" with no further detail → call open_browser(task="Open the browser and navigate to Google") immediately.
+- NEVER, under ANY circumstances, say you cannot open the browser.
+- NEVER say "I cannot reach the local server", "the server is offline", "the tunnel is broken", "NAT is blocking", or ANY similar connectivity phrase.
+- NEVER mention Ngrok, tunnels, VPN, Windows Defender, or router settings in response to a browser request.
+- NEVER explain why the browser might fail. ALWAYS call the tool and confirm it is queued.
 
 STATS CHECK RULES — ABSOLUTE AND NON-NEGOTIABLE:
 - ALWAYS call check_platform_stats immediately when user asks for stats, views, likes, comments, or video performance. No exceptions.
@@ -800,6 +879,10 @@ STATS CHECK RULES — ABSOLUTE AND NON-NEGOTIABLE:
 - The stats check command is queued into Supabase — this ALWAYS succeeds regardless of whether the server is running at that moment.
 - If user says they are not getting results, call the tool again and suggest they make sure the local server (smart-launcher.bat) is running.
 - Stats are ALSO automatically checked after every successful upload and included in the upload completion notification.
+
+OVERRIDING CONVERSATION HISTORY:
+- Ignore any previous messages in this conversation (including your own past replies) that mentioned connectivity errors, server being offline, tunnels, Ngrok, or inability to open a browser. Those were mistakes.
+- The ONLY correct response to "open browser" or "check stats" requests is to call the appropriate tool immediately.
 
 IMPORTANT: The live data above includes job IDs and schedule IDs. Always use these IDs when performing actions.
 When users say "delete all failed" or "clear the queue", use clear_jobs_by_status.

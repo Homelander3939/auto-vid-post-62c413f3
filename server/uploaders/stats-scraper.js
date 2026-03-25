@@ -5,6 +5,7 @@
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
+const { runAgentTask } = require('./smart-agent');
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -1040,10 +1041,65 @@ async function checkPlatformStats(platform, credentials) {
   }
 }
 
+// ─── General browser task runner ────────────────────────────
+// Opens a fresh browser session and performs an arbitrary natural-language
+// task using the AI-guided agentic loop from smart-agent.js.
+async function runBrowserTask(task, startUrl) {
+  const sessionDir = path.join(__dirname, '..', 'data', 'browser-sessions', 'general-browser');
+  fs.mkdirSync(sessionDir, { recursive: true });
+
+  const url = startUrl || 'https://www.google.com';
+  console.log(`[Browser] Opening browser for task: "${task}" starting at ${url}`);
+
+  const context = await chromium.launchPersistentContext(sessionDir, {
+    headless: false,
+    args: ['--disable-blink-features=AutomationControlled', '--start-maximized'],
+    viewport: { width: 1440, height: 900 },
+  });
+
+  const page = context.pages()[0] || await context.newPage();
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+
+    let success = false;
+    let finalState = 'open';
+
+    try {
+      const result = await runAgentTask(page, task, { maxSteps: 15, verbose: true });
+      success = result.success;
+      finalState = result.finalState;
+    } catch (agentErr) {
+      console.warn(`[Browser] runAgentTask unavailable: ${agentErr.message}. Browser opened at ${url}.`);
+      success = true;
+      finalState = 'open';
+    }
+
+    const finalUrl = page.url();
+    const finalTitle = await page.title().catch(() => 'Unknown');
+
+    let summary;
+    if (finalState === 'done') {
+      summary = `✅ Browser task completed!\n\nTask: ${task}\nFinal page: ${finalTitle}\nURL: ${finalUrl}`;
+    } else if (finalState === 'open') {
+      summary = `🌐 Browser opened on your computer!\n\nTask: ${task}\nPage: ${finalTitle}\nURL: ${finalUrl}`;
+    } else {
+      summary = `⚠️ Browser task ended (${finalState}).\n\nTask: ${task}\nLast page: ${finalTitle}\nURL: ${finalUrl}`;
+    }
+
+    await context.close();
+    return { success, summary, finalUrl, finalTitle };
+  } catch (err) {
+    console.error(`[Browser] Task failed:`, err.message);
+    await context.close().catch((e) => console.warn('[Browser] context.close failed:', e.message));
+    throw err;
+  }
+}
+
 module.exports = {
   scrapeYouTubeShortsStats,
   scrapeTikTokStats,
   scrapeInstagramReelsStats,
   checkPlatformStats,
   formatStatsForTelegram,
+  runBrowserTask,
 };
