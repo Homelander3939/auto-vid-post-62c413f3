@@ -9,6 +9,81 @@ const MAX_CAPTION_LENGTH = 2200;
 // How long to wait for the user's reels grid to load after navigating to their profile
 const PROFILE_REELS_LOAD_WAIT_MS = 6000;
 
+function normalizeInstagramPostUrl(candidate = '') {
+  const raw = String(candidate || '').trim();
+  if (!raw) return '';
+
+  let absolute = raw;
+  if (raw.startsWith('/')) {
+    absolute = `https://www.instagram.com${raw}`;
+  } else if (!/^https?:\/\//i.test(raw)) {
+    absolute = `https://${raw.replace(/^\/+/, '')}`;
+  }
+
+  try {
+    const parsed = new URL(absolute);
+    const mediaMatch = parsed.pathname.match(/^\/(p|reel)\/([A-Za-z0-9_-]+)/i);
+    if (!parsed.hostname.includes('instagram.com') || !mediaMatch) return '';
+    return `https://www.instagram.com/${mediaMatch[1].toLowerCase()}/${mediaMatch[2]}/`;
+  } catch {
+    return '';
+  }
+}
+
+async function resolveInstagramUsername(page) {
+  return page.evaluate(() => {
+    const blacklist = new Set(['explore', 'reels', 'direct', 'accounts', 'p', 'reel', 'create', 'stories', 'inbox']);
+
+    const navSelectors = [
+      'nav a[href^="/"][aria-label*="Profile" i]',
+      'nav a[href^="/"][role="link"]',
+      'a[href^="/"][aria-label*="Profile" i]',
+    ];
+    for (const sel of navSelectors) {
+      const el = document.querySelector(sel);
+      if (!el) continue;
+      const href = (el.getAttribute('href') || '').replace(/\/$/, '');
+      const match = href.match(/^\/([a-zA-Z0-9._]+)$/);
+      if (match && !blacklist.has(match[1])) return match[1];
+    }
+
+    const allLinks = Array.from(document.querySelectorAll('a[href]'));
+    for (const link of allLinks) {
+      const href = (link.getAttribute('href') || '').replace(/\/$/, '');
+      const match = href.match(/^\/([a-zA-Z0-9._]{3,30})$/);
+      if (match && !blacklist.has(match[1])) return match[1];
+    }
+
+    return '';
+  }).catch(() => '');
+}
+
+async function fetchLatestInstagramPostUrlFromProfile(page, username, attempts = 4) {
+  if (!username) return '';
+
+  await page.goto(`https://www.instagram.com/${username}/reels/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+  for (let reelRetry = 0; reelRetry < attempts; reelRetry++) {
+    await page.waitForTimeout(reelRetry === 0 ? PROFILE_REELS_LOAD_WAIT_MS : 10000);
+    await page.evaluate(() => window.scrollTo({ top: 320, behavior: 'smooth' })).catch(() => {});
+    await page.waitForTimeout(1000);
+
+    const profileUrl = await page.evaluate(() => {
+      const mainEl = document.querySelector('main, [role="main"]');
+      const scope = mainEl || document;
+      const reelLinks = Array.from(scope.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
+      if (reelLinks.length === 0) return '';
+      const href = reelLinks[0].getAttribute('href') || '';
+      return href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+    }).catch(() => '');
+
+    const normalized = normalizeInstagramPostUrl(profileUrl);
+    if (normalized) return normalized;
+  }
+
+  return '';
+}
+
 async function extractInstagramPostUrl(page) {
   // Only look for post/reel links inside a success-confirmation context (dialog, notification,
   // "View" button area).  Do NOT scan the whole page — the homepage/feed contains links from
@@ -36,12 +111,13 @@ async function extractInstagramPostUrl(page) {
       for (const a of container.querySelectorAll('a[href]')) {
         const href = a.getAttribute('href') || '';
         if (href.includes('/p/') || href.includes('/reel/')) {
-          return href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+          const normalized = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+          return normalized;
         }
       }
     }
     return '';
-  }).catch(() => '');
+  }).then((url) => normalizeInstagramPostUrl(url)).catch(() => '');
 }
 
 async function assessInstagramCompletion(page) {
@@ -199,6 +275,24 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
                 document.querySelector('[aria-label="Search"]'));
     });
     if (!loggedIn) throw new Error('Instagram login failed. Try logging in manually first.');
+
+    // Capture baseline latest post URL before starting a new upload to prevent false-success
+    // links (old posts from profile grid).
+    let profileUsername = '';
+    let latestPostBeforeUpload = '';
+    try {
+      profileUsername = await resolveInstagramUsername(page);
+      if (profileUsername) {
+        latestPostBeforeUpload = await fetchLatestInstagramPostUrlFromProfile(page, profileUsername, 2);
+        if (latestPostBeforeUpload) {
+          console.log(`[Instagram] Baseline latest post URL before upload: ${latestPostBeforeUpload}`);
+        }
+      }
+      await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForTimeout(2000);
+    } catch (baselineErr) {
+      console.warn('[Instagram] Could not capture baseline latest post URL (non-fatal):', baselineErr.message);
+    }
 
     // ===== PHASE 2: CREATE NEW POST =====
     console.log('[Instagram] Creating new post...');
@@ -742,74 +836,24 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       throw new Error(`Instagram publish was not confirmed. ${completion.reason}`);
     }
 
-    // Navigate to the user's own profile/reels page to get the authoritative URL of the
-    // newly-uploaded post — only if we don't already have a URL from the success dialog.
-    // Skip this if we already have a reliable URL (from the share confirmation dialog).
-    if (!postUrl) {
+    postUrl = normalizeInstagramPostUrl(postUrl);
+
+    // If URL is missing OR we only have the same URL that existed before upload,
+    // fetch latest profile post and require an actually new URL.
+    if (!postUrl || (latestPostBeforeUpload && postUrl === latestPostBeforeUpload)) {
       try {
-        // Extract the logged-in username from the Instagram left-sidebar profile link.
-        // Instagram renders a nav link like <a href="/username/" aria-label="Profile">
-        const username = await page.evaluate(() => {
-          // Strategy 1: profile nav link (most reliable — always present when logged in)
-          const navSelectors = [
-            'nav a[href^="/"][aria-label*="Profile" i]',
-            'nav a[href^="/"][role="link"]',
-            'a[href^="/"][aria-label*="Profile" i]',
-          ];
-          for (const sel of navSelectors) {
-            const el = document.querySelector(sel);
-            if (el) {
-              const href = (el.getAttribute('href') || '').replace(/\/$/, '');
-              const m = href.match(/^\/([a-zA-Z0-9._]+)$/);
-              if (m && !['explore', 'reels', 'direct', 'accounts', 'p', 'reel', 'create', 'stories'].includes(m[1])) {
-                return m[1];
-              }
-            }
-          }
-          // Strategy 2: scan all sidebar / nav links for a short username-like path
-          const allLinks = Array.from(document.querySelectorAll('a[href]'));
-          for (const link of allLinks) {
-            const href = (link.getAttribute('href') || '').replace(/\/$/, '');
-            const m = href.match(/^\/([a-zA-Z0-9._]{3,30})$/);
-            if (m && !['explore', 'reels', 'direct', 'accounts', 'p', 'reel', 'create', 'stories', 'inbox'].includes(m[1])) {
-              return m[1];
-            }
-          }
-          return '';
-        }).catch(() => '');
+        if (!profileUsername) {
+          profileUsername = await resolveInstagramUsername(page);
+        }
+        if (profileUsername) {
+          console.log(`[Instagram] Navigating to @${profileUsername}/reels/ to verify the new published reel URL...`);
+          const latestProfileUrl = await fetchLatestInstagramPostUrlFromProfile(page, profileUsername, 6);
 
-        if (username) {
-          console.log(`[Instagram] Navigating to @${username}/reels/ to find the published reel...`);
-          await page.goto(`https://www.instagram.com/${username}/reels/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
-
-          // Retry loop: newly-uploaded reels may take a few seconds to appear in the grid.
-          // Retry up to 4 times (total ~40s) with a 10s wait between attempts.
-          for (let reelRetry = 0; reelRetry < 4; reelRetry++) {
-            // Wait for the reels grid to load
-            await page.waitForTimeout(reelRetry === 0 ? PROFILE_REELS_LOAD_WAIT_MS : 10000);
-
-            // Scroll to make sure lazy-loaded tiles are rendered
-            await page.evaluate(() => window.scrollTo({ top: 300, behavior: 'smooth' })).catch(() => {});
-            await page.waitForTimeout(1000);
-
-            // Pick the first (newest) reel from the main content grid
-            const profileUrl = await page.evaluate(() => {
-              const mainEl = document.querySelector('main, [role="main"]');
-              const scope = mainEl || document;
-              const reelLinks = Array.from(scope.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
-              if (reelLinks.length > 0) {
-                const href = reelLinks[0].getAttribute('href') || '';
-                return href.startsWith('http') ? href : `https://www.instagram.com${href}`;
-              }
-              return '';
-            }).catch(() => '');
-
-            if (profileUrl) {
-              postUrl = profileUrl;
-              console.log(`[Instagram] Found published reel URL from profile: ${postUrl}`);
-              break;
-            }
-            console.log(`[Instagram] Reel not yet visible in grid, retrying... (${reelRetry + 1}/4)`);
+          if (latestProfileUrl && (!latestPostBeforeUpload || latestProfileUrl !== latestPostBeforeUpload)) {
+            postUrl = latestProfileUrl;
+            console.log(`[Instagram] Verified new reel URL from profile: ${postUrl}`);
+          } else if (latestProfileUrl) {
+            console.warn('[Instagram] Latest profile reel URL did not change after share action');
           }
         }
       } catch (e) {
@@ -817,6 +861,14 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       }
     } else {
       console.log(`[Instagram] Using URL captured from share dialog: ${postUrl}`);
+    }
+
+    postUrl = normalizeInstagramPostUrl(postUrl);
+    if (!postUrl) {
+      throw new Error('Instagram publish could not be verified with a real post URL. No /p/ or /reel/ link was found.');
+    }
+    if (latestPostBeforeUpload && postUrl === latestPostBeforeUpload) {
+      throw new Error('Instagram publish was not confirmed as a new post. Latest profile post URL remained unchanged.');
     }
 
     console.log(`[Instagram] Upload complete! URL: ${postUrl || '(no URL extracted)'}`);
@@ -831,7 +883,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     }
 
     await context.close();
-    return { url: postUrl || 'https://www.instagram.com', recentStats };
+    return { url: postUrl || '', recentStats };
   } catch (err) {
     console.error('[Instagram] Upload failed:', err.message);
     await context.close();
