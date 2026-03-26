@@ -4,7 +4,7 @@ const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } = require('./smart-agent');
 const { sendTelegramPhoto } = require('../telegram');
-const { getTikTokPageDescription, isTikTokPublishedUrl } = require('./tiktok-state');
+const { getTikTokPageDescription, isTikTokPublishedUrl, isTikTokVideoUrl } = require('./tiktok-state');
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok');
 
@@ -18,45 +18,51 @@ const MAX_TELEGRAM_DIAGNOSTIC_CAPTION_LENGTH = 900;
 // How many 5-second polling intervals to wait for the Post button to become enabled (24 × 5s = 120s)
 const MAX_POST_BUTTON_WAIT_ATTEMPTS = 24;
 
+function normalizeTikTokVideoUrl(candidate = '') {
+  const raw = String(candidate || '').trim();
+  if (!raw) return '';
+
+  let absolute = raw;
+  if (raw.startsWith('/')) {
+    absolute = `https://www.tiktok.com${raw}`;
+  } else if (!/^https?:\/\//i.test(raw)) {
+    absolute = `https://${raw.replace(/^\/+/, '')}`;
+  }
+
+  if (!isTikTokVideoUrl(absolute)) return '';
+
+  try {
+    const parsed = new URL(absolute);
+    if (!parsed.hostname.includes('tiktok.com')) return '';
+    return `https://www.tiktok.com${parsed.pathname}`;
+  } catch {
+    return '';
+  }
+}
+
 async function extractTikTokVideoUrl(page) {
-  // First try: look for direct video links in page
-  const url = await page.evaluate(() => {
+  // First try: direct links in DOM
+  const domUrl = await page.evaluate(() => {
     const candidates = Array.from(document.querySelectorAll('a[href]'))
       .map((a) => a.getAttribute('href') || '')
-      .filter(Boolean);
-
-    for (const href of candidates) {
-      if (href.includes('/video/')) {
-        if (href.startsWith('http')) return href;
-        return `https://www.tiktok.com${href}`;
-      }
-    }
-    return '';
+      .filter((href) => href.includes('/video/'));
+    return candidates[0] || '';
   }).catch(() => '');
+  const normalizedDomUrl = normalizeTikTokVideoUrl(domUrl);
+  if (normalizedDomUrl) return normalizedDomUrl;
 
-  if (url) return url;
+  // Second try: URL bar
+  const normalizedPageUrl = normalizeTikTokVideoUrl(page.url());
+  if (normalizedPageUrl) return normalizedPageUrl;
 
-  // Second try: check for video ID in URL or page content
-  const pageUrl = page.url();
-  const videoMatch = pageUrl.match(/\/video\/(\d+)/);
-  if (videoMatch) return pageUrl;
-
-  // Third try: scan for success message with video link or profile link
-  return page.evaluate(() => {
+  // Third try: parse visible text references to @user/video/id links
+  const textUrl = await page.evaluate(() => {
     const text = document.body?.innerText || '';
-    const urlMatch = text.match(/tiktok\.com\/@[\w.-]+\/video\/\d+/);
-    if (urlMatch) return `https://www.${urlMatch[0]}`;
-
-    // Check for any tiktok profile link (video was posted to this profile)
-    const profileLinks = Array.from(document.querySelectorAll('a[href*="tiktok.com/@"]'))
-      .map(a => a.getAttribute('href') || '')
-      .filter(h => h.includes('/@'));
-    if (profileLinks.length > 0) {
-      const link = profileLinks[0];
-      return link.startsWith('http') ? link : `https://www.tiktok.com${link}`;
-    }
-    return '';
+    const match = text.match(/(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@[\w.-]+\/video\/\d+/i);
+    return match?.[0] || '';
   }).catch(() => '');
+
+  return normalizeTikTokVideoUrl(textUrl);
 }
 
 async function assessTikTokCompletion(page) {
@@ -302,6 +308,7 @@ async function waitForPublishConfirmation(page, maxWaitSeconds = 300) {
   const startTime = Date.now();
   const maxWaitMs = maxWaitSeconds * 1000;
 
+  let stagnantEnabledPostTicks = 0;
   for (let attempt = 0; attempt < Math.ceil(maxWaitSeconds / 5); attempt++) {
     if (Date.now() - startTime > maxWaitMs) break;
 
@@ -343,12 +350,40 @@ async function waitForPublishConfirmation(page, maxWaitSeconds = 300) {
         url.includes('/manage') ||
         url.includes('tiktokstudio/content') ||
         url.includes('creator-center/content');
-      return { isPublishing, isPublished, backToUpload, onManagePage, url };
-    }).catch(() => ({ isPublishing: false, isPublished: false, backToUpload: false, onManagePage: false, url: '' }));
+      const postBtn =
+        document.querySelector('button[data-e2e="post-button"]') ||
+        Array.from(document.querySelectorAll('button, div[role="button"]')).find(
+          (b) => /^(post|publish)$/i.test((b.textContent || '').trim()),
+        );
+      const hasEnabledPostBtn = Boolean(
+        postBtn &&
+        !postBtn.disabled &&
+        postBtn.getAttribute('aria-disabled') !== 'true' &&
+        !postBtn.classList.toString().toLowerCase().includes('disabled'),
+      );
+      return { isPublishing, isPublished, backToUpload, onManagePage, hasEnabledPostBtn, url };
+    }).catch(() => ({
+      isPublishing: false,
+      isPublished: false,
+      backToUpload: false,
+      onManagePage: false,
+      hasEnabledPostBtn: false,
+      url: '',
+    }));
 
     if (state.isPublished || state.backToUpload || state.onManagePage) {
       console.log(`[TikTok] Video published/queued! (${Math.round((Date.now() - startTime) / 1000)}s)`);
       return true;
+    }
+
+    if (!state.isPublishing && state.hasEnabledPostBtn) {
+      stagnantEnabledPostTicks += 1;
+      if (stagnantEnabledPostTicks >= 6) {
+        console.warn('[TikTok] Post button stayed enabled with no publish progress — likely click did not trigger submission');
+        return false;
+      }
+    } else {
+      stagnantEnabledPostTicks = 0;
     }
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
@@ -364,6 +399,32 @@ async function waitForPublishConfirmation(page, maxWaitSeconds = 300) {
 
   // Last-ditch check: navigate to content page to see if video was successfully submitted
   try {
+    const shouldCheckContentPage = await page.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      const postBtn =
+        document.querySelector('button[data-e2e="post-button"]') ||
+        Array.from(document.querySelectorAll('button, div[role="button"]')).find(
+          (b) => /^(post|publish)$/i.test((b.textContent || '').trim()),
+        );
+      const postEnabled = Boolean(
+        postBtn &&
+        !postBtn.disabled &&
+        postBtn.getAttribute('aria-disabled') !== 'true' &&
+        !postBtn.classList.toString().toLowerCase().includes('disabled'),
+      );
+      const stillEditingUpload =
+        text.includes('replace') &&
+        text.includes('description') &&
+        text.includes('who can watch this video') &&
+        postEnabled;
+      return !stillEditingUpload;
+    }).catch(() => true);
+
+    if (!shouldCheckContentPage) {
+      console.log('[TikTok] Skipping content-page fallback — upload editor is still active and Post can still be clicked');
+      return false;
+    }
+
     const currentUrl = page.url();
     if (!currentUrl.includes('/content') && !currentUrl.includes('/manage')) {
       console.log('[TikTok] Checking content page for recently posted video...');
@@ -698,15 +759,35 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     console.log('[TikTok] Waiting for Post button to become enabled...');
     const postBtnEnabled = await (async () => {
       for (let i = 0; i < MAX_POST_BUTTON_WAIT_ATTEMPTS; i++) {
-        const enabled = await page.evaluate(() => {
-          const allBtns = Array.from(document.querySelectorAll('button, div[role="button"]'));
-          const btn = allBtns.find(b => /^(post|publish)$/i.test((b.textContent || '').trim()));
-          if (!btn) return false;
-          return !btn.disabled &&
-            btn.getAttribute('aria-disabled') !== 'true' &&
-            !btn.classList.toString().toLowerCase().includes('disabled');
-        }).catch(() => false);
-        if (enabled) return true;
+        const state = await page.evaluate(() => {
+          const isVisible = (el) => {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+          };
+
+          const candidates = [];
+          const direct = document.querySelector('button[data-e2e="post-button"]');
+          if (direct) candidates.push(direct);
+
+          document.querySelectorAll('button, div[role="button"]').forEach((btn) => {
+            const txt = (btn.textContent || '').trim().toLowerCase();
+            if (txt === 'post' || txt === 'publish') candidates.push(btn);
+          });
+
+          const visibleCandidates = candidates.filter(isVisible);
+          const target = visibleCandidates[0] || candidates[0] || null;
+          if (!target) return { found: false, enabled: false };
+
+          const enabled = !target.disabled &&
+            target.getAttribute('aria-disabled') !== 'true' &&
+            !target.classList.toString().toLowerCase().includes('disabled');
+
+          return { found: true, enabled };
+        }).catch(() => ({ found: false, enabled: false }));
+
+        if (state.enabled) return true;
         await dismissExitDialog(page);
         await page.waitForTimeout(5000);
       }
@@ -785,108 +866,105 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       console.warn('[TikTok] Pre-post vision check failed (non-fatal):', e.message);
     }
 
-    // Strategy 1: Standard Playwright selectors on the main page (with force to bypass disabled state)
-    let postClicked = false;
-    try {
-      const btn = await page.$('button[data-e2e="post-button"]');
-      if (btn) {
-        await btn.scrollIntoViewIfNeeded().catch(() => {});
-        await btn.click({ force: true });
-        postClicked = true;
-        console.log('[TikTok] Post button clicked via data-e2e selector');
-      }
-    } catch (e) {
-      console.warn('[TikTok] data-e2e post-button click failed:', e.message);
-    }
+    const hasPublishStarted = async () => {
+      const state = await page.evaluate(() => {
+        const text = (document.body?.innerText || '').toLowerCase();
+        const url = window.location.href;
+        const publishingSignals =
+          text.includes('posting') ||
+          text.includes('publishing') ||
+          text.includes('your video is being uploaded to tiktok') ||
+          text.includes('video is being processed') ||
+          text.includes('submit successful');
+        const navigated =
+          url.includes('/content') ||
+          url.includes('/manage') ||
+          /\/video\/\d+/i.test(url);
+        return { started: publishingSignals || navigated };
+      }).catch(() => ({ started: false }));
+      return state.started;
+    };
 
-    if (!postClicked) {
-      postClicked = await smartClick(page, [
-        'button[data-e2e="post-button"]',
-        'button:has-text("Post")',
-        'button:has-text("Publish")',
-        '[class*="post"] button',
-        'button[type="submit"]',
-      ], 'Post');
-    }
-
-    // Strategy 2: DOM-based click — remove disabled attribute and force-click
-    if (!postClicked) {
-      postClicked = await page.evaluate(() => {
-        const buttons = document.querySelectorAll('button, div[role="button"]');
-        for (const btn of buttons) {
-          const text = (btn.textContent || '').trim().toLowerCase();
-          if (text.startsWith('post') || text.startsWith('publish') || text === 'upload') {
-            btn.removeAttribute('disabled');
-            btn.removeAttribute('aria-disabled');
-            btn.scrollIntoView({ behavior: 'instant', block: 'center' });
-            btn.click();
-            return true;
-          }
-        }
-        return false;
-      });
-    }
-
-    // Strategy 3: Search inside all frames (TikTok Studio may embed the form in an iframe)
-    if (!postClicked) {
-      console.log('[TikTok] Searching for Post button inside page frames...');
-      for (const frame of page.frames()) {
-        if (postClicked) break;
-        try {
-          // Try data-e2e selector first with force click
-          const btnByAttr = await frame.$('button[data-e2e="post-button"]').catch(() => null);
-          if (btnByAttr) {
-            await frame.evaluate(btn => {
-              btn.removeAttribute('disabled');
-              btn.removeAttribute('aria-disabled');
-              btn.scrollIntoView({ behavior: 'instant', block: 'center' });
-            }, btnByAttr).catch(() => {});
-            await btnByAttr.click({ force: true }).catch(async () => {
-              // Last resort: JS click
-              await frame.evaluate(btn => btn.click(), btnByAttr).catch(() => {});
-            });
-            postClicked = true;
-            console.log('[TikTok] Post button clicked via frame data-e2e selector');
-            break;
-          }
-          // Find by text inside the frame — use startsWith match and force-click
-          const clicked = await frame.evaluate(() => {
-            const buttons = document.querySelectorAll('button, div[role="button"]');
-            for (const btn of buttons) {
-              const text = (btn.textContent || '').trim().toLowerCase();
-              if (text.startsWith('post') || text.startsWith('publish')) {
-                btn.removeAttribute('disabled');
-                btn.removeAttribute('aria-disabled');
-                btn.scrollIntoView({ behavior: 'instant', block: 'center' });
-                btn.click();
-                return true;
-              }
-            }
-            return false;
-          }).catch(() => false);
-          if (clicked) {
-            postClicked = true;
-            console.log('[TikTok] Post button clicked inside frame');
-          }
-        } catch (e) {
-          // Frame may be cross-origin or disposed — skip silently
-          if (e.message && !e.message.includes('cross-origin') && !e.message.includes('Target closed')) {
-            console.warn('[TikTok] Frame post-button search error:', e.message);
-          }
-        }
-      }
-    }
-
-    // Strategy 4: Agent fallback with vision
-    if (!postClicked) {
-      console.log('[TikTok] Standard Post button not found, trying agent with vision...');
+    const clickPostOnce = async () => {
+      // Try strict Playwright click on primary post button first
       try {
-        const agentResult = await runAgentTask(page, 
-          'Scroll to the bottom of the TikTok upload form and click the red Post or Publish button to publish this video. Do NOT scroll the background — click the Post button directly.', 
-          { maxSteps: 8, stepDelayMs: 800, useVision: true });
-        postClicked = agentResult.success;
-      } catch (e) {
-        console.warn('[TikTok] Agent post-click failed:', e.message);
+        const btn = page.locator('button[data-e2e="post-button"]').first();
+        const visible = await btn.isVisible({ timeout: 1200 }).catch(() => false);
+        const enabled = visible ? await btn.isEnabled().catch(() => false) : false;
+        if (visible && enabled) {
+          await btn.scrollIntoViewIfNeeded().catch(() => {});
+          await btn.click({ timeout: 3000 });
+          return true;
+        }
+      } catch {}
+
+      // DOM fallback: click only visible + enabled post/publish buttons
+      return page.evaluate(() => {
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const isEnabled = (el) => {
+          return !el.disabled &&
+            el.getAttribute('aria-disabled') !== 'true' &&
+            !el.classList.toString().toLowerCase().includes('disabled');
+        };
+
+        const direct = document.querySelector('button[data-e2e="post-button"]');
+        if (direct && isVisible(direct) && isEnabled(direct)) {
+          direct.scrollIntoView({ behavior: 'instant', block: 'center' });
+          direct.click();
+          return true;
+        }
+
+        const candidates = Array.from(document.querySelectorAll('button, div[role="button"]')).filter((btn) => {
+          const text = (btn.textContent || '').trim().toLowerCase();
+          return (text === 'post' || text === 'publish') && isVisible(btn) && isEnabled(btn);
+        });
+
+        if (candidates.length > 0) {
+          const target = candidates[0];
+          target.scrollIntoView({ behavior: 'instant', block: 'center' });
+          target.click();
+          return true;
+        }
+
+        return false;
+      }).catch(() => false);
+    };
+
+    let postClicked = false;
+    let publishTriggered = false;
+
+    for (let clickAttempt = 0; clickAttempt < 3 && !publishTriggered; clickAttempt++) {
+      await dismissExitDialog(page);
+      postClicked = await clickPostOnce();
+
+      if (!postClicked) {
+        if (clickAttempt === 1) {
+          console.log('[TikTok] Standard Post click failed, trying agent with vision...');
+          try {
+            const agentResult = await runAgentTask(page,
+              'Click the red Post or Publish button on TikTok Studio to publish this video. If needed, scroll inside the upload form to reveal the button. Do NOT scroll the page background.',
+              { maxSteps: 8, stepDelayMs: 800, useVision: true });
+            postClicked = agentResult.success;
+          } catch (e) {
+            console.warn('[TikTok] Agent post-click failed:', e.message);
+          }
+        }
+      }
+
+      if (!postClicked) {
+        await page.waitForTimeout(2000);
+        continue;
+      }
+
+      await page.waitForTimeout(2500);
+      publishTriggered = await hasPublishStarted();
+      if (!publishTriggered) {
+        console.warn(`[TikTok] Post click attempt ${clickAttempt + 1} did not trigger publish flow; retrying`);
       }
     }
     
@@ -901,10 +979,17 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
         screenshotCaption: '📸 <b>TikTok upload ready</b> — click Post button and reply APPROVED',
         customMessage: '🚧 <b>TikTok uploader needs help</b>\nPlease click the Post/Publish button and reply APPROVED.',
       });
+      await page.waitForTimeout(8000);
+      publishTriggered = await hasPublishStarted();
     }
     
     // Wait for the publish to fully complete — this is critical to avoid the "exit" dialog
-    await waitForPublishConfirmation(page, 300);
+    if (publishTriggered) {
+      const confirmed = await waitForPublishConfirmation(page, 240);
+      if (!confirmed) {
+        console.warn('[TikTok] Publish confirmation was not detected in time; continuing with deep completion checks');
+      }
+    }
 
     // ===== PHASE 5: CHECK COMPLETION =====
     let completion = await assessTikTokCompletion(page);
@@ -922,7 +1007,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     }
 
     // If still no URL, try navigating to the profile to get the latest video URL
-    if (!videoUrl || videoUrl === 'https://www.tiktok.com') {
+    if (!videoUrl) {
       try {
         // Navigate to TikTok profile/manage page to find the published video
         await page.goto('https://www.tiktok.com/tiktokstudio/content', { waitUntil: 'domcontentloaded', timeout: 15000 });
@@ -941,6 +1026,12 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       } catch (e) {
         console.warn('[TikTok] Could not navigate to content page for URL:', e.message);
       }
+    }
+
+    videoUrl = normalizeTikTokVideoUrl(videoUrl);
+
+    if (completion.success && !videoUrl) {
+      throw new Error('TikTok publish appears complete, but no real TikTok video URL was found. Post link verification failed.');
     }
 
     if (!completion.success && completion.needsHuman) {
@@ -994,7 +1085,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     // Dismiss any exit dialog before closing
     await dismissExitDialog(page);
     await context.close();
-    return { url: videoUrl || 'https://www.tiktok.com', recentStats };
+    return { url: videoUrl || '', recentStats };
   } catch (err) {
     console.error('[TikTok] Upload failed:', err.message);
     try { await dismissExitDialog(page); } catch {}
