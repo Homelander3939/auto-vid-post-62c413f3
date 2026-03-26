@@ -60,6 +60,10 @@ export default function AppLayout() {
   const uploadMode = settings?.uploadMode || 'local';
   const isCloud = uploadMode === 'cloud';
   const buildLabel = formatBuildLabel(__BUILD_NAME__, __BUILD_NUMBER__, __PR_NUMBER__);
+  const versionLabel = __APP_VERSION__ ? `v${__APP_VERSION__}` : '';
+  const commitLabel = __BUILD_COMMIT__ ? `Commit ${__BUILD_COMMIT__}` : '';
+  const primaryBuildLabel = buildLabel !== 'dev' ? buildLabel : (commitLabel || 'dev');
+  const buildMetaLabel = [primaryBuildLabel, versionLabel].filter(Boolean).join(' · ');
 
   // Close mobile nav on route change
   useEffect(() => {
@@ -202,10 +206,10 @@ export default function AppLayout() {
             </div>
           )}
 
-          <p className="text-xs text-muted-foreground px-1">
-            {isCloud ? 'Cloud DB · Cloud uploads' : 'Cloud DB · Local uploads'}
-            <span className="block text-[10px] opacity-60 mt-0.5">
-              {[buildLabel, isCloud ? 'Cloud Mode' : 'Local Mode'].filter(Boolean).join(' · ')}
+          <p className="text-xs px-1">
+            <span className="block font-medium text-foreground/85">{buildMetaLabel}</span>
+            <span className="block text-[10px] text-muted-foreground mt-0.5">
+              {[isCloud ? 'Cloud Mode' : 'Local Mode', isCloud ? 'Cloud DB · Cloud uploads' : 'Cloud DB · Local uploads'].join(' · ')}
             </span>
           </p>
         </div>

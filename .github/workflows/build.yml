@@ -27,6 +27,7 @@ jobs:
           VITE_BUILD_NAME: ${{ github.event_name == 'pull_request' && github.event.pull_request.title || github.ref_name }}
           VITE_BUILD_NUMBER: ${{ github.run_number }}
           VITE_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          VITE_BUILD_COMMIT: ${{ github.sha }}
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: npm run build
