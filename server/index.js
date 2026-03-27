@@ -297,24 +297,26 @@ app.post('/api/process/:id', async (req, res) => {
   res.json({ started: true });
 });
 
+async function triggerPendingUploadProcessing(limit = 5) {
+  const { data: jobs } = await supabase
+    .from('upload_jobs')
+    .select('id')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+    .limit(limit);
+
+  const ids = (jobs || []).map(j => j.id).filter(id => !processingJobs.has(id));
+  for (const id of ids) {
+    processJob(id).catch((e) => console.error(`[Worker] Job ${id} error:`, e.message));
+  }
+
+  return ids.length;
+}
+
 app.post('/api/process-pending', async (req, res) => {
   try {
-    const { data: jobs } = await supabase
-      .from('upload_jobs')
-      .select('id')
-      .eq('status', 'pending')
-      .order('created_at', { ascending: true })
-      .limit(5);
-
-    const ids = (jobs || []).map(j => j.id).filter(id => !processingJobs.has(id));
-    // Process sequentially but non-blocking
-    (async () => {
-      for (const id of ids) {
-        await processJob(id);
-      }
-    })().catch(e => console.error('[Worker] Batch error:', e.message));
-
-    res.json({ queued: ids.length });
+    const queued = await triggerPendingUploadProcessing(5);
+    res.json({ queued });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -744,34 +746,35 @@ async function processPendingCommands() {
 // --- Cron: poll every minute for uploads, every 15s for commands ---
 let cronJob = null;
 let commandPollInterval = null;
+let uploadPollInterval = null;
 function setupCron() {
   if (cronJob) { cronJob.stop(); cronJob = null; }
   if (commandPollInterval) { clearInterval(commandPollInterval); commandPollInterval = null; }
+  if (uploadPollInterval) { clearInterval(uploadPollInterval); uploadPollInterval = null; }
+
+  // Fast poll: check pending uploads every 5 seconds for near-immediate browser start.
+  uploadPollInterval = setInterval(async () => {
+    try { await triggerPendingUploadProcessing(5); } catch (e) { console.error('[Uploads] Poll error:', e.message); }
+  }, 5000);
 
   // Fast poll: check pending_commands every 15 seconds for responsive bot
   commandPollInterval = setInterval(async () => {
     try { await processPendingCommands(); } catch (e) { console.error('[Commands] Poll error:', e.message); }
   }, 15000);
 
+  // Kick once immediately on startup/reload so new jobs don't wait for first interval tick.
+  triggerPendingUploadProcessing(5).catch((e) => console.error('[Uploads] Initial trigger failed:', e.message));
+
   cronJob = cron.schedule('* * * * *', async () => {
     try {
       await fixStaleJobs();
       await processScheduledUploads();
       await processRecurringSchedule();
-      const { data: jobs } = await supabase
-        .from('upload_jobs')
-        .select('id')
-        .eq('status', 'pending')
-        .order('created_at', { ascending: true })
-        .limit(5);
-      for (const job of (jobs || [])) {
-        await processJob(job.id);
-      }
     } catch (e) {
       console.error('[Cron] Error:', e.message);
     }
   });
-  console.log('[Cron] Active: uploads every minute, commands every 15s');
+  console.log('[Cron] Active: uploads every 5s, schedules every minute, commands every 15s');
 }
 
 app.post('/api/refresh-cron', (req, res) => {
