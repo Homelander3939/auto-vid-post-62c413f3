@@ -191,6 +191,65 @@ async function waitForInstagramShareButtonReady(page, maxWaitMs = INSTAGRAM_SHAR
   return { ready: false, alreadyShared: false, reason: 'Share button did not become enabled in time.' };
 }
 
+async function openLatestInstagramPostAndCaptureUrl(page, username) {
+  if (!username) return '';
+
+  const profileUrls = [
+    `https://www.instagram.com/${username}/reels/`,
+    `https://www.instagram.com/${username}/`,
+  ];
+
+  for (const profileUrl of profileUrls) {
+    try {
+      await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForTimeout(2500);
+
+      const clickedHref = await page.evaluate(() => {
+        const scope = document.querySelector('main, [role="main"]') || document;
+        const links = Array.from(scope.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
+        const first = links[0];
+        if (!first) return '';
+
+        first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        first.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return first.getAttribute('href') || '';
+      }).catch(() => '');
+
+      await page.waitForTimeout(2000);
+
+      const openedMediaUrl = await page.waitForFunction(() => {
+        const href = window.location.href;
+        if (/\/\/(?:www\.)?instagram\.com\/(?:reel|p)\//i.test(href)) return href;
+
+        const dialog = document.querySelector('[role="dialog"]');
+        if (dialog) {
+          const mediaLink = dialog.querySelector('a[href*="/reel/"], a[href*="/p/"]');
+          if (mediaLink) {
+            const mediaHref = mediaLink.getAttribute('href') || '';
+            return mediaHref.startsWith('http') ? mediaHref : `https://www.instagram.com${mediaHref}`;
+          }
+        }
+
+        const canonical = document.querySelector('link[rel="canonical"]')?.getAttribute('href') || '';
+        if (/\/\/(?:www\.)?instagram\.com\/(?:reel|p)\//i.test(canonical)) return canonical;
+
+        return '';
+      }, { timeout: 8000 }).then((handle) => handle.jsonValue()).catch(() => '');
+
+      const normalized = normalizeInstagramPostUrl(openedMediaUrl)
+        || normalizeInstagramPostUrl(clickedHref)
+        || normalizeInstagramPostUrl(page.url());
+
+      if (normalized) {
+        console.log(`[Instagram] Opened latest reel/post and captured URL: ${normalized}`);
+        return normalized;
+      }
+    } catch {}
+  }
+
+  return '';
+}
+
 async function clickInstagramShareButton(page) {
   let shareClicked = await page.evaluate(() => {
     const dialogEl = document.querySelector('[role="dialog"]') || document.body;
@@ -252,6 +311,14 @@ async function waitForNewInstagramPostUrl(page, username, baselineUrls = [], att
     const newUrl = recentUrls.find((url) => url && !baselineSet.has(url)) || '';
     if (newUrl) {
       return newUrl;
+    }
+
+    // Fallback: actively open the latest reel/post tile and capture its canonical URL.
+    // This mirrors manual behavior (open latest reel → copy link) and helps when profile
+    // grid updates lag behind link extraction in the DOM.
+    const openedLatestUrl = await openLatestInstagramPostAndCaptureUrl(page, username);
+    if (openedLatestUrl && !baselineSet.has(openedLatestUrl)) {
+      return openedLatestUrl;
     }
 
     console.log(`[Instagram] Waiting for new published post URL on profile... (${attempt}/${attempts})`);
