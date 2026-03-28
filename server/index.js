@@ -224,7 +224,7 @@ async function processJob(jobId, options = {}) {
         });
         platform.status = 'success';
         platform.url = result.url || '';
-        platform.recentStats = result.recentStats || [];
+        platform.recentStats = [];
         console.log(`[Worker] ${platform.name} upload SUCCESS`);
       } catch (err) {
         platform.status = 'error';
@@ -251,19 +251,7 @@ async function processJob(jobId, options = {}) {
       return `⚪ ${r.name}: ${r.status}`;
     });
     const emoji = finalStatus === 'completed' ? '🎉' : finalStatus === 'partial' ? '⚠️' : '❌';
-    let summaryMsg = `${emoji} <b>Upload ${finalStatus}</b>\n📹 ${metadata.title || job.video_file_name}\n\n${lines.join('\n')}`;
-
-    // Append stats from successful platforms
-    const statsLines = [];
-    for (const r of results) {
-      if (r.status === 'success' && r.recentStats?.length > 0) {
-        const platformName = r.name === 'youtube' ? 'YouTube' : r.name === 'tiktok' ? 'TikTok' : 'Instagram';
-        statsLines.push(formatStatsForTelegram(platformName, r.recentStats));
-      }
-    }
-    if (statsLines.length > 0) {
-      summaryMsg += '\n\n' + statsLines.join('\n\n');
-    }
+    const summaryMsg = `${emoji} <b>Upload ${finalStatus}</b>\n📹 ${metadata.title || job.video_file_name}\n\n${lines.join('\n')}`;
 
     await notifyTelegram(settings, summaryMsg);
 

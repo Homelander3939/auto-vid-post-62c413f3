@@ -1162,19 +1162,10 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
 
     console.log(`[TikTok] Upload complete! URL: ${videoUrl || '(no URL extracted)'}`);
 
-    // ===== POST-UPLOAD: SCRAPE STATS =====
-    let recentStats = [];
-    try {
-      const { scrapeTikTokStats } = require('./stats-scraper');
-      recentStats = await scrapeTikTokStats(page, { maxVideos: 10 });
-    } catch (statsErr) {
-      console.warn('[TikTok] Stats scraping failed (non-fatal):', statsErr.message);
-    }
-
     // Dismiss any exit dialog before closing
     await dismissExitDialog(page);
     await context.close();
-    return { url: videoUrl || '', recentStats };
+    return { url: videoUrl || '' };
   } catch (err) {
     console.error('[TikTok] Upload failed:', err.message);
     try { await dismissExitDialog(page); } catch {}

@@ -9,7 +9,8 @@ const MAX_CAPTION_LENGTH = 2200;
 // How long to wait for the user's reels grid to load after navigating to their profile
 const PROFILE_REELS_LOAD_WAIT_MS = 6000;
 const INSTAGRAM_SHARE_READY_MAX_WAIT_MS = 180000;
-const INSTAGRAM_PROFILE_PUBLISH_WAIT_ATTEMPTS = 24;
+const INSTAGRAM_SHARE_PROCESSING_MAX_WAIT_MS = 300000;
+const INSTAGRAM_PROFILE_PUBLISH_WAIT_ATTEMPTS = 36;
 const INSTAGRAM_PROFILE_PUBLISH_WAIT_INTERVAL_MS = 10000;
 
 function normalizeInstagramPostUrl(candidate = '') {
@@ -330,6 +331,78 @@ async function waitForNewInstagramPostUrl(page, username, baselineUrls = [], att
   return '';
 }
 
+async function waitForInstagramSharingToFinish(page, maxWaitMs = INSTAGRAM_SHARE_PROCESSING_MAX_WAIT_MS) {
+  const started = Date.now();
+  let seenProcessing = false;
+
+  while (Date.now() - started < maxWaitMs) {
+    const state = await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]');
+      const scope = dialog || document;
+      const text = (scope.textContent || '').toLowerCase();
+      const bodyText = (document.body?.innerText || '').toLowerCase();
+      const url = window.location.href;
+
+      const isProcessing =
+        text.includes('sharing...') ||
+        text.includes('processing') ||
+        text.includes('posting') ||
+        text.includes('uploading') ||
+        bodyText.includes('sharing...') ||
+        bodyText.includes('processing') ||
+        bodyText.includes('posting') ||
+        bodyText.includes('uploading');
+
+      const isShared =
+        text.includes('your post has been shared') ||
+        text.includes('your reel has been shared') ||
+        text.includes('post shared') ||
+        text.includes('reel shared') ||
+        text.includes('shared successfully') ||
+        bodyText.includes('your post has been shared') ||
+        bodyText.includes('your reel has been shared') ||
+        bodyText.includes('post shared') ||
+        bodyText.includes('reel shared') ||
+        bodyText.includes('shared successfully');
+
+      return {
+        hasDialog: !!dialog,
+        isProcessing,
+        isShared,
+        redirectedToFeed: url === 'https://www.instagram.com/' || url === 'https://instagram.com/',
+      };
+    }).catch(() => ({ hasDialog: false, isProcessing: false, isShared: false, redirectedToFeed: false }));
+
+    if (state.isProcessing) {
+      seenProcessing = true;
+      console.log('[Instagram] Share popup still processing...');
+      await page.waitForTimeout(2000);
+      continue;
+    }
+
+    if (state.isShared) {
+      return { finished: true, reason: 'Instagram shows a shared confirmation.' };
+    }
+
+    if (seenProcessing && !state.isProcessing) {
+      return {
+        finished: true,
+        reason: state.redirectedToFeed
+          ? 'Instagram returned to feed after processing.'
+          : 'Instagram processing state disappeared.',
+      };
+    }
+
+    if (!state.hasDialog && state.redirectedToFeed) {
+      return { finished: true, reason: 'Instagram closed popup and returned to feed.' };
+    }
+
+    await page.waitForTimeout(2000);
+  }
+
+  return { finished: false, reason: 'Instagram sharing/loading did not finish in time.' };
+}
+
 async function extractInstagramPostUrl(page) {
   // Only look for post/reel links inside a success-confirmation context (dialog, notification,
   // "View" button area).  Do NOT scan the whole page — the homepage/feed contains links from
@@ -396,8 +469,11 @@ async function assessInstagramCompletion(page) {
   try {
     const ai = await analyzePage(page, 'Instagram post completion check. Decide whether posting succeeded or needs manual action.');
     const state = String(ai?.state || '').toLowerCase();
-    if (['success', 'processing', 'uploading'].includes(state)) {
+    if (['success', 'shared', 'completed', 'published', 'done'].includes(state)) {
       return { success: true, reason: ai?.description || 'AI detected successful/processing completion state.' };
+    }
+    if (['processing', 'uploading', 'pending'].includes(state)) {
+      return { success: false, needsHuman: false, reason: ai?.description || 'Instagram is still processing the share.' };
     }
     return {
       success: false,
@@ -1035,6 +1111,13 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       }
     }
 
+    const sharingWait = await waitForInstagramSharingToFinish(page, INSTAGRAM_SHARE_PROCESSING_MAX_WAIT_MS);
+    if (!sharingWait.finished) {
+      console.warn(`[Instagram] Share-processing wait timeout: ${sharingWait.reason}`);
+    } else {
+      console.log(`[Instagram] Share-processing completed: ${sharingWait.reason}`);
+    }
+
     // ===== PHASE 7: CHECK COMPLETION AND EXTRACT URL =====
     let completion = await assessInstagramCompletion(page);
 
@@ -1079,15 +1162,23 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         baselineProfilePostUrls,
         INSTAGRAM_PROFILE_PUBLISH_WAIT_ATTEMPTS,
       );
-      if (newlyPublishedUrl) {
-        postUrl = newlyPublishedUrl;
-        completion = { success: true, needsHuman: false, reason: 'Verified new Instagram URL appeared on profile.' };
-        console.log(`[Instagram] Verified new reel/post URL from profile: ${postUrl}`);
+      if (!newlyPublishedUrl) {
+        throw new Error('Instagram share popup completed, but no new reel/post appeared on profile yet. Upload was not confirmed as finished.');
       }
+
+      postUrl = newlyPublishedUrl;
+      completion = { success: true, needsHuman: false, reason: 'Verified new Instagram URL appeared on profile.' };
+      console.log(`[Instagram] Verified new reel/post URL from profile: ${postUrl}`);
     }
 
     if (!completion.success && !postUrl) {
       throw new Error(`Instagram publish was not confirmed. ${completion.reason}`);
+    }
+
+    const baselineUrlSet = new Set((baselineProfilePostUrls || []).map((url) => normalizeInstagramPostUrl(url)).filter(Boolean));
+
+    if (postUrl && baselineUrlSet.has(postUrl)) {
+      throw new Error('Instagram publish was not confirmed as a new post. Captured URL already existed before upload.');
     }
 
     if (postUrl && latestPostBeforeUpload && postUrl === latestPostBeforeUpload) {
@@ -1108,17 +1199,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
     console.log(`[Instagram] Upload complete! URL: ${postUrl || '(no URL extracted)'}`);
 
-    // ===== POST-UPLOAD: SCRAPE STATS =====
-    let recentStats = [];
-    try {
-      const { scrapeInstagramReelsStats } = require('./stats-scraper');
-      recentStats = await scrapeInstagramReelsStats(page, { maxVideos: 10 });
-    } catch (statsErr) {
-      console.warn('[Instagram] Stats scraping failed (non-fatal):', statsErr.message);
-    }
-
     await context.close();
-    return { url: postUrl || '', recentStats };
+    return { url: postUrl || '' };
   } catch (err) {
     console.error('[Instagram] Upload failed:', err.message);
     await context.close();
