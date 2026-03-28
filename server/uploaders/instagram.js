@@ -9,9 +9,10 @@ const MAX_CAPTION_LENGTH = 2200;
 // How long to wait for the user's reels grid to load after navigating to their profile
 const PROFILE_REELS_LOAD_WAIT_MS = 6000;
 const INSTAGRAM_SHARE_READY_MAX_WAIT_MS = 180000;
-const INSTAGRAM_SHARE_PROCESSING_MAX_WAIT_MS = 300000;
-const INSTAGRAM_PROFILE_PUBLISH_WAIT_ATTEMPTS = 36;
-const INSTAGRAM_PROFILE_PUBLISH_WAIT_INTERVAL_MS = 10000;
+const INSTAGRAM_SHARE_PROCESSING_MAX_WAIT_MS = 180000;
+const INSTAGRAM_PROFILE_PUBLISH_WAIT_ATTEMPTS = 12;
+const INSTAGRAM_PROFILE_PUBLISH_WAIT_INTERVAL_MS = 3000;
+const INSTAGRAM_QUICK_PROFILE_LOAD_WAIT_MS = 1200;
 
 function normalizeInstagramPostUrl(candidate = '') {
   const raw = String(candidate || '').trim();
@@ -119,6 +120,74 @@ async function fetchLatestInstagramPostUrlFromProfile(page, username, attempts =
   return urls[0] || '';
 }
 
+async function fetchRecentInstagramPostUrlsQuick(page, username, limit = 8) {
+  if (!username) return [];
+
+  const profileUrls = [
+    `https://www.instagram.com/${username}/reels/`,
+    `https://www.instagram.com/${username}/`,
+  ];
+
+  for (const profileUrl of profileUrls) {
+    try {
+      await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await page.waitForTimeout(INSTAGRAM_QUICK_PROFILE_LOAD_WAIT_MS);
+
+      let urls = await page.evaluate((maxItems) => {
+        const scope = document.querySelector('main, [role="main"]') || document;
+        const links = Array.from(scope.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
+        const seen = new Set();
+        const collected = [];
+
+        for (const link of links) {
+          const href = (link.getAttribute('href') || '').trim();
+          if (!href) continue;
+          const absolute = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+          if (seen.has(absolute)) continue;
+          seen.add(absolute);
+          collected.push(absolute);
+          if (collected.length >= maxItems) break;
+        }
+
+        return collected;
+      }, limit).catch(() => []);
+
+      if (!urls.length) {
+        await page.evaluate(() => window.scrollTo({ top: 420, behavior: 'smooth' })).catch(() => {});
+        await page.waitForTimeout(1000);
+        urls = await page.evaluate((maxItems) => {
+          const scope = document.querySelector('main, [role="main"]') || document;
+          const links = Array.from(scope.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]'));
+          const seen = new Set();
+          const collected = [];
+
+          for (const link of links) {
+            const href = (link.getAttribute('href') || '').trim();
+            if (!href) continue;
+            const absolute = href.startsWith('http') ? href : `https://www.instagram.com${href}`;
+            if (seen.has(absolute)) continue;
+            seen.add(absolute);
+            collected.push(absolute);
+            if (collected.length >= maxItems) break;
+          }
+
+          return collected;
+        }, limit).catch(() => []);
+      }
+
+      const normalized = (Array.isArray(urls) ? urls : [])
+        .map((url) => normalizeInstagramPostUrl(url))
+        .filter(Boolean);
+
+      if (normalized.length > 0) {
+        return Array.from(new Set(normalized));
+      }
+    } catch {}
+  }
+
+  return [];
+}
+
 async function waitForInstagramShareButtonReady(page, maxWaitMs = INSTAGRAM_SHARE_READY_MAX_WAIT_MS) {
   const started = Date.now();
 
@@ -192,8 +261,12 @@ async function waitForInstagramShareButtonReady(page, maxWaitMs = INSTAGRAM_SHAR
   return { ready: false, alreadyShared: false, reason: 'Share button did not become enabled in time.' };
 }
 
-async function openLatestInstagramPostAndCaptureUrl(page, username) {
+async function openLatestInstagramPostAndCaptureUrl(page, username, options = {}) {
   if (!username) return '';
+
+  const settleMs = Number.isFinite(options.settleMs) ? options.settleMs : 2500;
+  const afterClickMs = Number.isFinite(options.afterClickMs) ? options.afterClickMs : 2000;
+  const captureTimeoutMs = Number.isFinite(options.captureTimeoutMs) ? options.captureTimeoutMs : 8000;
 
   const profileUrls = [
     `https://www.instagram.com/${username}/reels/`,
@@ -203,7 +276,7 @@ async function openLatestInstagramPostAndCaptureUrl(page, username) {
   for (const profileUrl of profileUrls) {
     try {
       await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await page.waitForTimeout(2500);
+      await page.waitForTimeout(settleMs);
 
       const clickedHref = await page.evaluate(() => {
         const scope = document.querySelector('main, [role="main"]') || document;
@@ -216,7 +289,7 @@ async function openLatestInstagramPostAndCaptureUrl(page, username) {
         return first.getAttribute('href') || '';
       }).catch(() => '');
 
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(afterClickMs);
 
       const openedMediaUrl = await page.waitForFunction(() => {
         const href = window.location.href;
@@ -235,7 +308,7 @@ async function openLatestInstagramPostAndCaptureUrl(page, username) {
         if (/\/\/(?:www\.)?instagram\.com\/(?:reel|p)\//i.test(canonical)) return canonical;
 
         return '';
-      }, { timeout: 8000 }).then((handle) => handle.jsonValue()).catch(() => '');
+      }, { timeout: captureTimeoutMs }).then((handle) => handle.jsonValue()).catch(() => '');
 
       const normalized = normalizeInstagramPostUrl(openedMediaUrl)
         || normalizeInstagramPostUrl(clickedHref)
@@ -298,6 +371,49 @@ async function clickInstagramShareButton(page) {
   return shareClicked;
 }
 
+async function closeInstagramShareResultPopup(page) {
+  const closed = await page.evaluate(() => {
+    const dialog = document.querySelector('[role="dialog"]');
+    if (!dialog) return false;
+
+    const closeSelectors = [
+      'button[aria-label="Close"]',
+      'button[aria-label*="close" i]',
+      'div[role="button"][aria-label="Close"]',
+      'svg[aria-label="Close"]',
+    ];
+
+    for (const sel of closeSelectors) {
+      const node = dialog.querySelector(sel);
+      if (!node) continue;
+      const clickable = node.closest('button, [role="button"], a') || node;
+      clickable.click();
+      return true;
+    }
+
+    const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"]'));
+    for (const btn of buttons) {
+      const text = (btn.textContent || '').trim().toLowerCase();
+      if (text === 'done' || text === 'close' || text === 'not now') {
+        btn.click();
+        return true;
+      }
+    }
+
+    return false;
+  }).catch(() => false);
+
+  if (!closed) {
+    await page.keyboard.press('Escape').catch(() => {});
+  }
+
+  if (closed) {
+    await page.waitForTimeout(800);
+  }
+
+  return closed;
+}
+
 async function waitForNewInstagramPostUrl(page, username, baselineUrls = [], attempts = INSTAGRAM_PROFILE_PUBLISH_WAIT_ATTEMPTS) {
   if (!username) return '';
 
@@ -308,18 +424,33 @@ async function waitForNewInstagramPostUrl(page, username, baselineUrls = [], att
   );
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    const recentUrls = await fetchRecentInstagramPostUrlsFromProfile(page, username, 2, 8);
-    const newUrl = recentUrls.find((url) => url && !baselineSet.has(url)) || '';
-    if (newUrl) {
-      return newUrl;
-    }
+    await closeInstagramShareResultPopup(page);
 
-    // Fallback: actively open the latest reel/post tile and capture its canonical URL.
-    // This mirrors manual behavior (open latest reel → copy link) and helps when profile
-    // grid updates lag behind link extraction in the DOM.
-    const openedLatestUrl = await openLatestInstagramPostAndCaptureUrl(page, username);
+    // Primary strategy requested by user behavior:
+    // after share confirmation, open profile -> open latest reel tile -> capture URL.
+    const openedLatestUrl = await openLatestInstagramPostAndCaptureUrl(page, username, {
+      settleMs: INSTAGRAM_QUICK_PROFILE_LOAD_WAIT_MS,
+      afterClickMs: 900,
+      captureTimeoutMs: 3500,
+    });
     if (openedLatestUrl && !baselineSet.has(openedLatestUrl)) {
       return openedLatestUrl;
+    }
+
+    // Quick profile-grid poll for a newly appeared reel/post.
+    const quickRecentUrls = await fetchRecentInstagramPostUrlsQuick(page, username, 8);
+    const quickNewUrl = quickRecentUrls.find((url) => url && !baselineSet.has(url)) || '';
+    if (quickNewUrl) {
+      return quickNewUrl;
+    }
+
+    // Periodic deep fallback in case quick DOM sampling misses a delayed grid refresh.
+    if (attempt % 4 === 0) {
+      const deepRecentUrls = await fetchRecentInstagramPostUrlsFromProfile(page, username, 1, 8);
+      const deepNewUrl = deepRecentUrls.find((url) => url && !baselineSet.has(url)) || '';
+      if (deepNewUrl) {
+        return deepNewUrl;
+      }
     }
 
     console.log(`[Instagram] Waiting for new published post URL on profile... (${attempt}/${attempts})`);
@@ -1036,80 +1167,9 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       });
     }
     
-    // Wait for Instagram to process and share the post.
-    // Poll for the success-dialog URL frequently right after clicking Share — Instagram's
-    // "Your reel has been shared" confirmation screen can close/redirect within 2-3 seconds.
-    console.log('[Instagram] Waiting for share to complete...');
-    let postUrl = '';
-
-    // High-frequency poll for the first 15 seconds to catch the success dialog URL
-    // before Instagram auto-redirects to the feed.
-    for (let quickPoll = 0; quickPoll < 30; quickPoll++) {
-      await page.waitForTimeout(500);
-      if (!postUrl) {
-        postUrl = await extractInstagramPostUrl(page);
-      }
-      const quickState = await page.evaluate(() => {
-        const text = (document.body?.innerText || '').toLowerCase();
-        const url = window.location.href;
-        const isShared =
-          text.includes('your reel has been shared') ||
-          text.includes('your post has been shared') ||
-          text.includes('post shared') ||
-          text.includes('reel shared') ||
-          text.includes('your video has been shared') ||
-          text.includes('shared successfully');
-        const redirectedToFeed = url === 'https://www.instagram.com/';
-        return { isShared, redirectedToFeed };
-      }).catch(() => ({ isShared: false, redirectedToFeed: false }));
-
-      if (quickState.isShared) {
-        postUrl = postUrl || await extractInstagramPostUrl(page);
-        console.log(`[Instagram] Post shared! (${((quickPoll + 1) * 0.5).toFixed(1)}s)`);
-        break;
-      }
-      if (quickState.redirectedToFeed) {
-        console.log(`[Instagram] Redirected to feed after share (${((quickPoll + 1) * 0.5).toFixed(1)}s), waiting for profile URL...`);
-      }
-    }
-
-    // If still processing, continue polling up to 120 additional seconds (5s intervals)
-    if (!postUrl) {
-      let shareWaitAttempts = 0;
-      while (shareWaitAttempts++ < 24) {
-        if (!postUrl) {
-          postUrl = await extractInstagramPostUrl(page);
-        }
-
-        const shareState = await page.evaluate(() => {
-          const text = (document.body?.innerText || '').toLowerCase();
-          const url = window.location.href;
-          const isSharing = text.includes('sharing...') || text.includes('processing') || text.includes('posting');
-          const isShared =
-            text.includes('your reel has been shared') ||
-            text.includes('your post has been shared') ||
-            text.includes('post shared') ||
-            text.includes('reel shared') ||
-            text.includes('your video has been shared') ||
-            text.includes('shared successfully');
-          const redirectedToFeed = url === 'https://www.instagram.com/';
-          return { isSharing, isShared, redirectedToFeed };
-        }).catch(() => ({ isSharing: false, isShared: false, redirectedToFeed: false }));
-
-        if (shareState.isShared) {
-          postUrl = postUrl || await extractInstagramPostUrl(page);
-          console.log(`[Instagram] Post shared! (${shareWaitAttempts * 5}s)`);
-          break;
-        }
-        if (shareState.redirectedToFeed) {
-          console.log(`[Instagram] On feed after share (${shareWaitAttempts * 5}s), waiting for profile URL...`);
-        }
-        if (shareState.isSharing) {
-          console.log(`[Instagram] Still sharing... (${shareWaitAttempts * 5}s)`);
-        }
-        await page.waitForTimeout(5000);
-      }
-    }
+    // Wait for Instagram share animation to finish, then immediately hand off to profile capture.
+    console.log('[Instagram] Waiting for share animation/result to finish...');
+    let postUrl = await extractInstagramPostUrl(page);
 
     const sharingWait = await waitForInstagramSharingToFinish(page, INSTAGRAM_SHARE_PROCESSING_MAX_WAIT_MS);
     if (!sharingWait.finished) {
@@ -1118,13 +1178,21 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       console.log(`[Instagram] Share-processing completed: ${sharingWait.reason}`);
     }
 
+    postUrl = postUrl || await extractInstagramPostUrl(page);
+
     // ===== PHASE 7: CHECK COMPLETION AND EXTRACT URL =====
     let completion = await assessInstagramCompletion(page);
 
-    // Wait longer if still processing
+    // If explicit success text wasn't detected but share-processing phase already completed,
+    // proceed to profile verification instead of waiting a long extra window on this screen.
+    if (!completion.success && sharingWait.finished) {
+      completion = { success: true, needsHuman: false, reason: sharingWait.reason };
+    }
+
+    // Only do short retries when we still suspect upload is processing.
     if (!completion.success && !completion.needsHuman) {
-      for (let i = 0; i < 10; i++) {
-        await page.waitForTimeout(5000);
+      for (let i = 0; i < 3; i++) {
+        await page.waitForTimeout(3000);
         completion = await assessInstagramCompletion(page);
         postUrl = postUrl || await extractInstagramPostUrl(page);
         if (completion.success) break;
