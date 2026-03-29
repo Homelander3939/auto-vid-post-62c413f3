@@ -906,12 +906,10 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     if (!fileUploaded) throw new Error('Instagram upload dialog not found. Try creating a post manually first to verify your session.');
 
     console.log('[Instagram] Video file set, waiting for upload dialog to render...');
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(3000);
 
-    // Wait for the upload dialog/modal to appear and transition past the file-select state.
-    // Instagram shows a popup with a "Next" button at the top of the dialog (not a page scroll).
-    // We must click within the dialog — NOT scroll the background page.
-    const dialogAppeared = await page.waitForSelector('[role="dialog"], [aria-label*="create" i], [aria-label*="post" i]', { timeout: 15000 })
+    // Wait for the upload dialog/modal to appear
+    const dialogAppeared = await page.waitForSelector('[role="dialog"], [aria-label*="create" i], [aria-label*="post" i]', { timeout: 10000 })
       .then(() => true).catch(() => false);
     if (dialogAppeared) {
       console.log('[Instagram] Upload dialog detected');
@@ -919,110 +917,60 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       console.log('[Instagram] Dialog not detected by selector, proceeding anyway');
     }
 
-    // Use LLM vision to understand the current dialog state
-    try {
-      const dialogCheck = await analyzePage(page,
-        'Instagram post creation: A dialog/popup is visible. Describe what step we are on (crop, filter, caption, or file select). Is there a "Next" button visible at the top of the dialog?');
-      console.log(`[Instagram] Dialog state check: ${dialogCheck?.description || 'no response'}`);
-    } catch (e) {
-      console.warn('[Instagram] Dialog vision check failed (non-fatal):', e.message);
-    }
-
     // ===== PHASE 3.5: SELECT PORTRAIT (9:16) ASPECT RATIO ON CROP SCREEN =====
     // Instagram defaults to square crop — we need to select Original or 9:16 for Reels
     console.log('[Instagram] Selecting portrait/original aspect ratio for Reels...');
     try {
-      // Click the aspect-ratio (resize) button in the crop dialog — it's typically in the bottom-left
-      const aspectBtnClicked = await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"]') || document;
-        // Instagram uses an SVG button with aria-label like "Select crop" or a resize icon
-        const candidates = Array.from(dialog.querySelectorAll('button, div[role="button"], span[role="button"]'));
-        for (const btn of candidates) {
-          const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-          const svg = btn.querySelector('svg');
-          const svgLabel = svg ? (svg.getAttribute('aria-label') || '').toLowerCase() : '';
-          if (label.includes('crop') || label.includes('aspect') || label.includes('resize') ||
-              label.includes('select crop') || label.includes('ratio') ||
-              svgLabel.includes('crop') || svgLabel.includes('aspect') || svgLabel.includes('resize') ||
-              svgLabel.includes('select crop')) {
-            btn.click();
-            return true;
-          }
-        }
-        // Fallback: look for the resize/aspect icon by SVG viewBox pattern (Instagram's crop icon)
-        const svgs = Array.from(dialog.querySelectorAll('svg'));
-        for (const svg of svgs) {
-          const parent = svg.closest('button, div[role="button"], span');
-          if (!parent) continue;
-          const rect = parent.getBoundingClientRect();
-          // The crop/aspect button is typically in the bottom-left area of the dialog
-          if (rect.width > 10 && rect.width < 80 && rect.height > 10 && rect.height < 80 && rect.bottom > 400) {
-            parent.click();
-            return true;
-          }
-        }
-        return false;
-      }).catch(() => false);
-
-      if (aspectBtnClicked) {
-        await page.waitForTimeout(1000);
-        // Now select "Original" or "9:16" from the aspect ratio options
-        const ratioSelected = await page.evaluate(() => {
-          const dialog = document.querySelector('[role="dialog"]') || document;
-          const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"], span[role="button"]'));
-          // Priority: "Original" keeps the video's native aspect ratio (best for vertical videos)
-          // Then try "9:16" explicitly
-          for (const btn of buttons) {
-            const text = (btn.textContent || '').trim().toLowerCase();
-            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-            if (text === 'original' || label === 'original' || text.includes('original')) {
-              btn.click();
-              return 'original';
-            }
-          }
-          for (const btn of buttons) {
-            const text = (btn.textContent || '').trim().toLowerCase();
-            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-            if (text.includes('9:16') || label.includes('9:16')) {
-              btn.click();
-              return '9:16';
-            }
-          }
-          // Try "4:5" as a fallback (tall portrait, common for Reels)
-          for (const btn of buttons) {
-            const text = (btn.textContent || '').trim().toLowerCase();
-            if (text.includes('4:5')) {
-              btn.click();
-              return '4:5';
-            }
-          }
-          return '';
-        }).catch(() => '');
-
-        if (ratioSelected) {
-          console.log(`[Instagram] Selected aspect ratio: ${ratioSelected}`);
-        } else {
-          console.log('[Instagram] Could not find aspect ratio option, trying agent...');
-          try {
-            await runAgentTask(page,
-              'In the Instagram crop dialog, click the aspect ratio / resize button (bottom-left of the image preview), then select "Original" or "9:16" to keep the full vertical video frame. Do NOT scroll the background page.',
-              { maxSteps: 6, stepDelayMs: 600, useVision: true });
-          } catch (e) {
-            console.warn('[Instagram] Agent aspect ratio selection failed:', e.message);
-          }
-        }
-        await page.waitForTimeout(1000);
+      // Strategy 1: Use the agent with vision immediately — it's the most reliable way
+      // to find Instagram's crop/aspect ratio controls which change frequently
+      const agentResult = await runAgentTask(page,
+        'In the Instagram "Create new post" dialog that is currently open, there is a crop/resize icon button in the BOTTOM-LEFT corner of the image preview area. Click that icon to open aspect ratio options. Then from the options that appear, click "Original" to keep the full vertical video frame. If "Original" is not available, click "9:16". Do NOT click "Next" yet. Do NOT scroll the page background — only interact within the dialog.',
+        { maxSteps: 4, stepDelayMs: 400, useVision: true });
+      
+      if (agentResult.success) {
+        console.log('[Instagram] Agent selected aspect ratio successfully');
       } else {
-        console.log('[Instagram] Aspect ratio button not found, trying agent...');
-        try {
-          await runAgentTask(page,
-            'In the Instagram post creation crop dialog, find and click the aspect ratio / resize button (usually bottom-left corner with a crop/frame icon), then select "Original" or "9:16" from the options that appear. Do NOT scroll the background.',
-            { maxSteps: 6, stepDelayMs: 600, useVision: true });
-        } catch (e) {
-          console.warn('[Instagram] Agent crop button failed:', e.message);
+        console.log('[Instagram] Agent aspect ratio selection did not confirm success, trying DOM fallback...');
+        // DOM fallback: try clicking aspect ratio buttons directly
+        const aspectBtnClicked = await page.evaluate(() => {
+          const dialog = document.querySelector('[role="dialog"]') || document;
+          const candidates = Array.from(dialog.querySelectorAll('button, div[role="button"], span[role="button"]'));
+          for (const btn of candidates) {
+            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+            const svg = btn.querySelector('svg');
+            const svgLabel = svg ? (svg.getAttribute('aria-label') || '').toLowerCase() : '';
+            if (label.includes('crop') || label.includes('aspect') || label.includes('resize') ||
+                label.includes('select crop') || label.includes('ratio') ||
+                svgLabel.includes('crop') || svgLabel.includes('aspect') || svgLabel.includes('resize') ||
+                svgLabel.includes('select crop')) {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        }).catch(() => false);
+
+        if (aspectBtnClicked) {
+          await page.waitForTimeout(800);
+          await page.evaluate(() => {
+            const dialog = document.querySelector('[role="dialog"]') || document;
+            const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"], span[role="button"]'));
+            for (const btn of buttons) {
+              const text = (btn.textContent || '').trim().toLowerCase();
+              const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+              if (text === 'original' || label === 'original' || text.includes('original')) {
+                btn.click(); return 'original';
+              }
+            }
+            for (const btn of buttons) {
+              const text = (btn.textContent || '').trim().toLowerCase();
+              if (text.includes('9:16')) { btn.click(); return '9:16'; }
+            }
+            return '';
+          }).catch(() => '');
         }
-        await page.waitForTimeout(1000);
       }
+      await page.waitForTimeout(800);
     } catch (e) {
       console.warn('[Instagram] Aspect ratio selection failed (non-fatal, will use default):', e.message);
     }

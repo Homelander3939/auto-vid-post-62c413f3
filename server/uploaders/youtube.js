@@ -949,8 +949,15 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       }
     }
 
-    if (metadata?.description) {
-      console.log('[YouTube] Setting description...');
+    if (metadata?.description || (metadata?.tags && metadata.tags.length > 0)) {
+      // Build full description: description text + hashtags from tags
+      const descParts = [];
+      if (metadata.description) descParts.push(metadata.description);
+      if (metadata.tags && metadata.tags.length > 0) {
+        descParts.push(metadata.tags.map(t => t.startsWith('#') ? t : '#' + t).join(' '));
+      }
+      const fullDescription = descParts.join('\n\n');
+      console.log(`[YouTube] Setting description (${fullDescription.length} chars)...`);
       await page.evaluate((desc) => {
         const textboxes = document.querySelectorAll('#textbox');
         if (textboxes.length > 1) {
@@ -961,7 +968,58 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
           return true;
         }
         return false;
-      }, metadata.description);
+      }, fullDescription);
+    }
+    // Try to expand "Show more" to access the Tags field
+    if (metadata?.tags && metadata.tags.length > 0) {
+      try {
+        // Click "Show more" / "SHOW MORE" to reveal extra fields
+        const expanded = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button, ytcp-button, [role="button"]'));
+          for (const btn of buttons) {
+            const text = (btn.textContent || '').toLowerCase().trim();
+            if (text === 'show more' || text.includes('show more')) {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        if (expanded) {
+          await page.waitForTimeout(1500);
+          // Find the Tags input and fill it
+          const tagString = metadata.tags.map(t => t.replace(/^#/, '')).join(', ');
+          const tagsFilled = await page.evaluate((tags) => {
+            // YouTube tags input usually has placeholder "Add tag" or aria-label containing "Tags"
+            const inputs = document.querySelectorAll('input[placeholder*="tag" i], input[aria-label*="tag" i], #tags-container input');
+            for (const input of inputs) {
+              if (input.offsetHeight === 0) continue;
+              input.focus();
+              input.click();
+              input.value = tags;
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            }
+            // Try textbox approach
+            const textboxes = document.querySelectorAll('#chip-bar input, #tags-textbox input, [aria-label*="Tags" i] input');
+            for (const tb of textboxes) {
+              if (tb.offsetHeight === 0) continue;
+              tb.focus();
+              tb.value = tags;
+              tb.dispatchEvent(new Event('input', { bubbles: true }));
+              return true;
+            }
+            return false;
+          }, tagString);
+          if (tagsFilled) {
+            console.log(`[YouTube] Tags filled: ${tagString.slice(0, 100)}`);
+            await page.keyboard.press('Enter').catch(() => {});
+          }
+        }
+      } catch (e) {
+        console.warn('[YouTube] Tags fill failed (non-fatal):', e.message);
+      }
     }
     await page.waitForTimeout(2000);
 
