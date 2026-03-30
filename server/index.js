@@ -538,28 +538,12 @@ async function processRecurringSchedule() {
 
         console.log(`[Recurring] Schedule ${config.id} (${config.name}) matched at ${now.toISOString()}, scanning: ${folderPath}`);
 
-        const { videoFile, textFile } = scanFolder(folderPath);
-        if (!videoFile) {
-          console.log(`[Recurring] No video found in ${folderPath}`);
-          await notifyTelegram(settings, `⚠️ Schedule "${config.name}": no video found in ${folderPath}`);
+        // Scan ALL files in folder, matched by name
+        const allPairs = scanAllFiles(folderPath);
+        if (allPairs.length === 0) {
+          console.log(`[Recurring] No videos found in ${folderPath}`);
+          await notifyTelegram(settings, `⚠️ Schedule "${config.name}": no videos found in ${folderPath}`);
           continue;
-        }
-
-        let title, description, tags;
-
-        if (textFile) {
-          const meta = parseTextFile(path.join(folderPath, textFile));
-          title = meta.title || videoFile;
-          description = meta.description || '';
-          tags = meta.tags?.length ? meta.tags : [];
-        }
-
-        // Auto-generate metadata from filename if no .txt or empty metadata
-        if (!title || !description || !tags?.length) {
-          const generated = generateMetadataFromFilename(videoFile);
-          if (!title) title = generated.title;
-          if (!description) description = generated.description;
-          if (!tags?.length) tags = generated.tags;
         }
 
         const requestedPlatforms = Array.isArray(config.platforms) && config.platforms.length
@@ -573,30 +557,76 @@ async function processRecurringSchedule() {
           continue;
         }
 
-        const platformResults = platforms.map(name => ({ name, status: 'pending' }));
+        const intervalMinutes = config.upload_interval_minutes || 60;
+        console.log(`[Recurring] Found ${allPairs.length} videos, uploading with ${intervalMinutes}min interval`);
 
-        const { data: job, error } = await supabase
-          .from('upload_jobs')
-          .insert({
-            video_file_name: videoFile,
-            video_storage_path: null,
-            title,
-            description,
-            tags,
-            target_platforms: platforms,
-            status: 'pending',
-            platform_results: platformResults,
-          })
-          .select()
-          .single();
+        // Process first video immediately, schedule rest with intensity spacing
+        for (let i = 0; i < allPairs.length; i++) {
+          const pair = allPairs[i];
+          let title, description, tags;
 
-        if (error || !job) {
-          console.error(`[Recurring] Failed to create job for schedule ${config.id}:`, error);
-          continue;
+          if (pair.textFile) {
+            const meta = parseTextFile(path.join(folderPath, pair.textFile));
+            title = meta.title || pair.videoFile;
+            description = meta.description || '';
+            tags = meta.tags?.length ? meta.tags : [];
+          }
+
+          // Auto-generate metadata from filename if no .txt or empty metadata
+          if (!title || !description || !tags?.length) {
+            const generated = generateMetadataFromFilename(pair.videoFile);
+            if (!title) title = generated.title;
+            if (!description) description = generated.description;
+            if (!tags?.length) tags = generated.tags;
+          }
+
+          const platformResults = platforms.map(name => ({ name, status: 'pending' }));
+
+          if (i === 0) {
+            // First video: create job and process immediately
+            const { data: job, error } = await supabase
+              .from('upload_jobs')
+              .insert({
+                video_file_name: pair.videoFile,
+                video_storage_path: null,
+                title, description, tags,
+                target_platforms: platforms,
+                status: 'pending',
+                platform_results: platformResults,
+              })
+              .select()
+              .single();
+
+            if (error || !job) {
+              console.error(`[Recurring] Failed to create job for ${pair.videoFile}:`, error);
+              continue;
+            }
+
+            console.log(`[Recurring] Created immediate job ${job.id} for ${pair.videoFile}`);
+            await processJob(job.id, { folderPath });
+          } else {
+            // Subsequent videos: create scheduled uploads with spacing
+            const scheduledAt = new Date(now.getTime() + i * intervalMinutes * 60_000).toISOString();
+            const { error } = await supabase
+              .from('scheduled_uploads')
+              .insert({
+                video_file_name: pair.videoFile,
+                video_storage_path: null,
+                title, description, tags,
+                target_platforms: platforms,
+                scheduled_at: scheduledAt,
+                status: 'scheduled',
+              });
+
+            if (error) {
+              console.error(`[Recurring] Failed to schedule ${pair.videoFile}:`, error);
+            } else {
+              console.log(`[Recurring] Scheduled ${pair.videoFile} for ${scheduledAt}`);
+            }
+          }
         }
 
-        console.log(`[Recurring] Created job ${job.id} for ${videoFile} (schedule: ${config.name})`);
-        await processJob(job.id, { folderPath });
+        await notifyTelegram(settings, `📋 Schedule "${config.name}": ${allPairs.length} video(s) queued (1 now, ${allPairs.length - 1} scheduled every ${intervalMinutes}min)`);
       } catch (e) {
         console.error(`[Recurring] Error processing schedule ${config.id}:`, e.message);
       }
