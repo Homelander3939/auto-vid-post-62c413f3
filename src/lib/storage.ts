@@ -318,6 +318,7 @@ export async function getSchedules(): Promise<ScheduleConfig[]> {
     platforms: row.platforms,
     folderPath: row.folder_path || '',
     endAt: row.end_at || null,
+    uploadIntervalMinutes: row.upload_interval_minutes || 60,
   }));
 }
 
