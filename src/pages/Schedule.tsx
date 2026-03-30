@@ -69,6 +69,7 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   const [name, setName] = useState(config.name);
   const [enabled, setEnabled] = useState(config.enabled);
   const [folderPath, setFolderPath] = useState(config.folderPath);
+  const [uploadIntervalMinutes, setUploadIntervalMinutes] = useState(config.uploadIntervalMinutes || 60);
   const [platforms, setPlatforms] = useState(config.platforms);
   const [endAt, setEndAt] = useState(config.endAt);
 
