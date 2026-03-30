@@ -492,10 +492,11 @@ export default function CampaignScheduler() {
                 ref={textInputRef}
                 type="file"
                 accept=".txt,text/plain"
+                multiple
                 className="hidden"
                 onChange={handleTextSelect}
               />
-              {textFileName ? (
+              {textFileName && !isMultiFile ? (
                 <Badge variant="secondary" className="gap-1 text-xs">
                   <FileText className="w-3 h-3" />
                   {textFileName}
@@ -512,11 +513,10 @@ export default function CampaignScheduler() {
                   onClick={() => textInputRef.current?.click()}
                 >
                   <FileText className="w-3.5 h-3.5" />
-                  Import from .txt
+                  {isMultiFile ? 'Import matching .txt files' : 'Import from .txt'}
                 </Button>
               )}
             </div>
-          </div>
 
           {/* Platforms */}
           <div>
