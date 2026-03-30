@@ -1055,13 +1055,13 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       await page.waitForTimeout(2000);
     }
 
-    if (metadata?.title || metadata?.description) {
+    if (metadata?.title || metadata?.description || (metadata?.tags && metadata.tags.length > 0)) {
       const captionParts = [];
       if (metadata.title) captionParts.push(metadata.title);
       if (metadata.description) captionParts.push(metadata.description);
-      if (metadata.tags?.length) captionParts.push(metadata.tags.map(t => '#' + t).join(' '));
+      if (metadata.tags?.length) captionParts.push(metadata.tags.map(t => t.startsWith('#') ? t : '#' + t).join(' '));
       const caption = captionParts.join('\n\n').trim();
-      console.log(`[Instagram] Setting caption (${caption.length} chars)...`);
+      console.log(`[Instagram] Caption to fill (${caption.length} chars): ${caption.slice(0, 200)}...`);
       
       let captionFilled = false;
 

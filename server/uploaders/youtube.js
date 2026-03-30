@@ -957,7 +957,7 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
         descParts.push(metadata.tags.map(t => t.startsWith('#') ? t : '#' + t).join(' '));
       }
       const fullDescription = descParts.join('\n\n');
-      console.log(`[YouTube] Setting description (${fullDescription.length} chars)...`);
+      console.log(`[YouTube] Description to fill (${fullDescription.length} chars): ${fullDescription.slice(0, 200)}...`);
       await page.evaluate((desc) => {
         const textboxes = document.querySelectorAll('#textbox');
         if (textboxes.length > 1) {

@@ -206,6 +206,7 @@ async function processJob(jobId, options = {}) {
     }
 
     const metadata = { title: resolvedTitle, description: resolvedDescription, tags: resolvedTags };
+    console.log(`[Worker] Job ${jobId} metadata — title: "${metadata.title}", desc: "${(metadata.description || '').slice(0, 80)}", tags: [${(metadata.tags || []).join(', ')}]`);
     await supabase.from('upload_jobs').update({ status: 'uploading', platform_results: results }).eq('id', jobId);
 
     for (const platform of results) {
