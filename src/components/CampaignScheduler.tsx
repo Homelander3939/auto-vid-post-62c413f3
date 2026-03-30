@@ -12,6 +12,7 @@ import {
   type VideoMetadata,
   type ScheduledUpload,
 } from '@/lib/storage';
+import { cleanVideoTitle, matchVideoTextFiles, INTENSITY_OPTIONS } from '@/lib/titleUtils';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
@@ -20,6 +21,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   FileVideo,
   FileText,
@@ -67,6 +69,7 @@ export default function CampaignScheduler() {
 
   // Current entry fields
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoFiles, setVideoFiles] = useState<File[]>([]);
   const [folderPath, setFolderPath] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -74,6 +77,9 @@ export default function CampaignScheduler() {
   const [textFileName, setTextFileName] = useState<string | null>(null);
   const [platforms, setPlatforms] = useState<string[]>(['youtube', 'tiktok', 'instagram']);
   const [scheduledAt, setScheduledAt] = useState('');
+  const [intensityMinutes, setIntensityMinutes] = useState(60);
+
+  const isMultiFile = videoFiles.length > 1;
 
   // Load current upload mode
   useEffect(() => {
@@ -87,17 +93,77 @@ export default function CampaignScheduler() {
   });
 
   const handleVideoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setVideoFile(file);
-    if (!title) {
-      setTitle(file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    if (files.length === 1) {
+      setVideoFile(files[0]);
+      setVideoFiles([]);
+      if (!title) {
+        setTitle(cleanVideoTitle(files[0].name));
+      }
+    } else {
+      setVideoFile(null);
+      setVideoFiles(files);
+      setTitle('');
+      setDescription('');
+      setTagsInput('');
+      setTextFileName(null);
+      toast({ title: `${files.length} videos selected`, description: 'Select matching .txt files for metadata' });
     }
   };
 
   const handleTextSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    if (isMultiFile) {
+      // Match text files to video files by name stem — stored for later use in addEntry
+      const textMap = new Map<string, File>();
+      for (const tf of files) {
+        const stem = tf.name.replace(/\.[^.]+$/, '').toLowerCase();
+        textMap.set(stem, tf);
+      }
+      // Store matched text files on videoFiles state indirectly via a ref or separate state
+      // For simplicity we'll process and build entries immediately
+      const matched = matchVideoTextFiles(videoFiles, files);
+      const newEntries: ScheduleEntry[] = [];
+      const baseTime = scheduledAt ? new Date(scheduledAt).getTime() : Date.now() + 5 * 60_000;
+
+      for (let i = 0; i < matched.length; i++) {
+        const { video, textFile } = matched[i];
+        let entryTitle = cleanVideoTitle(video.name);
+        let entryDesc = '';
+        let entryTags: string[] = [];
+
+        if (textFile) {
+          const text = await textFile.text();
+          const parsed = parseTextContent(text);
+          if (parsed.title) entryTitle = parsed.title;
+          if (parsed.description) entryDesc = parsed.description;
+          if (parsed.tags?.length) entryTags = parsed.tags;
+        }
+
+        newEntries.push({
+          videoFile: video,
+          title: entryTitle,
+          description: entryDesc,
+          tags: entryTags,
+          scheduledAt: new Date(baseTime + i * intensityMinutes * 60_000).toISOString().slice(0, 16),
+          platforms: [...platforms],
+        });
+      }
+
+      setEntries(prev => [...prev, ...newEntries]);
+      setVideoFiles([]);
+      setVideoFile(null);
+      if (videoInputRef.current) videoInputRef.current.value = '';
+      toast({ title: `${newEntries.length} entries added to campaign` });
+      return;
+    }
+
+    // Single text file import
+    const file = files[0];
     try {
       const text = await file.text();
       const parsed = parseTextContent(text);
@@ -125,9 +191,29 @@ export default function CampaignScheduler() {
 
   const canAdd = sourceMode === 'folder'
     ? folderPath.trim().length > 0 && scheduledAt
-    : !!videoFile && title.trim().length > 0 && scheduledAt;
+    : (!!videoFile || isMultiFile) && (isMultiFile || title.trim().length > 0) && scheduledAt;
 
   const addEntry = () => {
+    if (isMultiFile) {
+      // For multi-file without text files, create entries with auto titles
+      const baseTime = scheduledAt ? new Date(scheduledAt).getTime() : Date.now() + 5 * 60_000;
+      const newEntries: ScheduleEntry[] = videoFiles.map((video, i) => ({
+        videoFile: video,
+        title: cleanVideoTitle(video.name),
+        description: '',
+        tags: [],
+        scheduledAt: new Date(baseTime + i * intensityMinutes * 60_000).toISOString().slice(0, 16),
+        platforms: [...platforms],
+      }));
+      setEntries(prev => [...prev, ...newEntries]);
+      setVideoFiles([]);
+      setVideoFile(null);
+      setScheduledAt('');
+      if (videoInputRef.current) videoInputRef.current.value = '';
+      toast({ title: `${newEntries.length} entries added` });
+      return;
+    }
+
     if (!canAdd) {
       toast({ title: 'Fill in required fields', variant: 'destructive' });
       return;
@@ -148,6 +234,7 @@ export default function CampaignScheduler() {
 
     // Reset form
     setVideoFile(null);
+    setVideoFiles([]);
     setFolderPath('');
     setTitle('');
     setDescription('');
@@ -293,6 +380,7 @@ export default function CampaignScheduler() {
                 ref={videoInputRef}
                 type="file"
                 accept="video/*,.mp4,.mov,.avi,.mkv,.webm"
+                multiple
                 className="hidden"
                 onChange={handleVideoSelect}
               />
@@ -300,10 +388,16 @@ export default function CampaignScheduler() {
                 type="button"
                 onClick={() => videoInputRef.current?.click()}
                 className={`w-full flex flex-col items-center gap-2 rounded-lg border-2 border-dashed p-5 text-center transition-all hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98] ${
-                  videoFile ? 'border-primary/50 bg-primary/5' : 'border-border'
+                  (videoFile || isMultiFile) ? 'border-primary/50 bg-primary/5' : 'border-border'
                 }`}
               >
-                {videoFile ? (
+                {isMultiFile ? (
+                  <>
+                    <CheckCircle2 className="w-5 h-5 text-primary" />
+                    <span className="text-xs font-medium">{videoFiles.length} videos selected</span>
+                    <span className="text-[10px] text-muted-foreground">Select .txt files below to auto-fill metadata</span>
+                  </>
+                ) : videoFile ? (
                   <>
                     <CheckCircle2 className="w-5 h-5 text-primary" />
                     <span className="text-xs font-medium truncate max-w-full">{videoFile.name}</span>
@@ -311,10 +405,31 @@ export default function CampaignScheduler() {
                 ) : (
                   <>
                     <FileVideo className="w-5 h-5 text-muted-foreground" />
-                    <span className="text-xs font-medium">Select Video</span>
+                    <span className="text-xs font-medium">Select Video(s)</span>
+                    <span className="text-[10px] text-muted-foreground">Select multiple for batch scheduling</span>
                   </>
                 )}
               </button>
+
+              {/* Multi-file intensity selector */}
+              {isMultiFile && (
+                <div className="space-y-2">
+                  <Label className="text-xs flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5" /> Upload Intensity
+                  </Label>
+                  <Select value={String(intensityMinutes)} onValueChange={v => setIntensityMinutes(Number(v))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {INTENSITY_OPTIONS.map(opt => (
+                        <SelectItem key={opt.value} value={String(opt.value)}>{opt.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Videos will be spaced {intensityMinutes} minutes apart starting from the scheduled time.
+                  </p>
+                </div>
+              )}
             </>
           )}
 
@@ -329,16 +444,17 @@ export default function CampaignScheduler() {
                 className="font-mono text-xs"
               />
               <p className="text-xs text-muted-foreground">
-                System will auto-pick the latest video + matching .txt file from this folder at scheduled time.
+                System will process ALL videos in folder with matching .txt files, uploading 1-by-1 with chosen intensity.
               </p>
             </div>
           )}
 
-          {/* Metadata fields */}
+          {/* Metadata fields — hide when multi-file since each has its own */}
+          {!isMultiFile && (
           <div className="space-y-3">
             <div className="space-y-1.5">
               <Label htmlFor="camp-title" className="text-xs">
-                Title {sourceMode === 'file' && <span className="text-destructive">*</span>}
+                Title {sourceMode === 'file' && !isMultiFile && <span className="text-destructive">*</span>}
                 {sourceMode === 'folder' && <span className="text-muted-foreground">(optional, auto from .txt)</span>}
               </Label>
               <Input
@@ -367,6 +483,8 @@ export default function CampaignScheduler() {
                 placeholder="tag1, tag2, tag3"
               />
             </div>
+          </div>
+          )}
 
             {/* Optional txt import */}
             <div className="flex items-center gap-2">
@@ -374,10 +492,11 @@ export default function CampaignScheduler() {
                 ref={textInputRef}
                 type="file"
                 accept=".txt,text/plain"
+                multiple
                 className="hidden"
                 onChange={handleTextSelect}
               />
-              {textFileName ? (
+              {textFileName && !isMultiFile ? (
                 <Badge variant="secondary" className="gap-1 text-xs">
                   <FileText className="w-3 h-3" />
                   {textFileName}
@@ -394,11 +513,10 @@ export default function CampaignScheduler() {
                   onClick={() => textInputRef.current?.click()}
                 >
                   <FileText className="w-3.5 h-3.5" />
-                  Import from .txt
+                  {isMultiFile ? 'Import matching .txt files' : 'Import from .txt'}
                 </Button>
               )}
             </div>
-          </div>
 
           {/* Platforms */}
           <div>

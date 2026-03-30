@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getSchedules, saveSchedule, deleteScheduleConfig, getScheduledUploads, deleteScheduledUpload, type ScheduleConfig, type ScheduledUpload } from '@/lib/storage';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { INTENSITY_OPTIONS } from '@/lib/titleUtils';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -68,6 +69,7 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   const [name, setName] = useState(config.name);
   const [enabled, setEnabled] = useState(config.enabled);
   const [folderPath, setFolderPath] = useState(config.folderPath);
+  const [uploadIntervalMinutes, setUploadIntervalMinutes] = useState(config.uploadIntervalMinutes || 60);
   const [platforms, setPlatforms] = useState(config.platforms);
   const [endAt, setEndAt] = useState(config.endAt);
 
@@ -91,7 +93,7 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   }, [useDuration, durationAmount, durationUnit]);
 
   const handleSave = () => {
-    onSave({ ...config, name, enabled, cronExpression, platforms, folderPath, endAt });
+    onSave({ ...config, name, enabled, cronExpression, platforms, folderPath, endAt, uploadIntervalMinutes });
   };
 
   const togglePlatform = (p: string) => setPlatforms(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
@@ -195,7 +197,21 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
             <div className="space-y-1.5">
               <Label className="text-xs flex items-center gap-1.5"><FolderOpen className="w-3.5 h-3.5" /> Source Folder</Label>
               <Input value={folderPath} onChange={e => setFolderPath(e.target.value)} placeholder="D:\AI Video" className="font-mono text-xs" />
-              <p className="text-xs text-muted-foreground">Picks latest video + .txt automatically. If no .txt, metadata is generated from filename.</p>
+              <p className="text-xs text-muted-foreground">Processes ALL videos in folder with matching .txt files, uploading 1-by-1.</p>
+            </div>
+
+            {/* Upload Intensity */}
+            <div className="space-y-2">
+              <Label className="text-xs flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" /> Upload Intensity</Label>
+              <Select value={String(uploadIntervalMinutes)} onValueChange={v => setUploadIntervalMinutes(Number(v))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {INTENSITY_OPTIONS.map(opt => (
+                    <SelectItem key={opt.value} value={String(opt.value)}>{opt.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Time between each video upload when multiple videos are found.</p>
             </div>
 
             {/* Duration */}
@@ -314,6 +330,7 @@ export default function Schedule() {
       platforms: ['youtube'],
       folderPath: '',
       endAt: null,
+      uploadIntervalMinutes: 60,
     }]);
   };
 

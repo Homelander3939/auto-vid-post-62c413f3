@@ -55,6 +55,7 @@ export interface ScheduleConfig {
   platforms: string[];
   folderPath: string;
   endAt: string | null;
+  uploadIntervalMinutes: number;
 }
 
 export interface ScheduledUpload {
@@ -317,13 +318,14 @@ export async function getSchedules(): Promise<ScheduleConfig[]> {
     platforms: row.platforms,
     folderPath: row.folder_path || '',
     endAt: row.end_at || null,
+    uploadIntervalMinutes: row.upload_interval_minutes || 60,
   }));
 }
 
 // Keep backward compat
 export async function getSchedule(): Promise<ScheduleConfig> {
   const all = await getSchedules();
-  return all[0] || { name: 'Schedule', enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'], folderPath: '', endAt: null };
+  return all[0] || { name: 'Schedule', enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'], folderPath: '', endAt: null, uploadIntervalMinutes: 60 };
 }
 
 export async function saveSchedule(config: ScheduleConfig): Promise<ScheduleConfig> {
@@ -334,6 +336,7 @@ export async function saveSchedule(config: ScheduleConfig): Promise<ScheduleConf
     platforms: config.platforms,
     folder_path: config.folderPath,
     end_at: config.endAt,
+    upload_interval_minutes: config.uploadIntervalMinutes || 60,
   } as any;
 
   if (config.id) {

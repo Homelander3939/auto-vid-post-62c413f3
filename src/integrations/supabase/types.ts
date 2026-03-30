@@ -114,6 +114,7 @@ export type Database = {
           name: string
           platforms: string[]
           updated_at: string
+          upload_interval_minutes: number
         }
         Insert: {
           cron_expression?: string
@@ -124,6 +125,7 @@ export type Database = {
           name?: string
           platforms?: string[]
           updated_at?: string
+          upload_interval_minutes?: number
         }
         Update: {
           cron_expression?: string
@@ -134,6 +136,7 @@ export type Database = {
           name?: string
           platforms?: string[]
           updated_at?: string
+          upload_interval_minutes?: number
         }
         Relationships: []
       }

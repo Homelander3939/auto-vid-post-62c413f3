@@ -1,0 +1,1 @@
+ALTER TABLE public.schedule_config ADD COLUMN IF NOT EXISTS upload_interval_minutes integer NOT NULL DEFAULT 60;

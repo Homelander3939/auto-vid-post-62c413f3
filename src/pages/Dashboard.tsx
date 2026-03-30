@@ -2,12 +2,14 @@ import { useState, useRef, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createUploadJob,
+  createScheduledUpload,
   parseTextContent,
   uploadVideoFile,
   getSettings,
   type VideoMetadata,
   type AppSettings,
 } from '@/lib/storage';
+import { cleanVideoTitle, matchVideoTextFiles, INTENSITY_OPTIONS } from '@/lib/titleUtils';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -16,8 +18,9 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { FileVideo, FileText, UploadCloud, CheckCircle2, CalendarClock, Zap, X, AlertTriangle } from 'lucide-react';
+import { FileVideo, FileText, UploadCloud, CheckCircle2, CalendarClock, Zap, X, AlertTriangle, Clock } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import CampaignScheduler from '@/components/CampaignScheduler';
 
@@ -40,19 +43,35 @@ function getPlatformStatuses(settings: AppSettings | undefined): Record<string, 
   return { youtube: check('youtube'), tiktok: check('tiktok'), instagram: check('instagram') };
 }
 
+interface BatchEntry {
+  videoFile: File;
+  textFile?: File;
+  title: string;
+  description: string;
+  tags: string[];
+}
+
 export default function Dashboard() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [textContent, setTextContent] = useState<string | null>(null);
-  const [textFileName, setTextFileName] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState('');
   const videoInputRef = useRef<HTMLInputElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
+
+  // Single-file fields
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [textFileName, setTextFileName] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [tagsInput, setTagsInput] = useState('');
+
+  // Multi-file batch
+  const [batchEntries, setBatchEntries] = useState<BatchEntry[]>([]);
+  const [intensityMinutes, setIntensityMinutes] = useState(60);
+
+  const isMultiFile = batchEntries.length > 1;
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -61,7 +80,6 @@ export default function Dashboard() {
 
   const platformStatuses = getPlatformStatuses(settings);
 
-  // Auto-select only ready platforms on settings load
   useEffect(() => {
     if (!settings) return;
     const ready = Object.entries(platformStatuses)
@@ -71,49 +89,104 @@ export default function Dashboard() {
   }, [settings?.youtube.enabled, settings?.tiktok.enabled, settings?.instagram.enabled,
       settings?.youtube.email, settings?.tiktok.email, settings?.instagram.email]);
 
-  const handleVideoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setVideoFile(file);
-    if (!title) {
-      const name = file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
-      setTitle(name);
+  const handleVideoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    if (files.length === 1) {
+      // Single file mode
+      const file = files[0];
+      setVideoFile(file);
+      setBatchEntries([]);
+      if (!title) {
+        setTitle(cleanVideoTitle(file.name));
+      }
+      toast({ title: `Video selected: ${file.name}` });
+    } else {
+      // Multi-file mode: create batch entries, wait for text files
+      setVideoFile(null);
+      const entries: BatchEntry[] = files.map(f => ({
+        videoFile: f,
+        title: cleanVideoTitle(f.name),
+        description: '',
+        tags: [],
+      }));
+      setBatchEntries(entries);
+      setTitle('');
+      setDescription('');
+      setTagsInput('');
+      setTextFileName(null);
+      toast({ title: `${files.length} videos selected`, description: 'Now optionally select matching .txt files' });
     }
-    toast({ title: `Video selected: ${file.name}` });
   };
 
   const handleTextSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      setTextContent(text);
-      setTextFileName(file.name);
-      const parsed = parseTextContent(text);
-      if (parsed.title) setTitle(parsed.title);
-      if (parsed.description) setDescription(parsed.description);
-      if (parsed.tags?.length) setTagsInput(parsed.tags.join(', '));
-      // Only auto-select platforms from text file if they're ready
-      if (parsed.platforms?.length) {
-        const readyFromText = parsed.platforms.filter(p => platformStatuses[p]?.ready);
-        if (readyFromText.length > 0) setSelectedPlatforms(readyFromText);
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    if (isMultiFile || batchEntries.length > 0) {
+      // Match text files to batch entries by name
+      const textMap = new Map<string, File>();
+      for (const tf of files) {
+        const stem = tf.name.replace(/\.[^.]+$/, '').toLowerCase();
+        textMap.set(stem, tf);
       }
-      toast({ title: `Text file loaded: ${file.name}` });
-    } catch {
-      toast({ title: 'Could not read text file', variant: 'destructive' });
+
+      const updatedEntries = [...batchEntries];
+      let matched = 0;
+      for (const entry of updatedEntries) {
+        const stem = entry.videoFile.name.replace(/\.[^.]+$/, '').toLowerCase();
+        const matchedText = textMap.get(stem);
+        if (matchedText) {
+          entry.textFile = matchedText;
+          const text = await matchedText.text();
+          const parsed = parseTextContent(text);
+          if (parsed.title) entry.title = parsed.title;
+          if (parsed.description) entry.description = parsed.description;
+          if (parsed.tags?.length) entry.tags = parsed.tags;
+          matched++;
+        }
+      }
+      setBatchEntries(updatedEntries);
+      toast({ title: `Matched ${matched} of ${files.length} text files` });
+    } else {
+      // Single file text import
+      const file = files[0];
+      try {
+        const text = await file.text();
+        const parsed = parseTextContent(text);
+        setTextFileName(file.name);
+        if (parsed.title) setTitle(parsed.title);
+        if (parsed.description) setDescription(parsed.description);
+        if (parsed.tags?.length) setTagsInput(parsed.tags.join(', '));
+        if (parsed.platforms?.length) {
+          const readyFromText = parsed.platforms.filter(p => platformStatuses[p]?.ready);
+          if (readyFromText.length > 0) setSelectedPlatforms(readyFromText);
+        }
+        toast({ title: `Text file loaded: ${file.name}` });
+      } catch {
+        toast({ title: 'Could not read text file', variant: 'destructive' });
+      }
     }
   };
 
   const clearTextFile = () => {
-    setTextContent(null);
     setTextFileName(null);
     if (textInputRef.current) textInputRef.current.value = '';
   };
 
-  const handleUpload = async () => {
-    if (!videoFile || !title.trim() || selectedPlatforms.length === 0) return;
+  const clearBatch = () => {
+    setBatchEntries([]);
+    setVideoFile(null);
+    setTitle('');
+    setDescription('');
+    setTagsInput('');
+    setTextFileName(null);
+    if (videoInputRef.current) videoInputRef.current.value = '';
+    if (textInputRef.current) textInputRef.current.value = '';
+  };
 
-    // Final guard: only allow ready platforms
+  const handleUpload = async () => {
     const readyPlatforms = selectedPlatforms.filter(p => platformStatuses[p]?.ready);
     if (readyPlatforms.length === 0) {
       toast({ title: 'No platforms ready', description: 'Configure credentials in Settings first.', variant: 'destructive' });
@@ -122,53 +195,90 @@ export default function Dashboard() {
 
     setUploading(true);
     try {
-      const tags = tagsInput.split(',').map((t) => t.trim()).filter(Boolean);
-      const metadata: VideoMetadata = {
-        title: title.trim(),
-        description: description.trim(),
-        tags,
-        platforms: readyPlatforms,
-      };
+      if (isMultiFile) {
+        // Batch upload with intensity spacing
+        const immediateIds: string[] = [];
+        for (let i = 0; i < batchEntries.length; i++) {
+          const entry = batchEntries[i];
+          setUploadProgress(`Uploading video ${i + 1}/${batchEntries.length}...`);
 
-      const storagePath = await uploadVideoFile(videoFile);
-      const job = await createUploadJob(videoFile.name, storagePath, metadata, readyPlatforms);
+          const storagePath = await uploadVideoFile(entry.videoFile);
+          const metadata: VideoMetadata = {
+            title: entry.title,
+            description: entry.description,
+            tags: entry.tags,
+            platforms: readyPlatforms,
+          };
 
-      // Trigger the correct executor based on mode
-      const uploadMode = settings?.uploadMode || 'local';
-      if (uploadMode === 'local') {
-        // Try to trigger local server
-        try {
-          await fetch(`http://localhost:3001/api/process/${job.id}`, { method: 'POST', signal: AbortSignal.timeout(5000) });
-          await fetch('http://localhost:3001/api/process-pending', { method: 'POST', signal: AbortSignal.timeout(5000) });
-        } catch {
-          console.log('Local server not reachable — cron will pick up the job');
+          if (i === 0) {
+            // First video: immediate
+            const job = await createUploadJob(entry.videoFile.name, storagePath, metadata, readyPlatforms);
+            immediateIds.push(job.id);
+          } else {
+            // Subsequent videos: scheduled with intensity spacing
+            const scheduledAt = new Date(Date.now() + i * intensityMinutes * 60_000).toISOString();
+            await createScheduledUpload(entry.videoFile.name, storagePath, metadata, readyPlatforms, scheduledAt);
+          }
         }
+
+        // Trigger local server for immediate job
+        if (immediateIds.length > 0) {
+          try {
+            await Promise.all(immediateIds.map(id =>
+              fetch(`http://localhost:3001/api/process/${id}`, { method: 'POST', signal: AbortSignal.timeout(5000) })
+            ));
+            await fetch('http://localhost:3001/api/process-pending', { method: 'POST', signal: AbortSignal.timeout(5000) });
+          } catch { /* local server might not be running */ }
+        }
+
+        toast({
+          title: `${batchEntries.length} uploads queued!`,
+          description: `1 now, ${batchEntries.length - 1} scheduled every ${intensityMinutes} min`,
+        });
       } else {
-        try {
-          await supabase.functions.invoke('process-uploads', { body: {} });
-        } catch (e) {
-          console.log('Auto-trigger process-uploads:', e);
+        // Single file upload
+        if (!videoFile || !title.trim()) return;
+        setUploadProgress('Uploading video...');
+        const tags = tagsInput.split(',').map((t) => t.trim()).filter(Boolean);
+        const metadata: VideoMetadata = {
+          title: title.trim(),
+          description: description.trim(),
+          tags,
+          platforms: readyPlatforms,
+        };
+        const storagePath = await uploadVideoFile(videoFile);
+        const job = await createUploadJob(videoFile.name, storagePath, metadata, readyPlatforms);
+
+        const uploadMode = settings?.uploadMode || 'local';
+        if (uploadMode === 'local') {
+          try {
+            await fetch(`http://localhost:3001/api/process/${job.id}`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+            await fetch('http://localhost:3001/api/process-pending', { method: 'POST', signal: AbortSignal.timeout(5000) });
+          } catch {
+            console.log('Local server not reachable — cron will pick up the job');
+          }
+        } else {
+          try {
+            await supabase.functions.invoke('process-uploads', { body: {} });
+          } catch (e) {
+            console.log('Auto-trigger process-uploads:', e);
+          }
         }
+
+        toast({
+          title: 'Job queued!',
+          description: `Uploading to ${readyPlatforms.join(', ')}.`,
+        });
       }
 
-      toast({
-        title: 'Job queued!',
-        description: `Uploading to ${readyPlatforms.join(', ')}. ${uploadMode === 'local' ? 'Local server will process.' : 'Cloud will process.'}`,
-      });
-
       queryClient.invalidateQueries({ queryKey: ['queue'] });
-      setVideoFile(null);
-      setTextContent(null);
-      setTextFileName(null);
-      setTitle('');
-      setDescription('');
-      setTagsInput('');
-      if (videoInputRef.current) videoInputRef.current.value = '';
-      if (textInputRef.current) textInputRef.current.value = '';
+      queryClient.invalidateQueries({ queryKey: ['scheduled_uploads'] });
+      clearBatch();
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
     } finally {
       setUploading(false);
+      setUploadProgress('');
     }
   };
 
@@ -183,7 +293,9 @@ export default function Dashboard() {
     );
   };
 
-  const canUpload = !!videoFile && title.trim().length > 0 && selectedPlatforms.length > 0;
+  const canUpload = isMultiFile
+    ? batchEntries.length > 0 && selectedPlatforms.length > 0
+    : !!videoFile && title.trim().length > 0 && selectedPlatforms.length > 0;
 
   return (
     <div className="space-y-6">
@@ -196,7 +308,7 @@ export default function Dashboard() {
         <TabsList className="grid w-full grid-cols-2 max-w-md">
           <TabsTrigger value="single" className="gap-2">
             <Zap className="w-3.5 h-3.5" />
-            Single Upload
+            Upload
           </TabsTrigger>
           <TabsTrigger value="campaign" className="gap-2">
             <CalendarClock className="w-3.5 h-3.5" />
@@ -205,15 +317,28 @@ export default function Dashboard() {
         </TabsList>
 
         <TabsContent value="single" className="space-y-5 mt-6">
-          <input ref={videoInputRef} type="file" accept="video/*,.mp4,.mov,.avi,.mkv,.webm" className="hidden" onChange={handleVideoSelect} />
+          <input
+            ref={videoInputRef}
+            type="file"
+            accept="video/*,.mp4,.mov,.avi,.mkv,.webm"
+            multiple
+            className="hidden"
+            onChange={handleVideoSelect}
+          />
           <button
             type="button"
             onClick={() => videoInputRef.current?.click()}
             className={`w-full flex flex-col items-center gap-2 rounded-xl border-2 border-dashed p-6 text-center transition-all hover:border-primary/40 hover:bg-primary/5 active:scale-[0.98] ${
-              videoFile ? 'border-primary/50 bg-primary/5' : 'border-border'
+              (videoFile || isMultiFile) ? 'border-primary/50 bg-primary/5' : 'border-border'
             }`}
           >
-            {videoFile ? (
+            {isMultiFile ? (
+              <>
+                <CheckCircle2 className="w-6 h-6 text-primary" />
+                <span className="text-sm font-medium">{batchEntries.length} videos selected</span>
+                <span className="text-xs text-muted-foreground">Tap to change selection</span>
+              </>
+            ) : videoFile ? (
               <>
                 <CheckCircle2 className="w-6 h-6 text-primary" />
                 <span className="text-sm font-medium truncate max-w-full">{videoFile.name}</span>
@@ -222,49 +347,116 @@ export default function Dashboard() {
             ) : (
               <>
                 <FileVideo className="w-6 h-6 text-primary" />
-                <span className="text-sm font-medium">Select Video File</span>
-                <span className="text-xs text-muted-foreground">.mp4, .mov, .avi, .mkv, .webm</span>
+                <span className="text-sm font-medium">Select Video File(s)</span>
+                <span className="text-xs text-muted-foreground">Select multiple videos for batch upload</span>
               </>
             )}
           </button>
 
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Video Details</CardTitle>
-              <CardDescription>Title is required. Other fields are optional.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="title">Title <span className="text-destructive">*</span></Label>
-                <Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="My awesome video" />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="desc">Description</Label>
-                <Textarea id="desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional description…" rows={3} />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="tags">Tags</Label>
-                <Input id="tags" value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} placeholder="tag1, tag2, tag3" />
-                <p className="text-xs text-muted-foreground">Comma-separated</p>
-              </div>
-              <div className="flex items-center gap-2 pt-1">
-                <input ref={textInputRef} type="file" accept=".txt,text/plain" className="hidden" onChange={handleTextSelect} />
-                {textFileName ? (
-                  <Badge variant="secondary" className="gap-1 text-xs">
-                    <FileText className="w-3 h-3" />
-                    {textFileName}
-                    <button onClick={clearTextFile} className="ml-1 hover:text-destructive"><X className="w-3 h-3" /></button>
-                  </Badge>
-                ) : (
-                  <Button type="button" variant="ghost" size="sm" className="text-xs gap-1.5" onClick={() => textInputRef.current?.click()}>
-                    <FileText className="w-3.5 h-3.5" />
-                    Import from .txt file
+          {/* Multi-file batch list */}
+          {isMultiFile && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base flex items-center justify-between">
+                  <span>Batch Queue ({batchEntries.length} videos)</span>
+                  <Button variant="ghost" size="sm" onClick={clearBatch} className="text-xs h-7">
+                    <X className="w-3 h-3 mr-1" /> Clear
                   </Button>
-                )}
-              </div>
-            </CardContent>
-          </Card>
+                </CardTitle>
+                <CardDescription>Matched by filename. Select .txt files to auto-fill metadata.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {batchEntries.map((entry, idx) => (
+                  <div key={idx} className="flex items-center gap-2 rounded-lg border p-2 text-sm">
+                    <span className="text-xs font-mono text-muted-foreground w-6 shrink-0">{idx + 1}.</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium truncate">{entry.title}</p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {entry.videoFile.name}
+                        {entry.textFile && <span className="text-primary ml-1">· {entry.textFile.name}</span>}
+                      </p>
+                    </div>
+                    {idx === 0 ? (
+                      <Badge variant="default" className="text-[10px] shrink-0">Now</Badge>
+                    ) : (
+                      <Badge variant="secondary" className="text-[10px] shrink-0">
+                        +{idx * intensityMinutes}m
+                      </Badge>
+                    )}
+                  </div>
+                ))}
 
+                {/* Intensity selector */}
+                <div className="pt-3 border-t space-y-2">
+                  <Label className="text-xs flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5" /> Upload Intensity
+                  </Label>
+                  <Select value={String(intensityMinutes)} onValueChange={v => setIntensityMinutes(Number(v))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {INTENSITY_OPTIONS.map(opt => (
+                        <SelectItem key={opt.value} value={String(opt.value)}>{opt.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    First video uploads immediately, rest spaced by {intensityMinutes} minutes each.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Single file metadata */}
+          {!isMultiFile && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Video Details</CardTitle>
+                <CardDescription>Title is required. Other fields are optional.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="title">Title <span className="text-destructive">*</span></Label>
+                  <Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="My awesome video" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="desc">Description</Label>
+                  <Textarea id="desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional description…" rows={3} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="tags">Tags</Label>
+                  <Input id="tags" value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} placeholder="tag1, tag2, tag3" />
+                  <p className="text-xs text-muted-foreground">Comma-separated</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Text file import */}
+          <div className="flex items-center gap-2">
+            <input
+              ref={textInputRef}
+              type="file"
+              accept=".txt,text/plain"
+              multiple
+              className="hidden"
+              onChange={handleTextSelect}
+            />
+            {textFileName && !isMultiFile ? (
+              <Badge variant="secondary" className="gap-1 text-xs">
+                <FileText className="w-3 h-3" />
+                {textFileName}
+                <button onClick={clearTextFile} className="ml-1 hover:text-destructive"><X className="w-3 h-3" /></button>
+              </Badge>
+            ) : (
+              <Button type="button" variant="ghost" size="sm" className="text-xs gap-1.5" onClick={() => textInputRef.current?.click()}>
+                <FileText className="w-3.5 h-3.5" />
+                {isMultiFile ? 'Import matching .txt files' : 'Import from .txt file'}
+              </Button>
+            )}
+          </div>
+
+          {/* Platforms */}
           <Card>
             <CardContent className="pt-5 space-y-4">
               <div className="space-y-2">
@@ -303,11 +495,13 @@ export default function Dashboard() {
               </div>
               <Button onClick={handleUpload} disabled={!canUpload || uploading} className="w-full gap-2" size="lg">
                 <UploadCloud className="w-4 h-4" />
-                {uploading ? 'Uploading…' : 'Queue Upload Now'}
+                {uploading ? (uploadProgress || 'Uploading…') : isMultiFile ? `Queue ${batchEntries.length} Uploads` : 'Queue Upload Now'}
               </Button>
               {!canUpload && !uploading && (
                 <p className="text-xs text-muted-foreground text-center">
-                  {!videoFile ? 'Select a video file' : !title.trim() ? 'Enter a title' : 'Select at least one platform'}
+                  {isMultiFile
+                    ? 'Select at least one platform'
+                    : !videoFile ? 'Select a video file' : !title.trim() ? 'Enter a title' : 'Select at least one platform'}
                 </p>
               )}
             </CardContent>
