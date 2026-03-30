@@ -69,6 +69,7 @@ export default function CampaignScheduler() {
 
   // Current entry fields
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoFiles, setVideoFiles] = useState<File[]>([]);
   const [folderPath, setFolderPath] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -76,6 +77,9 @@ export default function CampaignScheduler() {
   const [textFileName, setTextFileName] = useState<string | null>(null);
   const [platforms, setPlatforms] = useState<string[]>(['youtube', 'tiktok', 'instagram']);
   const [scheduledAt, setScheduledAt] = useState('');
+  const [intensityMinutes, setIntensityMinutes] = useState(60);
+
+  const isMultiFile = videoFiles.length > 1;
 
   // Load current upload mode
   useEffect(() => {
@@ -89,11 +93,23 @@ export default function CampaignScheduler() {
   });
 
   const handleVideoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setVideoFile(file);
-    if (!title) {
-      setTitle(file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    if (files.length === 1) {
+      setVideoFile(files[0]);
+      setVideoFiles([]);
+      if (!title) {
+        setTitle(cleanVideoTitle(files[0].name));
+      }
+    } else {
+      setVideoFile(null);
+      setVideoFiles(files);
+      setTitle('');
+      setDescription('');
+      setTagsInput('');
+      setTextFileName(null);
+      toast({ title: `${files.length} videos selected`, description: 'Select matching .txt files for metadata' });
     }
   };
 
