@@ -444,7 +444,7 @@ export default function CampaignScheduler() {
                 className="font-mono text-xs"
               />
               <p className="text-xs text-muted-foreground">
-                System will auto-pick the latest video + matching .txt file from this folder at scheduled time.
+                System will process ALL videos in folder with matching .txt files, uploading 1-by-1 with chosen intensity.
               </p>
             </div>
           )}
