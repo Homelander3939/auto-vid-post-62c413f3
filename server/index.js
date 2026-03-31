@@ -28,6 +28,7 @@ const { checkPlatformStats, formatStatsForTelegram, runBrowserTask } = require('
 const { sendTelegram } = require('./telegram');
 const { scanFolder, scanAllFiles } = require('./folderWatcher');
 const { parseTextFile } = require('./textParser');
+const { processTelegramAIResponse, streamLMStudio, LM_STUDIO_URL } = require('./ai-handler');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
@@ -383,6 +384,48 @@ app.post('/api/check-all-stats', async (req, res) => {
   }
 });
 
+// --- AI Chat endpoint (uses LM Studio locally instead of cloud AI) ---
+app.post('/api/ai-chat', async (req, res) => {
+  try {
+    const { messages } = req.body || {};
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: 'messages array is required' });
+    }
+
+    // Stream response from LM Studio
+    const streamResp = await streamLMStudio(messages, supabase);
+    if (!streamResp.ok) {
+      const errText = await streamResp.text().catch(() => '');
+      console.error('[AI-Chat] LM Studio error:', streamResp.status, errText);
+      return res.status(500).json({ error: 'AI service error. Make sure LM Studio is running.' });
+    }
+
+    // Pipe the SSE stream through to the client
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    const { Readable } = require('stream');
+    if (streamResp.body && typeof streamResp.body.pipe === 'function') {
+      streamResp.body.pipe(res);
+    } else if (streamResp.body) {
+      // node-fetch v2 returns a Node.js Readable
+      streamResp.body.pipe(res);
+    } else {
+      const text = await streamResp.text();
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    }
+  } catch (err) {
+    console.error('[AI-Chat] Error:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+});
+
 // --- Scheduled uploads ---
 async function processScheduledUploads() {
   const now = new Date().toISOString();
@@ -723,6 +766,14 @@ async function processPendingCommands() {
             await supabase.from('pending_commands').update({
               status: 'completed', result: 'sent', completed_at: new Date().toISOString(),
             }).eq('id', cmd.id);
+          } else if (cmd.command === 'ai_response') {
+            // Process Telegram AI response locally via LM Studio
+            const settings = await getSettings();
+            console.log(`[Commands] ai_response: processing Telegram message from chat ${cmd.args?.chat_id}`);
+            await processTelegramAIResponse(supabase, cmd.args, sendTelegram, settings.backend);
+            await supabase.from('pending_commands').update({
+              status: 'completed', result: 'ai_reply_sent', completed_at: new Date().toISOString(),
+            }).eq('id', cmd.id);
           } else if (cmd.command === 'open_browser') {
             const task = cmd.args?.task || 'Open the browser and navigate to Google';
             const startUrl = cmd.args?.url || null;
@@ -807,6 +858,7 @@ app.listen(PORT, () => {
   console.log(`\n🚀 Auto Vid Post — Local Server`);
   console.log(`   http://localhost:${PORT}`);
   console.log(`   Connected to backend: ${SUPABASE_URL}`);
-  console.log(`   Mode: Local Playwright automation\n`);
+  console.log(`   AI: LM Studio at ${LM_STUDIO_URL}`);
+  console.log(`   Mode: Local Playwright automation + Local AI\n`);
   setupCron();
 });
