@@ -766,6 +766,14 @@ async function processPendingCommands() {
             await supabase.from('pending_commands').update({
               status: 'completed', result: 'sent', completed_at: new Date().toISOString(),
             }).eq('id', cmd.id);
+          } else if (cmd.command === 'ai_response') {
+            // Process Telegram AI response locally via LM Studio
+            const settings = await getSettings();
+            console.log(`[Commands] ai_response: processing Telegram message from chat ${cmd.args?.chat_id}`);
+            await processTelegramAIResponse(supabase, cmd.args, sendTelegram, settings.backend);
+            await supabase.from('pending_commands').update({
+              status: 'completed', result: 'ai_reply_sent', completed_at: new Date().toISOString(),
+            }).eq('id', cmd.id);
           } else if (cmd.command === 'open_browser') {
             const task = cmd.args?.task || 'Open the browser and navigate to Google';
             const startUrl = cmd.args?.url || null;
