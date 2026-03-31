@@ -28,6 +28,7 @@ const { checkPlatformStats, formatStatsForTelegram, runBrowserTask } = require('
 const { sendTelegram } = require('./telegram');
 const { scanFolder, scanAllFiles } = require('./folderWatcher');
 const { parseTextFile } = require('./textParser');
+const { processTelegramAIResponse, streamLMStudio, LM_STUDIO_URL } = require('./ai-handler');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
