@@ -1,78 +1,55 @@
 
 
-## Cloud Resource Analysis & Optimization Plan
+## Fix Instagram Aspect Ratio — Reliable 9:16 / Original Selection
 
-### What's Consuming Your $13.65 / $25 Free Cloud Balance
+### Problem
+The current code tries to select "Original" or "9:16" on Instagram's crop screen using text matching and positional DOM logic, but it fails silently. Instagram's crop UI uses **icon-only SVG buttons** without readable text labels, so `textContent`-based matching doesn't work. The video ends up cropped to square or 4:5, showing black bars instead of the full vertical frame (as seen on TikTok).
 
-Your Lovable Cloud costs come from three categories:
+### Root Cause (in `instagram.js` lines 920–1047)
+1. **Crop icon detection** relies on aria-labels (`crop`, `aspect`, `resize`) that Instagram doesn't consistently use — their buttons often have no aria-label at all.
+2. **Ratio selection** looks for elements with text "original" or "9:16", but Instagram renders these as unlabeled SVG icons (rectangles of different proportions), not text buttons.
+3. When both DOM attempts fail, the AI agent fallback is unreliable because its instructions reference UI labels that don't exist.
 
-#### 1. **AI Gateway calls (~$0.44 of $1 AI balance used)**
-These edge functions call `ai.gateway.lovable.dev`:
-- **`ai-chat`** — AI Chat page in the web UI
-- **`telegram-ai-bot`** — Telegram bot AI responses (tool-calling, multi-turn)
-- **`cloud-browser-upload`** — AI vision for cloud-mode browser automation
+### Solution
+Replace the entire aspect-ratio selection block (Phase 3.5, lines 920–1048) with a more robust strategy:
 
-#### 2. **Edge Function invocations + compute (~main Cloud cost driver)**
-Every edge function call costs compute time:
-- **`process-uploads`** — triggered automatically from Dashboard on each upload
-- **`send-telegram`** — every notification (upload success, test messages)
-- **`cloud-browser-upload`** — long-running cloud browser sessions (biggest cost per call)
-- **`cloud-browser-status`** — polling for Browserbase session status
-- **`telegram-ai-bot`** — webhook for every Telegram message
+**Strategy 1 — Direct SVG icon geometry detection:**
+- After the video file is set and the crop dialog appears, find ALL small icon-style buttons in the bottom-left area of the dialog.
+- Click the first icon button in that area (the crop/expand toggle) to reveal the aspect ratio panel.
+- In the revealed panel, identify aspect ratio option buttons by their **SVG `viewBox` dimensions or path bounding boxes** — the tallest/narrowest rectangle icon represents 9:16/portrait. Click it.
+- Alternatively, look for the **leftmost** ratio option button (Instagram typically puts "Original" first).
 
-#### 3. **Database + Storage**
-- Database reads/writes for `upload_jobs`, `scheduled_uploads`, `schedule_config`, `app_settings`, `telegram_messages`
-- Video file storage in the `videos` bucket (used by AI Chat file uploads)
+**Strategy 2 — Keyboard shortcut / direct attribute approach:**
+- After file upload, check if Instagram shows a crop toolbar. Use `page.evaluate` to enumerate ALL interactive elements in the dialog's bottom toolbar area, log their attributes and dimensions for debugging.
+- Click elements by **relative position within the crop toolbar** — first button = aspect toggle, then in the expanded panel, select by icon height-to-width ratio.
 
----
+**Strategy 3 — AI Agent with screenshot-based vision (existing fallback, improved instructions):**
+- Update the agent prompt to describe the **visual appearance** ("small icon in bottom-left showing two corner brackets", "click the tallest/narrowest rectangle icon in the popup") rather than text labels.
 
-### How to Stay Within $25/month Even at 300 Videos
+### Changes
 
-Since you use **Local Mode** (Playwright on your PC), the most expensive cloud features are already bypassed. Here's the breakdown:
+**File: `server/uploaders/instagram.js`** (Phase 3.5, lines ~920–1048)
 
-| Resource | Current Use | Cost Impact | Action Needed |
-|----------|------------|-------------|---------------|
-| Cloud browser uploads | Only in cloud mode | **HIGH** | You already use local mode — no change needed |
-| AI Chat (web UI) | Each message = AI call | **MEDIUM** | Minimal use, or move to LM Studio |
-| Telegram AI bot | Each Telegram msg = AI call | **MEDIUM** | Already uses Gemini Flash (cheapest). Consider routing to LM Studio |
-| send-telegram | Per notification | **LOW** | ~$0.001 per call, 300/mo = negligible |
-| process-uploads | Polls for pending jobs | **LOW** | Only runs in cloud mode |
-| Database ops | CRUD on job tables | **VERY LOW** | Negligible even at 300 videos |
-| Storage | Only for AI Chat file uploads | **LOW** | Videos go direct to platforms, not stored in cloud |
+Replace the aspect ratio selection with:
 
-### Recommended Changes
+1. **Enumerate bottom toolbar buttons** — find all buttons/divs within the bottom 80px of the dialog that contain SVGs. Click the one that appears to be the crop toggle (leftmost small icon button).
 
-1. **Route Telegram AI bot through LM Studio instead of Lovable AI Gateway**
-   - The `telegram-ai-bot` edge function currently calls `ai.gateway.lovable.dev` (costs AI credits)
-   - Change it to call your local LM Studio (`http://192.168.50.33:1234`) directly
-   - Problem: Edge functions run in the cloud and can't reach your local network
-   - Solution: Either (a) expose LM Studio via a tunnel (Cloudflare Tunnel / ngrok) or (b) move Telegram bot processing to your local server which already has LM Studio access
+2. **Wait 800ms**, then scan for the newly appeared ratio options panel. Identify buttons by:
+   - Counting SVG rect/path elements and their aspect ratios
+   - The **"Original"** option typically has a landscape-oriented rectangle or just the word hidden in an aria attribute
+   - The **portrait/9:16** option has a tall narrow rectangle SVG
+   - Select whichever is found first: "Original" (preserves source), then "9:16" portrait
 
-2. **Move AI Chat to use LM Studio locally**
-   - The `ai-chat` edge function also calls the AI Gateway
-   - Same solution: route through your local server's LM Studio endpoint
+3. **Verification step** — after clicking, check if the preview area's aspect ratio visually changed (the preview container's height should be greater than its width for portrait content). Log the result.
 
-3. **Keep `send-telegram` as-is** — it's cheap (just forwards messages via the Telegram connector gateway, no AI involved)
+4. **Add console logging** at each micro-step so failures are diagnosable from server logs.
 
-4. **Keep database as-is** — reads/writes are negligible cost
+### Technical Detail
 
-5. **Never use Cloud Mode** — Browserbase sessions are by far the most expensive resource. Local Playwright is free.
+The key insight is that Instagram's crop toolbar icons have no text or aria-labels. We must identify them by:
+- **Position within dialog** (bottom 60-80px strip)
+- **SVG child element geometry** (viewBox ratios, path bounding boxes)  
+- **Icon count pattern** — the crop toggle is usually alone or first; ratio options appear as a row of 3-4 icons after clicking it
 
-### Projected Cost at 300 Videos/Month (After Optimization)
-
-| Resource | Monthly Cost |
-|----------|-------------|
-| Edge function calls (send-telegram × ~900 calls) | ~$0.50–1.00 |
-| Database operations | ~$0.10–0.30 |
-| Storage | ~$0 (videos not stored in cloud) |
-| AI Gateway | ~$0 (routed to LM Studio) |
-| **Total** | **~$1–2/month** |
-
-### Implementation Steps
-
-1. **Move Telegram AI bot logic to local server** — your `server/index.js` already has LM Studio integration. Add a Telegram webhook handler there that processes AI conversations locally instead of through the edge function. The edge function would just forward incoming webhooks to your local server.
-
-2. **Move AI Chat to call LM Studio** — update the web UI's AI Chat page to call your local server's LM Studio endpoint directly (or via a simple proxy endpoint on your local server) instead of invoking the `ai-chat` edge function.
-
-3. **No other changes needed** — everything else (uploads, scheduling, notifications) already runs locally or costs negligibly.
+This approach avoids text matching entirely and works regardless of Instagram's UI language.
 
