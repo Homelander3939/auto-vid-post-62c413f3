@@ -1,8 +1,50 @@
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
+const { execSync } = require('child_process');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } = require('./smart-agent');
+
+/**
+ * Pre-process video to 9:16 (1080x1920) with black padding using ffmpeg.
+ * Returns the path to the processed temp file, or the original path if ffmpeg fails.
+ */
+function prepareVerticalVideo(videoPath) {
+  const ext = path.extname(videoPath);
+  const tempPath = videoPath.replace(ext, `_ig_vertical${ext}`);
+
+  try {
+    // Probe dimensions
+    const probeCmd = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${videoPath}"`;
+    const probe = execSync(probeCmd, { encoding: 'utf-8' }).trim();
+    const [w, h] = probe.split(',').map(Number);
+    console.log(`[Instagram] Source video dimensions: ${w}x${h}`);
+
+    // Already portrait 9:16 — skip processing
+    if (w > 0 && h > 0 && h / w >= 1.7) {
+      console.log('[Instagram] Video is already portrait (9:16), skipping ffmpeg conversion');
+      return { processedPath: videoPath, needsCleanup: false };
+    }
+
+    const ffmpegCmd = [
+      'ffmpeg', '-y', '-i', `"${videoPath}"`,
+      '-vf', '"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"',
+      '-c:a', 'copy',
+      '-movflags', '+faststart',
+      `"${tempPath}"`
+    ].join(' ');
+
+    console.log(`[Instagram] Converting to 9:16 with black padding...`);
+    execSync(ffmpegCmd, { stdio: 'pipe', timeout: 120000 });
+    console.log(`[Instagram] Video converted to 1080x1920: ${tempPath}`);
+    return { processedPath: tempPath, needsCleanup: true };
+  } catch (err) {
+    console.warn(`[Instagram] ffmpeg conversion failed (using original): ${err.message}`);
+    // Clean up partial file
+    try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch {}
+    return { processedPath: videoPath, needsCleanup: false };
+  }
+}
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
 const MAX_CAPTION_LENGTH = 2200;
