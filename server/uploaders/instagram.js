@@ -1,8 +1,50 @@
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
+const { execSync } = require('child_process');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } = require('./smart-agent');
+
+/**
+ * Pre-process video to 9:16 (1080x1920) with black padding using ffmpeg.
+ * Returns the path to the processed temp file, or the original path if ffmpeg fails.
+ */
+function prepareVerticalVideo(videoPath) {
+  const ext = path.extname(videoPath);
+  const tempPath = videoPath.replace(ext, `_ig_vertical${ext}`);
+
+  try {
+    // Probe dimensions
+    const probeCmd = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${videoPath}"`;
+    const probe = execSync(probeCmd, { encoding: 'utf-8' }).trim();
+    const [w, h] = probe.split(',').map(Number);
+    console.log(`[Instagram] Source video dimensions: ${w}x${h}`);
+
+    // Already portrait 9:16 — skip processing
+    if (w > 0 && h > 0 && h / w >= 1.7) {
+      console.log('[Instagram] Video is already portrait (9:16), skipping ffmpeg conversion');
+      return { processedPath: videoPath, needsCleanup: false };
+    }
+
+    const ffmpegCmd = [
+      'ffmpeg', '-y', '-i', `"${videoPath}"`,
+      '-vf', '"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"',
+      '-c:a', 'copy',
+      '-movflags', '+faststart',
+      `"${tempPath}"`
+    ].join(' ');
+
+    console.log(`[Instagram] Converting to 9:16 with black padding...`);
+    execSync(ffmpegCmd, { stdio: 'pipe', timeout: 120000 });
+    console.log(`[Instagram] Video converted to 1080x1920: ${tempPath}`);
+    return { processedPath: tempPath, needsCleanup: true };
+  } catch (err) {
+    console.warn(`[Instagram] ffmpeg conversion failed (using original): ${err.message}`);
+    // Clean up partial file
+    try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch {}
+    return { processedPath: videoPath, needsCleanup: false };
+  }
+}
 
 const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
 const MAX_CAPTION_LENGTH = 2200;
@@ -620,6 +662,10 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
   fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 
+  // Pre-process video to 9:16 with black padding for Instagram Reels
+  const { processedPath, needsCleanup } = prepareVerticalVideo(videoPath);
+  const actualVideoPath = processedPath;
+
   console.log('[Instagram] Starting upload...');
   const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
     headless: false,
@@ -815,7 +861,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     let fileInput = await page.$('input[type="file"]');
     if (fileInput) {
       try {
-        await fileInput.setInputFiles(videoPath);
+        await fileInput.setInputFiles(actualVideoPath);
         fileUploaded = true;
         console.log('[Instagram] Video set via direct file input');
       } catch (e) {
@@ -850,7 +896,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             }
           })(),
         ]);
-        await fileChooser.setFiles(videoPath);
+        await fileChooser.setFiles(actualVideoPath);
         fileUploaded = true;
         console.log('[Instagram] Video set via fileChooser + Select from computer');
       } catch (e) {
@@ -877,7 +923,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         fileInput = await page.$('input[type="file"]');
         if (fileInput) {
           try {
-            await fileInput.setInputFiles(videoPath);
+            await fileInput.setInputFiles(actualVideoPath);
             fileUploaded = true;
             console.log('[Instagram] Video set via forced file input');
           } catch {}
@@ -896,7 +942,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           // Try file input again after agent interaction
           fileInput = await page.$('input[type="file"]');
           if (fileInput) {
-            await fileInput.setInputFiles(videoPath);
+            await fileInput.setInputFiles(actualVideoPath);
             fileUploaded = true;
           }
         }
@@ -917,244 +963,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       console.log('[Instagram] Dialog not detected by selector, proceeding anyway');
     }
 
-    // ===== PHASE 3.5: SELECT PORTRAIT (9:16) ASPECT RATIO ON CROP SCREEN =====
-    // Instagram defaults to square/4:3 crop — we MUST select 9:16 for vertical Reels
-    console.log('[Instagram] Selecting 9:16 portrait aspect ratio for Reels...');
-    let aspectRatioSet = false;
-
-    for (let attempt = 0; attempt < 3 && !aspectRatioSet; attempt++) {
-      try {
-        if (attempt > 0) await page.waitForTimeout(2000);
-
-        // Step A: Find ALL icon-like buttons in the bottom area of the dialog
-        // and click the crop/resize toggle (typically bottom-left, small SVG icon)
-        const cropToggleResult = await page.evaluate(() => {
-          const dialog = document.querySelector('[role="dialog"]');
-          if (!dialog) return { error: 'no dialog' };
-          const dialogRect = dialog.getBoundingClientRect();
-
-          // Gather all clickable elements with SVGs inside the dialog
-          const candidates = [];
-          const clickables = dialog.querySelectorAll('button, div[role="button"], [role="button"], span[role="button"]');
-          for (const el of clickables) {
-            const svg = el.querySelector('svg');
-            if (!svg) continue;
-            const rect = el.getBoundingClientRect();
-            if (rect.width < 10 || rect.height < 10) continue;
-            // Must be in the bottom 30% of the dialog
-            const relTop = rect.top - dialogRect.top;
-            const relLeft = rect.left - dialogRect.left;
-            const inBottomArea = relTop > dialogRect.height * 0.65;
-            const inLeftHalf = relLeft < dialogRect.width * 0.5;
-            candidates.push({
-              el,
-              rect,
-              relTop,
-              relLeft,
-              inBottomArea,
-              inLeftHalf,
-              width: rect.width,
-              height: rect.height,
-              pathCount: svg.querySelectorAll('path, line, polyline, polygon, rect, circle').length
-            });
-          }
-
-          // Log what we found for debugging
-          const debugInfo = candidates.map((c, i) => 
-            `btn${i}: ${Math.round(c.relLeft)}x${Math.round(c.relTop)} size=${Math.round(c.width)}x${Math.round(c.height)} bottom=${c.inBottomArea} left=${c.inLeftHalf} paths=${c.pathCount}`
-          );
-
-          // Filter to bottom-left candidates (the crop toggle area)
-          const bottomLeftBtns = candidates.filter(c => c.inBottomArea && c.inLeftHalf && c.width < 80 && c.height < 80);
-          
-          if (bottomLeftBtns.length > 0) {
-            // Click the leftmost bottom button (crop/resize toggle)
-            bottomLeftBtns.sort((a, b) => a.relLeft - b.relLeft);
-            bottomLeftBtns[0].el.click();
-            return { clicked: 'bottom-left-icon', debug: debugInfo };
-          }
-
-          // Broader fallback: any small SVG button in bottom area
-          const bottomBtns = candidates.filter(c => c.inBottomArea && c.width < 80 && c.height < 80);
-          if (bottomBtns.length > 0) {
-            bottomBtns.sort((a, b) => a.relLeft - b.relLeft);
-            bottomBtns[0].el.click();
-            return { clicked: 'bottom-any-icon', debug: debugInfo };
-          }
-
-          return { clicked: null, debug: debugInfo };
-        }).catch(e => ({ error: e.message }));
-
-        console.log(`[Instagram] Crop toggle attempt ${attempt + 1}:`, JSON.stringify(cropToggleResult));
-
-        if (!cropToggleResult?.clicked) continue;
-
-        // Wait for the aspect ratio options panel to appear
-        await page.waitForTimeout(1200);
-
-        // Step B: In the expanded panel, find ratio option icons by SVG geometry
-        // 9:16 portrait = tallest/narrowest rectangle icon, Original = first option
-        const ratioResult = await page.evaluate(() => {
-          const dialog = document.querySelector('[role="dialog"]');
-          if (!dialog) return { error: 'no dialog' };
-          const dialogRect = dialog.getBoundingClientRect();
-
-          // After clicking crop toggle, a row of ratio icons should appear
-          // These are typically small buttons/divs in the bottom-left area arranged horizontally
-          const allClickables = dialog.querySelectorAll('button, div[role="button"], [role="button"], span[role="button"], div[tabindex]');
-          const ratioOptions = [];
-
-          for (const el of allClickables) {
-            const rect = el.getBoundingClientRect();
-            if (rect.width < 5 || rect.height < 5) continue;
-            const relTop = rect.top - dialogRect.top;
-            const relLeft = rect.left - dialogRect.left;
-            // Ratio options appear in the bottom portion
-            if (relTop < dialogRect.height * 0.6) continue;
-            
-            // Check for SVG content to analyze icon shape
-            const svg = el.querySelector('svg');
-            let iconAspect = null;
-            if (svg) {
-              // Analyze the SVG's visual shape — look at viewBox or actual rendered size
-              const viewBox = svg.getAttribute('viewBox');
-              const svgRect = svg.getBoundingClientRect();
-              // Also look at rect elements inside SVG that represent the aspect ratio shape
-              const rects = svg.querySelectorAll('rect');
-              const paths = svg.querySelectorAll('path');
-              
-              // Check for rect elements that indicate the aspect ratio visually
-              for (const r of rects) {
-                const w = parseFloat(r.getAttribute('width') || r.getAttribute('x2') || '0') - parseFloat(r.getAttribute('x') || r.getAttribute('x1') || '0');
-                const h = parseFloat(r.getAttribute('height') || r.getAttribute('y2') || '0') - parseFloat(r.getAttribute('y') || r.getAttribute('y1') || '0');
-                const rW = parseFloat(r.getAttribute('width') || '0');
-                const rH = parseFloat(r.getAttribute('height') || '0');
-                if (rW > 2 && rH > 2) {
-                  iconAspect = rH / rW; // >1 = portrait, <1 = landscape, ~1 = square
-                }
-              }
-
-              // If no rect, try path bounding box
-              if (iconAspect === null && paths.length > 0) {
-                const svgBBox = svgRect;
-                if (svgBBox.width > 0 && svgBBox.height > 0) {
-                  iconAspect = svgBBox.height / svgBBox.width;
-                }
-              }
-            }
-
-            // Also check for text content like "Original", "1:1", "4:5", "9:16"
-            const text = (el.textContent || '').trim().toLowerCase();
-            
-            ratioOptions.push({
-              el,
-              relLeft,
-              relTop,
-              width: rect.width,
-              height: rect.height,
-              iconAspect,
-              text,
-              hasSvg: !!svg
-            });
-          }
-
-          const debugRatios = ratioOptions.map((r, i) =>
-            `opt${i}: ${Math.round(r.relLeft)}x${Math.round(r.relTop)} size=${Math.round(r.width)}x${Math.round(r.height)} aspect=${r.iconAspect?.toFixed(2)} text="${r.text}" svg=${r.hasSvg}`
-          );
-
-          // Strategy 1: Find by text "original" or "9:16"
-          for (const opt of ratioOptions) {
-            if (opt.text.includes('original')) {
-              opt.el.click();
-              return { selected: 'original-text', debug: debugRatios };
-            }
-          }
-          for (const opt of ratioOptions) {
-            if (opt.text.includes('9:16')) {
-              opt.el.click();
-              return { selected: '9:16-text', debug: debugRatios };
-            }
-          }
-
-          // Strategy 2: Find by SVG icon shape — portrait icon has iconAspect > 1.3
-          const portraitIcons = ratioOptions.filter(r => r.iconAspect && r.iconAspect > 1.3 && r.hasSvg);
-          if (portraitIcons.length > 0) {
-            // Pick the one with highest aspect ratio (tallest/narrowest = 9:16)
-            portraitIcons.sort((a, b) => (b.iconAspect || 0) - (a.iconAspect || 0));
-            portraitIcons[0].el.click();
-            return { selected: 'portrait-icon', aspect: portraitIcons[0].iconAspect, debug: debugRatios };
-          }
-
-          // Strategy 3: Click the first option (usually "Original" which preserves source ratio)
-          const svgOptions = ratioOptions.filter(r => r.hasSvg);
-          if (svgOptions.length > 0) {
-            svgOptions.sort((a, b) => a.relLeft - b.relLeft);
-            svgOptions[0].el.click();
-            return { selected: 'first-option-fallback', debug: debugRatios };
-          }
-
-          // Strategy 4: Click any option in the ratio area
-          if (ratioOptions.length > 0) {
-            ratioOptions.sort((a, b) => a.relLeft - b.relLeft);
-            ratioOptions[0].el.click();
-            return { selected: 'any-first-fallback', debug: debugRatios };
-          }
-
-          return { selected: null, debug: debugRatios };
-        }).catch(e => ({ error: e.message }));
-
-        console.log(`[Instagram] Ratio selection attempt ${attempt + 1}:`, JSON.stringify(ratioResult));
-
-        if (ratioResult?.selected) {
-          aspectRatioSet = true;
-
-          // Verify: check preview container dimensions
-          await page.waitForTimeout(500);
-          const previewCheck = await page.evaluate(() => {
-            const dialog = document.querySelector('[role="dialog"]');
-            if (!dialog) return null;
-            // The main preview area is usually a large div/img/video in the dialog
-            const media = dialog.querySelector('video, img[style*="object"], div[style*="padding-bottom"]');
-            if (media) {
-              const r = media.getBoundingClientRect();
-              return { width: Math.round(r.width), height: Math.round(r.height), ratio: (r.height / r.width).toFixed(2) };
-            }
-            return null;
-          }).catch(() => null);
-          console.log('[Instagram] Preview after ratio change:', JSON.stringify(previewCheck));
-        }
-      } catch (e) {
-        console.warn(`[Instagram] Aspect ratio attempt ${attempt + 1} error:`, e.message);
-      }
-    }
-
-    // --- AI Agent fallback (if DOM approach failed) ---
-    if (!aspectRatioSet) {
-      console.log('[Instagram] DOM approach failed, using AI agent for aspect ratio...');
-      try {
-        const agentResult = await runAgentTask(page,
-          'In the Instagram post creation dialog, I need to change the video aspect ratio to portrait/vertical. ' +
-          'Look at the BOTTOM-LEFT corner of the video preview area. There should be a small icon that looks like ' +
-          'two corner brackets or a resize/expand symbol. Click that icon first. ' +
-          'After clicking, a row of small icons should appear — these are aspect ratio options. ' +
-          'Look for the TALLEST/NARROWEST rectangle icon (this represents 9:16 portrait) and click it. ' +
-          'If you see text options, click "Original" or "9:16". ' +
-          'Do NOT click "Next" or any other navigation button.',
-          { maxSteps: 6, stepDelayMs: 800, useVision: true });
-        
-        if (agentResult.success) {
-          console.log('[Instagram] Agent set aspect ratio successfully');
-          aspectRatioSet = true;
-        }
-      } catch (e) {
-        console.warn('[Instagram] Agent aspect ratio failed:', e.message);
-      }
-    }
-
-    if (!aspectRatioSet) {
-      console.warn('[Instagram] WARNING: Could not set 9:16 aspect ratio — video may be cropped');
-    }
-    await page.waitForTimeout(800);
+    // Phase 3.5 REMOVED — video is already pre-processed to 9:16 via ffmpeg before upload.
+    // No need to fight Instagram's crop UI icons.
 
     // ===== PHASE 4: CLICK THROUGH CROP/ADJUST SCREENS =====
     // Instagram shows: Crop → Filter → Caption screens
@@ -1246,13 +1056,21 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       
       let captionFilled = false;
 
-      // Strategy 1: Keyboard-based approach (most reliable for contenteditable)
+      // Wait for caption field to appear in the dialog
+      await page.waitForSelector('[role="dialog"] [contenteditable="true"], [role="dialog"] textarea, [role="dialog"] [aria-label*="caption" i]', { timeout: 10000 })
+        .then(() => console.log('[Instagram] Caption field detected in dialog'))
+        .catch(() => console.warn('[Instagram] Caption field not detected by waitForSelector, trying anyway'));
+
+      // Strategy 1: Keyboard-based approach scoped to dialog (most reliable for contenteditable)
       const captionSelectors = [
+        '[role="dialog"] [aria-label="Write a caption..."]',
+        '[role="dialog"] [aria-label*="Write a caption"]',
+        '[role="dialog"] [aria-label*="caption" i]',
+        '[role="dialog"] textarea[aria-label*="caption" i]',
+        '[role="dialog"] textarea[placeholder*="caption" i]',
+        '[role="dialog"] [contenteditable="true"]',
+        '[role="dialog"] textarea',
         '[aria-label="Write a caption..."]',
-        '[aria-label*="Write a caption"]',
-        '[aria-label*="caption" i]',
-        'textarea[aria-label*="caption" i]',
-        'textarea[placeholder*="caption" i]',
         '[contenteditable="true"]',
         'textarea',
       ];
@@ -1496,9 +1314,15 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     console.log(`[Instagram] Upload complete! URL: ${postUrl || '(no URL extracted)'}`);
 
     await context.close();
+    if (needsCleanup && actualVideoPath !== videoPath) {
+      try { fs.unlinkSync(actualVideoPath); console.log('[Instagram] Cleaned up temp vertical video'); } catch {}
+    }
     return { url: postUrl || '' };
   } catch (err) {
     console.error('[Instagram] Upload failed:', err.message);
+    if (needsCleanup && actualVideoPath !== videoPath) {
+      try { fs.unlinkSync(actualVideoPath); } catch {}
+    }
     await context.close();
     throw err;
   }
