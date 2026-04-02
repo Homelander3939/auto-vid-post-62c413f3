@@ -662,6 +662,10 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
   fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 
+  // Pre-process video to 9:16 with black padding for Instagram Reels
+  const { processedPath, needsCleanup } = prepareVerticalVideo(videoPath);
+  const actualVideoPath = processedPath;
+
   console.log('[Instagram] Starting upload...');
   const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
     headless: false,
