@@ -1306,9 +1306,15 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     console.log(`[Instagram] Upload complete! URL: ${postUrl || '(no URL extracted)'}`);
 
     await context.close();
+    if (needsCleanup && actualVideoPath !== videoPath) {
+      try { fs.unlinkSync(actualVideoPath); console.log('[Instagram] Cleaned up temp vertical video'); } catch {}
+    }
     return { url: postUrl || '' };
   } catch (err) {
     console.error('[Instagram] Upload failed:', err.message);
+    if (needsCleanup && actualVideoPath !== videoPath) {
+      try { fs.unlinkSync(actualVideoPath); } catch {}
+    }
     await context.close();
     throw err;
   }
