@@ -896,7 +896,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             }
           })(),
         ]);
-        await fileChooser.setFiles(videoPath);
+        await fileChooser.setFiles(actualVideoPath);
         fileUploaded = true;
         console.log('[Instagram] Video set via fileChooser + Select from computer');
       } catch (e) {
