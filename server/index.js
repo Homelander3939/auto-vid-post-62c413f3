@@ -573,10 +573,17 @@ async function processRecurringSchedule() {
 
         if (!minuteMatch || !hourMatch || !dowMatch) continue;
 
-        // Prevent running multiple times in the same minute
-        const runKey = `${config.id}-${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()} ${currentHour}:${currentMinute}`;
-        if (lastRecurringRunKeys[config.id] === runKey) continue;
-        lastRecurringRunKeys[config.id] = runKey;
+        // Prevent running multiple times in the same minute window — persisted in DB
+        const nowMinuteStart = new Date(now);
+        nowMinuteStart.setSeconds(0, 0);
+        if (config.last_run_at) {
+          const lastRun = new Date(config.last_run_at);
+          // If last run was within the last 60 seconds, skip (already ran this minute)
+          if (nowMinuteStart.getTime() - lastRun.getTime() < 60_000) continue;
+        }
+
+        // Persist last_run_at immediately to prevent duplicate runs on restart
+        await supabase.from('schedule_config').update({ last_run_at: now.toISOString() }).eq('id', config.id);
 
         console.log(`[Recurring] Schedule ${config.id} (${config.name}) matched at ${now.toISOString()}, scanning: ${folderPath}`);
 
