@@ -438,6 +438,88 @@ async function clickInstagramShareButton(page) {
   return shareClicked;
 }
 
+async function ensureInstagramReelFlow(page) {
+  const flowState = await page.evaluate(() => {
+    const text = (document.body?.innerText || '').toLowerCase();
+    return {
+      alreadyReelLike:
+        text.includes('share to reels') ||
+        text.includes('reel details') ||
+        text.includes('your reel') ||
+        text.includes('reels'),
+      looksLikePostPicker:
+        text.includes('new post') ||
+        text.includes('create new post') ||
+        text.includes('post') ||
+        text.includes('crop'),
+    };
+  }).catch(() => ({ alreadyReelLike: false, looksLikePostPicker: false }));
+
+  if (flowState.alreadyReelLike) {
+    console.log('[Instagram] Reel flow already detected');
+    return true;
+  }
+
+  let reelSelected = await page.evaluate(() => {
+    const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const clickNode = (node) => {
+      if (!node) return false;
+      const target = node.closest('button, a, [role="button"], [role="tab"], label') || node;
+      target.click();
+      return true;
+    };
+
+    const nodes = Array.from(document.querySelectorAll('button, a, div[role="button"], [role="tab"], span, div'));
+    for (const node of nodes) {
+      const text = normalize(node.textContent);
+      const label = normalize(node.getAttribute('aria-label'));
+      if (
+        text === 'reel' ||
+        text === 'reels' ||
+        text.includes('share to reels') ||
+        text.includes('post a reel') ||
+        label === 'reel' ||
+        label.includes('reel')
+      ) {
+        return clickNode(node);
+      }
+    }
+
+    return false;
+  }).catch(() => false);
+
+  if (!reelSelected) {
+    reelSelected = await smartClick(page, [
+      'button:has-text("Reel")',
+      'button:has-text("Reels")',
+      'button:has-text("Share to reels")',
+      '[role="tab"]:has-text("Reel")',
+      '[role="dialog"] button:has-text("Reel")',
+      '[aria-label*="Reel" i]',
+    ], 'Reel');
+  }
+
+  if (!reelSelected) {
+    try {
+      const result = await runAgentTask(
+        page,
+        'Inside Instagram create flow, choose the Reel option so this upload is created as a Reel, not a regular post. Only interact with the popup/dialog.',
+        { maxSteps: 5, stepDelayMs: 600, useVision: true },
+      );
+      reelSelected = result.success;
+    } catch (e) {
+      console.warn('[Instagram] Agent reel selection failed:', e.message);
+    }
+  }
+
+  if (reelSelected) {
+    await page.waitForTimeout(1800);
+    console.log('[Instagram] Explicitly selected Reel flow');
+  }
+
+  return reelSelected;
+}
+
 async function closeInstagramShareResultPopup(page) {
   const closed = await page.evaluate(() => {
     const dialog = document.querySelector('[role="dialog"]');
@@ -978,6 +1060,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
     console.log('[Instagram] Video file set, waiting for upload dialog to render...');
     await page.waitForTimeout(3000);
+
+    await ensureInstagramReelFlow(page);
 
     // Wait for the upload dialog/modal to appear
     const dialogAppeared = await page.waitForSelector('[role="dialog"], [aria-label*="create" i], [aria-label*="post" i]', { timeout: 10000 })

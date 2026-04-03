@@ -87,6 +87,39 @@ async function notifyTelegram(settings, message) {
 
 const uploaders = { youtube: uploadToYouTube, tiktok: uploadToTikTok, instagram: uploadToInstagram };
 
+function resolveMetadataForVideo(baseDir, videoFileName, fallbackTitle = '', fallbackDescription = '', fallbackTags = []) {
+  let resolvedTitle = fallbackTitle;
+  let resolvedDescription = fallbackDescription;
+  let resolvedTags = Array.isArray(fallbackTags) ? fallbackTags : [];
+
+  if (!baseDir || !videoFileName) {
+    return { title: resolvedTitle, description: resolvedDescription, tags: resolvedTags };
+  }
+
+  const stem = path.basename(videoFileName, path.extname(videoFileName));
+  const candidates = [
+    path.join(baseDir, `${stem}.txt`),
+    path.join(baseDir, `${stem}.TXT`),
+  ];
+
+  const matchedTextPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!matchedTextPath) {
+    return { title: resolvedTitle, description: resolvedDescription, tags: resolvedTags };
+  }
+
+  try {
+    const parsed = parseTextFile(matchedTextPath);
+    if (parsed.title) resolvedTitle = parsed.title;
+    if (parsed.description) resolvedDescription = parsed.description;
+    if (Array.isArray(parsed.tags) && parsed.tags.length > 0) resolvedTags = parsed.tags;
+    console.log(`[Worker] Matched metadata file for ${videoFileName}: ${path.basename(matchedTextPath)}`);
+  } catch (err) {
+    console.warn(`[Worker] Failed to parse metadata file for ${videoFileName}: ${err.message}`);
+  }
+
+  return { title: resolvedTitle, description: resolvedDescription, tags: resolvedTags };
+}
+
 function normalizeFolderPath(folderPath) {
   return String(folderPath || '')
     .replace(/^\[folder\]\s*/i, '')
@@ -205,6 +238,18 @@ async function processJob(jobId, options = {}) {
       await notifyTelegram(settings, `❌ Video file not found: ${job.video_file_name}`);
       return;
     }
+
+    const metadataBaseDir = path.dirname(videoPath);
+    const matchedMetadata = resolveMetadataForVideo(
+      metadataBaseDir,
+      path.basename(videoPath),
+      resolvedTitle,
+      resolvedDescription,
+      resolvedTags,
+    );
+    resolvedTitle = matchedMetadata.title;
+    resolvedDescription = matchedMetadata.description;
+    resolvedTags = matchedMetadata.tags;
 
     const metadata = { title: resolvedTitle, description: resolvedDescription, tags: resolvedTags };
     console.log(`[Worker] Job ${jobId} metadata — title: "${metadata.title}", desc: "${(metadata.description || '').slice(0, 80)}", tags: [${(metadata.tags || []).join(', ')}]`);

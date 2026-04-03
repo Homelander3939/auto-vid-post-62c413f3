@@ -11,19 +11,34 @@ function parseTextFile(filePath) {
     platforms: ['youtube', 'tiktok', 'instagram'],
   };
 
+  let activeMultilineKey = null;
+
   for (const line of lines) {
     const colonIdx = line.indexOf(':');
-    if (colonIdx === -1) continue;
+    if (colonIdx === -1) {
+      if (activeMultilineKey === 'description') {
+        metadata.description = metadata.description
+          ? `${metadata.description}\n${line}`
+          : line;
+      }
+      continue;
+    }
 
     const key = line.substring(0, colonIdx).trim().toLowerCase();
     const value = line.substring(colonIdx + 1).trim();
+    activeMultilineKey = null;
 
     switch (key) {
       case 'title':
+      case 'header':
+      case 'headline':
         metadata.title = value;
         break;
       case 'description':
+      case 'caption':
+      case 'details':
         metadata.description = value;
+        activeMultilineKey = 'description';
         break;
       case 'tags':
       case 'keywords':
