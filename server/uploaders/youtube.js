@@ -8,6 +8,11 @@ const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'yo
 const YT_STUDIO_URL = 'https://studio.youtube.com';
 const YT_UPLOAD_URL = 'https://studio.youtube.com/upload';
 
+async function gotoYouTubePage(page, url, timeout = 60000, settleMs = 2500) {
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+  await page.waitForTimeout(settleMs);
+}
+
 async function safeScreenshot(page) {
   return page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
 }
@@ -157,13 +162,11 @@ async function getYouTubeFileInput(page) {
 }
 
 async function ensureStudioUploadPage(page) {
-  await page.goto(YT_UPLOAD_URL, { waitUntil: 'networkidle', timeout: 45000 });
-  await page.waitForTimeout(2500);
+  await gotoYouTubePage(page, YT_UPLOAD_URL, 45000, 2500);
   const fileInput = await getYouTubeFileInput(page);
   if (fileInput) return fileInput;
 
-  await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 45000 });
-  await page.waitForTimeout(2000);
+  await gotoYouTubePage(page, YT_STUDIO_URL, 45000, 2000);
   return getYouTubeFileInput(page);
 }
 
@@ -635,8 +638,7 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
   try {
     // ===== PHASE 1: LOGIN =====
-    await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 60000 });
-    await page.waitForTimeout(3000);
+    await gotoYouTubePage(page, YT_STUDIO_URL, 60000, 3000);
 
     let loginAttempts = 0;
     const MAX_LOGIN_ATTEMPTS = 60;
@@ -797,8 +799,7 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
             continue;
           }
 
-          await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => {});
-          await page.waitForTimeout(2500);
+          await gotoYouTubePage(page, YT_STUDIO_URL, 45000, 2500).catch(() => {});
           continue;
         }
 
@@ -808,13 +809,11 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       }
 
       if (url.includes('youtube.com')) {
-        await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => {});
-        await page.waitForTimeout(2500);
+        await gotoYouTubePage(page, YT_STUDIO_URL, 45000, 2500).catch(() => {});
         continue;
       }
 
-      await page.goto(YT_STUDIO_URL, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => {});
-      await page.waitForTimeout(2500);
+      await gotoYouTubePage(page, YT_STUDIO_URL, 45000, 2500).catch(() => {});
     }
 
     if (!loggedIn) {
@@ -876,15 +875,13 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
     if (!fileInput) {
       console.log('[YouTube] Upload dialog not found, trying direct navigation...');
-      await page.goto(YT_UPLOAD_URL, { waitUntil: 'networkidle', timeout: 45000 });
-      await page.waitForTimeout(3000);
+      await gotoYouTubePage(page, YT_UPLOAD_URL, 45000, 3000);
       fileInput = await getYouTubeFileInput(page);
     }
 
     if (!fileInput) {
       // Last resort: try clicking Create again with a different strategy
-      await page.goto('https://studio.youtube.com', { waitUntil: 'networkidle', timeout: 30000 });
-      await page.waitForTimeout(3000);
+      await gotoYouTubePage(page, 'https://studio.youtube.com', 30000, 3000);
       // Click using page coordinates — Create button is usually top-right area
       await page.evaluate(() => {
         const allButtons = Array.from(document.querySelectorAll('button, ytcp-button'));

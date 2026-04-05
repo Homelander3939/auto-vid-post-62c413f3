@@ -439,29 +439,42 @@ async function clickInstagramShareButton(page) {
 }
 
 async function ensureInstagramReelFlow(page) {
-  const flowState = await page.evaluate(() => {
-    const text = (document.body?.innerText || '').toLowerCase();
+  const readyState = await page.evaluate(() => {
+    const scope = document.querySelector('[role="dialog"]') || document.body;
+    const text = (scope.innerText || scope.textContent || '').toLowerCase();
+    const buttons = Array.from(scope.querySelectorAll('button, a, div[role="button"], [role="menuitem"], [role="tab"]'));
+    const hasSelectFromComputer = buttons.some((node) => {
+      const value = `${node.textContent || ''} ${node.getAttribute('aria-label') || ''}`.toLowerCase();
+      return value.includes('select from computer') || value.includes('drag photos and videos here') || value.includes('drag videos here');
+    });
+
     return {
-      alreadyReelLike:
+      ready:
+        !!scope.querySelector('input[type="file"]') ||
+        hasSelectFromComputer ||
         text.includes('share to reels') ||
         text.includes('reel details') ||
-        text.includes('your reel') ||
-        text.includes('reels'),
-      looksLikePostPicker:
-        text.includes('new post') ||
-        text.includes('create new post') ||
-        text.includes('post') ||
-        text.includes('crop'),
+        text.includes('drag photos and videos here') ||
+        text.includes('drag videos here') ||
+        text.includes('select from computer') ||
+        text.includes('crop') ||
+        text.includes('trim'),
     };
-  }).catch(() => ({ alreadyReelLike: false, looksLikePostPicker: false }));
+  }).catch(() => ({ ready: false }));
 
-  if (flowState.alreadyReelLike) {
-    console.log('[Instagram] Reel flow already detected');
+  if (readyState.ready) {
+    console.log('[Instagram] Reel/file picker stage already open');
     return true;
   }
 
   let reelSelected = await page.evaluate(() => {
     const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const isVisible = (node) => {
+      if (!node) return false;
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
     const clickNode = (node) => {
       if (!node) return false;
       const target = node.closest('button, a, [role="button"], [role="tab"], label') || node;
@@ -469,13 +482,15 @@ async function ensureInstagramReelFlow(page) {
       return true;
     };
 
-    const nodes = Array.from(document.querySelectorAll('button, a, div[role="button"], [role="tab"], span, div'));
+    const nodes = Array.from(document.querySelectorAll('button, a, div[role="button"], [role="menuitem"], [role="tab"], span, div'));
     for (const node of nodes) {
+      if (!isVisible(node)) continue;
       const text = normalize(node.textContent);
       const label = normalize(node.getAttribute('aria-label'));
       if (
         text === 'reel' ||
         text === 'reels' ||
+        text === 'new reel' ||
         text.includes('share to reels') ||
         text.includes('post a reel') ||
         label === 'reel' ||
@@ -490,9 +505,11 @@ async function ensureInstagramReelFlow(page) {
 
   if (!reelSelected) {
     reelSelected = await smartClick(page, [
+      '[role="menuitem"]:has-text("Reel")',
       'button:has-text("Reel")',
       'button:has-text("Reels")',
       'button:has-text("Share to reels")',
+      'a:has-text("Reel")',
       '[role="tab"]:has-text("Reel")',
       '[role="dialog"] button:has-text("Reel")',
       '[aria-label*="Reel" i]',
@@ -515,6 +532,26 @@ async function ensureInstagramReelFlow(page) {
   if (reelSelected) {
     await page.waitForTimeout(1800);
     console.log('[Instagram] Explicitly selected Reel flow');
+  }
+
+  const reelFlowReady = await page.waitForFunction(() => {
+    const scope = document.querySelector('[role="dialog"]') || document.body;
+    const text = (scope.innerText || scope.textContent || '').toLowerCase();
+    return (
+      !!scope.querySelector('input[type="file"]') ||
+      text.includes('select from computer') ||
+      text.includes('drag photos and videos here') ||
+      text.includes('drag videos here') ||
+      text.includes('share to reels') ||
+      text.includes('reel details') ||
+      text.includes('crop') ||
+      text.includes('trim')
+    );
+  }, { timeout: 8000 }).then(() => true).catch(() => false);
+
+  if (reelFlowReady) {
+    console.log('[Instagram] Reel composer/file picker confirmed');
+    return true;
   }
 
   return reelSelected;
@@ -960,6 +997,12 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
     await page.waitForTimeout(3000);
 
+    const reelFlowReady = await ensureInstagramReelFlow(page);
+    if (!reelFlowReady) {
+      console.warn('[Instagram] Reel option was not explicitly confirmed after clicking Create; continuing with uploader detection');
+    }
+    await page.waitForTimeout(1200);
+
     // ===== PHASE 3: SELECT VIDEO FILE =====
     console.log('[Instagram] Setting video file...');
     let fileUploaded = false;
@@ -1091,8 +1134,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     // Extra settle time for video to fully render
     await page.waitForTimeout(3000);
 
-    await ensureInstagramReelFlow(page);
-    await page.waitForTimeout(2000);
+    console.log('[Instagram] Video loaded; continuing in reel composer...');
+    await page.waitForTimeout(1500);
 
     // ===== PHASE 3.5: SELECT 9:16 VERTICAL ASPECT RATIO =====
     // Instagram crop screen has aspect ratio icons — try to find and click the tall/vertical one
