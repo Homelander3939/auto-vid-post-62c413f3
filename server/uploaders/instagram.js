@@ -1058,22 +1058,130 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     
     if (!fileUploaded) throw new Error('Instagram upload dialog not found. Try creating a post manually first to verify your session.');
 
-    console.log('[Instagram] Video file set, waiting for upload dialog to render...');
+    console.log('[Instagram] Video file set, waiting for video to load in dialog...');
+
+    // Wait for Instagram to process the uploaded video — look for a video preview or thumbnail
+    for (let loadWait = 0; loadWait < 30; loadWait++) {
+      const loadState = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"]');
+        if (!dialog) return { loaded: false, hasDialog: false };
+        const text = (dialog.textContent || '').toLowerCase();
+        // Check if video preview rendered (video element, canvas, or img in dialog)
+        const hasVideo = !!dialog.querySelector('video, canvas, img[src*="blob:"], img[src*="cdninstagram"]');
+        // Check for loading indicators
+        const isLoading = text.includes('loading') || text.includes('processing') ||
+          !!dialog.querySelector('[role="progressbar"], [aria-label*="loading" i]');
+        // Check for crop/trim controls which mean video is ready
+        const hasCropControls = text.includes('crop') || text.includes('trim') || text.includes('adjust') ||
+          text.includes('next') || text.includes('original') || text.includes('1:1') || text.includes('4:5') ||
+          text.includes('16:9');
+        return { loaded: hasVideo || hasCropControls, hasDialog: true, isLoading, hasCropControls };
+      }).catch(() => ({ loaded: false, hasDialog: false }));
+
+      if (loadState.loaded) {
+        console.log(`[Instagram] Video loaded in dialog (crop controls: ${loadState.hasCropControls})`);
+        break;
+      }
+      if (loadWait >= 29) {
+        console.warn('[Instagram] Video load wait timed out, proceeding anyway');
+      }
+      await page.waitForTimeout(2000);
+    }
+
+    // Extra settle time for video to fully render
     await page.waitForTimeout(3000);
 
     await ensureInstagramReelFlow(page);
+    await page.waitForTimeout(2000);
+
+    // ===== PHASE 3.5: SELECT 9:16 VERTICAL ASPECT RATIO =====
+    // Instagram crop screen has aspect ratio icons — try to find and click the tall/vertical one
+    console.log('[Instagram] Attempting to select 9:16 aspect ratio in crop screen...');
+
+    let aspectRatioSet = await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]');
+      if (!dialog) return false;
+
+      // Strategy 1: Look for aspect ratio button with crop icon, then find 9:16 option
+      // The crop/resize toggle is usually a small icon button at the bottom-left of the crop area
+      const allButtons = Array.from(dialog.querySelectorAll('button, div[role="button"], span[role="button"]'));
+
+      // First, try to click the aspect ratio/crop toggle to expand ratio options
+      let cropToggleClicked = false;
+      for (const btn of allButtons) {
+        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+        const text = (btn.textContent || '').trim().toLowerCase();
+        if (label.includes('aspect ratio') || label.includes('crop') || label.includes('select crop') ||
+            label.includes('resize') || text.includes('original') || text === '1:1' || text === '4:5') {
+          btn.click();
+          cropToggleClicked = true;
+          break;
+        }
+      }
+
+      return cropToggleClicked ? 'toggled' : false;
+    }).catch(() => false);
+
+    if (aspectRatioSet === 'toggled') {
+      await page.waitForTimeout(1500);
+
+      // Now look for the 9:16 option in the expanded menu
+      const selected916 = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"]');
+        if (!dialog) return false;
+        const allClickables = Array.from(dialog.querySelectorAll('button, div[role="button"], span, div'));
+        for (const el of allClickables) {
+          const text = (el.textContent || '').trim();
+          const label = (el.getAttribute('aria-label') || '').toLowerCase();
+          if (text === '9:16' || label.includes('9:16') || label.includes('9 16')) {
+            el.click();
+            return true;
+          }
+        }
+        // If no 9:16, try "Original" which preserves pre-processed vertical video
+        for (const el of allClickables) {
+          const text = (el.textContent || '').trim().toLowerCase();
+          const label = (el.getAttribute('aria-label') || '').toLowerCase();
+          if (text === 'original' || label.includes('original')) {
+            el.click();
+            return 'original';
+          }
+        }
+        return false;
+      }).catch(() => false);
+
+      if (selected916 === true) {
+        console.log('[Instagram] Selected 9:16 aspect ratio');
+      } else if (selected916 === 'original') {
+        console.log('[Instagram] Selected Original aspect ratio (video is already 9:16)');
+      } else {
+        console.log('[Instagram] Could not find 9:16 or Original option');
+      }
+      await page.waitForTimeout(1500);
+    }
+
+    // Fallback: Try agent to select vertical aspect ratio
+    if (!aspectRatioSet) {
+      try {
+        console.log('[Instagram] Trying agent to set vertical aspect ratio...');
+        const result = await runAgentTask(page,
+          'In the Instagram crop/resize dialog, find and click the aspect ratio selector (a small icon at the bottom-left of the image area), then select "9:16" or the tallest/vertical option. If you see aspect ratio options like Original, 1:1, 4:5, 16:9 — look for 9:16. Do NOT click Next yet.',
+          { maxSteps: 6, stepDelayMs: 800, useVision: true });
+        if (result.success) {
+          console.log('[Instagram] Agent selected vertical aspect ratio');
+          await page.waitForTimeout(2000);
+        }
+      } catch (e) {
+        console.warn('[Instagram] Agent aspect ratio selection failed:', e.message);
+      }
+    }
 
     // Wait for the upload dialog/modal to appear
     const dialogAppeared = await page.waitForSelector('[role="dialog"], [aria-label*="create" i], [aria-label*="post" i]', { timeout: 10000 })
       .then(() => true).catch(() => false);
     if (dialogAppeared) {
-      console.log('[Instagram] Upload dialog detected');
-    } else {
-      console.log('[Instagram] Dialog not detected by selector, proceeding anyway');
+      console.log('[Instagram] Upload dialog confirmed');
     }
-
-    // Phase 3.5 REMOVED — video is already pre-processed to 9:16 via ffmpeg before upload.
-    // No need to fight Instagram's crop UI icons.
 
     // ===== PHASE 4: CLICK THROUGH CROP/ADJUST SCREENS =====
     // Instagram shows: Crop → Filter → Caption screens
