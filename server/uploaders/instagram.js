@@ -557,6 +557,95 @@ async function ensureInstagramReelFlow(page) {
   return reelSelected;
 }
 
+async function waitForInstagramUploadSurface(page, maxWaitMs = 15000) {
+  const started = Date.now();
+
+  while (Date.now() - started < maxWaitMs) {
+    const state = await page.evaluate(() => {
+      const scope = document.querySelector('[role="dialog"]')
+        || document.querySelector('main, [role="main"]')
+        || document.body;
+      const text = (scope.innerText || scope.textContent || '').toLowerCase();
+      const path = window.location.pathname.toLowerCase();
+      const clickables = Array.from(
+        scope.querySelectorAll('button, a, label, div[role="button"], [role="button"], [role="tab"], span')
+      );
+
+      const hasFileInput = document.querySelectorAll('input[type="file"]').length > 0;
+      const hasSelectButton = clickables.some((node) => {
+        const value = `${node.textContent || ''} ${node.getAttribute('aria-label') || ''}`
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .trim();
+        return value.includes('select from computer')
+          || value.includes('choose from computer')
+          || value.includes('upload from computer')
+          || value.includes('select file')
+          || value.includes('choose file')
+          || value.includes('drag photos and videos here')
+          || value.includes('drag videos here');
+      });
+
+      const looksLikeCreateFlow =
+        path.includes('/create/')
+        || text.includes('new reel')
+        || text.includes('share to reels')
+        || text.includes('reel details')
+        || text.includes('drag photos and videos here')
+        || text.includes('drag videos here')
+        || text.includes('select from computer')
+        || text.includes('crop')
+        || text.includes('trim');
+
+      return {
+        ready: hasFileInput || hasSelectButton || looksLikeCreateFlow,
+        hasDialog: !!document.querySelector('[role="dialog"]'),
+        hasFileInput,
+        hasSelectButton,
+        path,
+      };
+    }).catch(() => ({ ready: false, hasDialog: false, hasFileInput: false, hasSelectButton: false, path: '' }));
+
+    if (state.ready) {
+      console.log(`[Instagram] Upload surface ready (path: ${state.path || 'unknown'}, dialog: ${state.hasDialog}, fileInput: ${state.hasFileInput}, selectButton: ${state.hasSelectButton})`);
+      return state;
+    }
+
+    await page.waitForTimeout(1500);
+  }
+
+  return { ready: false, hasDialog: false, hasFileInput: false, hasSelectButton: false, path: '' };
+}
+
+async function forceOpenInstagramUploadSurface(page) {
+  const createRoutes = [
+    'https://www.instagram.com/create/select/',
+    'https://www.instagram.com/create/style/',
+  ];
+
+  for (const route of createRoutes) {
+    try {
+      console.log(`[Instagram] Trying direct create route: ${route}`);
+      await page.goto(route, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForTimeout(1800);
+
+      let uploadSurface = await waitForInstagramUploadSurface(page, 6000);
+      if (!uploadSurface.ready) {
+        await ensureInstagramReelFlow(page).catch(() => false);
+        uploadSurface = await waitForInstagramUploadSurface(page, 4000);
+      }
+
+      if (uploadSurface.ready) {
+        return true;
+      }
+    } catch (err) {
+      console.warn(`[Instagram] Direct create route failed (${route}): ${err.message}`);
+    }
+  }
+
+  return false;
+}
+
 async function closeInstagramShareResultPopup(page) {
   const closed = await page.evaluate(() => {
     const dialog = document.querySelector('[role="dialog"]');
@@ -995,11 +1084,22 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       throw new Error('Instagram: Could not find Create/New post button. Make sure you are logged in.');
     }
 
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(2500);
 
-    const reelFlowReady = await ensureInstagramReelFlow(page);
-    if (!reelFlowReady) {
-      console.warn('[Instagram] Reel option was not explicitly confirmed after clicking Create; continuing with uploader detection');
+    let reelFlowReady = await ensureInstagramReelFlow(page);
+    let uploadSurface = await waitForInstagramUploadSurface(page, 9000);
+
+    if (!uploadSurface.ready) {
+      console.warn('[Instagram] Create flow did not expose the upload surface yet; trying direct Instagram create routes...');
+      const forcedCreateSurface = await forceOpenInstagramUploadSurface(page);
+      if (forcedCreateSurface) {
+        reelFlowReady = true;
+        uploadSurface = await waitForInstagramUploadSurface(page, 5000);
+      }
+    }
+
+    if (!reelFlowReady && !uploadSurface.ready) {
+      console.warn('[Instagram] Reel option was not explicitly confirmed and upload surface is still missing; continuing with fallback uploader detection');
     }
     await page.waitForTimeout(1200);
 
@@ -1026,19 +1126,34 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           page.waitForEvent('filechooser', { timeout: 10000 }),
           (async () => {
             const clicked = await smartClick(page, [
+              '[role="dialog"] button:has-text("Select from computer")',
+              '[role="dialog"] div[role="button"]:has-text("Select from computer")',
+              '[role="dialog"] label:has-text("Select from computer")',
               'button:has-text("Select from computer")',
               'button:has-text("Select From Computer")',
               'button:has-text("Select from Computer")',
+              'div[role="button"]:has-text("Select from computer")',
+              'div[role="button"]:has-text("Select From Computer")',
+              'label:has-text("Select from computer")',
+              'label:has-text("Choose from computer")',
               'button:has-text("Select")',
               'button:has-text("Choose")',
             ], 'Select from computer');
             if (!clicked) {
               await page.evaluate(() => {
-                const btns = document.querySelectorAll('button');
-                for (const btn of btns) {
-                  const text = (btn.textContent || '').toLowerCase();
-                  if (text.includes('select') || text.includes('computer') || text.includes('choose')) {
-                    btn.click();
+                const nodes = document.querySelectorAll('button, label, div[role="button"], [role="button"], span');
+                for (const node of nodes) {
+                  const text = `${node.textContent || ''} ${node.getAttribute('aria-label') || ''}`.toLowerCase();
+                  if (
+                    text.includes('select from computer') ||
+                    text.includes('choose from computer') ||
+                    text.includes('upload from computer') ||
+                    text.includes('drag videos here') ||
+                    text.includes('drag photos and videos here') ||
+                    text.includes('select file') ||
+                    text.includes('choose file')
+                  ) {
+                    node.click();
                     return;
                   }
                 }
@@ -1099,7 +1214,9 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       } catch {}
     }
     
-    if (!fileUploaded) throw new Error('Instagram upload dialog not found. Try creating a post manually first to verify your session.');
+    if (!fileUploaded) {
+      throw new Error(`Instagram upload dialog not found after opening create flow (url: ${page.url()}). Try creating a post manually first to verify your session.`);
+    }
 
     console.log('[Instagram] Video file set, waiting for video to load in dialog...');
 
