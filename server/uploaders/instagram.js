@@ -438,7 +438,7 @@ async function clickInstagramShareButton(page) {
   return shareClicked;
 }
 
-async function ensureInstagramReelFlow(page) {
+async function ensureInstagramPostFlow(page) {
   const readyState = await page.evaluate(() => {
     const scope = document.querySelector('[role="dialog"]') || document.body;
     const text = (scope.innerText || scope.textContent || '').toLowerCase();
@@ -452,8 +452,8 @@ async function ensureInstagramReelFlow(page) {
       ready:
         !!scope.querySelector('input[type="file"]') ||
         hasSelectFromComputer ||
-        text.includes('share to reels') ||
-        text.includes('reel details') ||
+        text.includes('create new post') ||
+        text.includes('new post') ||
         text.includes('drag photos and videos here') ||
         text.includes('drag videos here') ||
         text.includes('select from computer') ||
@@ -463,11 +463,12 @@ async function ensureInstagramReelFlow(page) {
   }).catch(() => ({ ready: false }));
 
   if (readyState.ready) {
-    console.log('[Instagram] Reel/file picker stage already open');
+    console.log('[Instagram] Post/file picker stage already open');
     return true;
   }
 
-  let reelSelected = await page.evaluate(() => {
+  // Select "Post" from the create menu (not "Reel")
+  let postSelected = await page.evaluate(() => {
     const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
     const isVisible = (node) => {
       if (!node) return false;
@@ -487,14 +488,13 @@ async function ensureInstagramReelFlow(page) {
       if (!isVisible(node)) continue;
       const text = normalize(node.textContent);
       const label = normalize(node.getAttribute('aria-label'));
+      // Match "Post" but avoid matching "New post" (which is the create button itself) or "Repost"
       if (
-        text === 'reel' ||
-        text === 'reels' ||
-        text === 'new reel' ||
-        text.includes('share to reels') ||
-        text.includes('post a reel') ||
-        label === 'reel' ||
-        label.includes('reel')
+        text === 'post' ||
+        text === 'new post' ||
+        text === 'create new post' ||
+        label === 'post' ||
+        label === 'new post'
       ) {
         return clickNode(node);
       }
@@ -503,38 +503,37 @@ async function ensureInstagramReelFlow(page) {
     return false;
   }).catch(() => false);
 
-  if (!reelSelected) {
-    reelSelected = await smartClick(page, [
-      '[role="menuitem"]:has-text("Reel")',
-      'button:has-text("Reel")',
-      'button:has-text("Reels")',
-      'button:has-text("Share to reels")',
-      'a:has-text("Reel")',
-      '[role="tab"]:has-text("Reel")',
-      '[role="dialog"] button:has-text("Reel")',
-      '[aria-label*="Reel" i]',
-    ], 'Reel');
+  if (!postSelected) {
+    postSelected = await smartClick(page, [
+      '[role="menuitem"]:has-text("Post")',
+      'button:has-text("Post")',
+      'a:has-text("Post")',
+      '[role="tab"]:has-text("Post")',
+      '[role="dialog"] button:has-text("Post")',
+      '[aria-label="Post" i]',
+      '[aria-label="New post" i]',
+    ], 'Post');
   }
 
-  if (!reelSelected) {
+  if (!postSelected) {
     try {
       const result = await runAgentTask(
         page,
-        'Inside Instagram create flow, choose the Reel option so this upload is created as a Reel, not a regular post. Only interact with the popup/dialog.',
+        'Inside Instagram create flow menu, choose the "Post" option so this upload is created as a regular Post (not a Reel or Story). Only interact with the popup/dialog.',
         { maxSteps: 5, stepDelayMs: 600, useVision: true },
       );
-      reelSelected = result.success;
+      postSelected = result.success;
     } catch (e) {
-      console.warn('[Instagram] Agent reel selection failed:', e.message);
+      console.warn('[Instagram] Agent post selection failed:', e.message);
     }
   }
 
-  if (reelSelected) {
+  if (postSelected) {
     await page.waitForTimeout(1800);
-    console.log('[Instagram] Explicitly selected Reel flow');
+    console.log('[Instagram] Explicitly selected Post flow');
   }
 
-  const reelFlowReady = await page.waitForFunction(() => {
+  const postFlowReady = await page.waitForFunction(() => {
     const scope = document.querySelector('[role="dialog"]') || document.body;
     const text = (scope.innerText || scope.textContent || '').toLowerCase();
     return (
@@ -542,19 +541,19 @@ async function ensureInstagramReelFlow(page) {
       text.includes('select from computer') ||
       text.includes('drag photos and videos here') ||
       text.includes('drag videos here') ||
-      text.includes('share to reels') ||
-      text.includes('reel details') ||
+      text.includes('create new post') ||
+      text.includes('new post') ||
       text.includes('crop') ||
       text.includes('trim')
     );
   }, { timeout: 8000 }).then(() => true).catch(() => false);
 
-  if (reelFlowReady) {
-    console.log('[Instagram] Reel composer/file picker confirmed');
+  if (postFlowReady) {
+    console.log('[Instagram] Post composer/file picker confirmed');
     return true;
   }
 
-  return reelSelected;
+  return postSelected;
 }
 
 async function waitForInstagramUploadSurface(page, maxWaitMs = 15000) {
@@ -588,6 +587,8 @@ async function waitForInstagramUploadSurface(page, maxWaitMs = 15000) {
 
       const looksLikeCreateFlow =
         path.includes('/create/')
+        || text.includes('new post')
+        || text.includes('create new post')
         || text.includes('new reel')
         || text.includes('share to reels')
         || text.includes('reel details')
@@ -631,7 +632,7 @@ async function forceOpenInstagramUploadSurface(page) {
 
       let uploadSurface = await waitForInstagramUploadSurface(page, 6000);
       if (!uploadSurface.ready) {
-        await ensureInstagramReelFlow(page).catch(() => false);
+        await ensureInstagramPostFlow(page).catch(() => false);
         uploadSurface = await waitForInstagramUploadSurface(page, 4000);
       }
 
@@ -1086,6 +1087,13 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
     await page.waitForTimeout(3000);
 
+    // ===== PHASE 2.5: SELECT "POST" FROM CREATE MENU =====
+    // After clicking "+", Instagram may show a dropdown menu with options: Post, Reel, Story, etc.
+    // Explicitly select "Post" to ensure we enter the regular post flow.
+    console.log('[Instagram] Checking for create menu to select Post...');
+    await ensureInstagramPostFlow(page);
+    await page.waitForTimeout(1500);
+
     // ===== PHASE 3: SELECT VIDEO FILE =====
     console.log('[Instagram] Setting video file...');
     let fileUploaded = false;
@@ -1266,25 +1274,16 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         }
       }
 
-      for (const node of nodes) {
-        if (!isVisible(node)) continue;
-        const text = normalize(node.textContent);
-        const label = normalize(node.getAttribute('aria-label'));
-        if (text === 'original' || label === 'original' || label.includes('original')) {
-          clickNode(node);
-          return 'original';
-        }
-      }
-
       return '';
     }).catch(() => '');
 
-    let selectedAspectRatio = await trySelectInstagramCropRatio();
-
-    if (!selectedAspectRatio) {
-      const cropToggleClicked = await page.evaluate(() => {
+    // Step 1: First try to find the aspect ratio toggle button in the bottom-left of the crop screen
+    // and click it to open the aspect ratio picker
+    const openCropPicker = async () => {
+      // Strategy A: Look for the aspect ratio / crop button by aria-label or SVG icon in bottom-left
+      const pickerOpened = await page.evaluate(() => {
         const scope = document.querySelector('[role="dialog"]') || document.body;
-        const frame = (document.querySelector('[role="dialog"]') || document.querySelector('main, [role="main"]') || document.body).getBoundingClientRect();
+        const frame = scope.getBoundingClientRect();
         const isVisible = (node) => {
           if (!node) return false;
           const rect = node.getBoundingClientRect();
@@ -1293,27 +1292,47 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         };
         const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-        const clickables = Array.from(scope.querySelectorAll('button, label, div[role="button"], span[role="button"], [role="menuitem"], [role="tab"], svg'));
+        // First, try to find buttons with crop/aspect-related labels
+        const clickables = Array.from(scope.querySelectorAll('button, div[role="button"], [role="button"], svg'));
+        for (const rawNode of clickables) {
+          const node = rawNode.closest('button, [role="button"]') || rawNode;
+          if (!isVisible(node)) continue;
+          const label = normalize(node.getAttribute('aria-label'));
+          if (label.includes('crop') || label.includes('aspect') || label.includes('resize') ||
+              label.includes('select crop') || label.includes('photo outline')) {
+            node.click();
+            return true;
+          }
+        }
+
+        // Strategy B: Find the bottom-left button with an SVG icon (the crop/aspect ratio toggle)
+        // Instagram's crop screen has a small icon button in the bottom-left corner
         let bestNode = null;
         let bestScore = -1;
 
         for (const rawNode of clickables) {
-          const node = rawNode.closest('button, label, [role="button"], [role="menuitem"], [role="tab"]') || rawNode;
+          const node = rawNode.closest('button, [role="button"]') || rawNode;
           if (!isVisible(node)) continue;
-
           const rect = node.getBoundingClientRect();
-          if (rect.left > frame.left + frame.width * 0.45) continue;
-          if (rect.top < frame.top + frame.height * 0.45) continue;
 
-          const text = normalize(node.textContent);
+          // Must be in the bottom-left quadrant of the dialog
+          if (rect.left > frame.left + frame.width * 0.45) continue;
+          if (rect.top < frame.top + frame.height * 0.40) continue;
+
           const label = normalize(node.getAttribute('aria-label'));
+          const hasSvg = !!node.querySelector('svg') || node.tagName.toLowerCase() === 'svg';
+          const text = normalize(node.textContent);
           let score = 0;
 
+          // Prefer buttons with SVG icons (the crop toggle is an icon button)
+          if (hasSvg) score += 8;
+          // Prefer buttons with no text (icon-only buttons)
+          if (!text || text.length < 3) score += 4;
+          // Prefer buttons with crop-related labels
           if (label.includes('crop') || label.includes('aspect') || label.includes('resize') || label.includes('original')) score += 10;
-          if (node.querySelector('svg') || node.tagName.toLowerCase() === 'svg') score += 4;
-          if (!text) score += 2;
-          score += Math.max(0, frame.left + frame.width * 0.35 - rect.left);
-          score += Math.max(0, rect.top - (frame.top + frame.height * 0.55));
+          // Position scoring: prefer further left and further down
+          score += Math.max(0, (frame.left + frame.width * 0.3 - rect.left) / 10);
+          score += Math.max(0, (rect.top - frame.top - frame.height * 0.5) / 10);
 
           if (score > bestScore) {
             bestScore = score;
@@ -1321,11 +1340,21 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           }
         }
 
-        if (!bestNode) return false;
-        bestNode.click();
-        return true;
+        if (bestNode && bestScore > 3) {
+          bestNode.click();
+          return true;
+        }
+
+        return false;
       }).catch(() => false);
 
+      return pickerOpened;
+    };
+
+    let selectedAspectRatio = await trySelectInstagramCropRatio();
+
+    if (!selectedAspectRatio) {
+      const cropToggleClicked = await openCropPicker();
       if (cropToggleClicked) {
         console.log('[Instagram] Opened crop ratio picker from lower-left control');
         await page.waitForTimeout(1200);
@@ -1333,11 +1362,28 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       }
     }
 
+    // If still not found, try clicking the crop toggle again with a broader search
+    if (!selectedAspectRatio) {
+      try {
+        // Use smartClick to find common crop toggle selectors
+        const cropClicked = await smartClick(page, [
+          '[role="dialog"] [aria-label*="crop" i]',
+          '[role="dialog"] [aria-label*="aspect" i]',
+          '[role="dialog"] [aria-label*="Select crop" i]',
+          '[role="dialog"] [aria-label*="photo outline" i]',
+        ], 'crop toggle');
+        if (cropClicked) {
+          await page.waitForTimeout(1200);
+          selectedAspectRatio = await trySelectInstagramCropRatio();
+        }
+      } catch {}
+    }
+
     if (!selectedAspectRatio) {
       try {
         console.log('[Instagram] Trying agent to select 9:16 aspect ratio...');
         const result = await runAgentTask(page,
-          'Instagram crop stage is open. In the lower-left crop size menu, select the visible "9:16" option. If 9:16 is not visible yet, first open the lower-left size/aspect control, then choose 9:16. Do NOT click Next.',
+          'Instagram crop/resize stage is open. In the bottom-left corner of the dialog, there is a small icon button that opens the aspect ratio picker. Click that button first to reveal aspect ratio options (like Original, 1:1, 4:5, 9:16, 16:9). Then select the "9:16" option. Do NOT click Next.',
           { maxSteps: 6, stepDelayMs: 700, useVision: true });
         if (result.success) {
           selectedAspectRatio = '9:16';
@@ -1351,7 +1397,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       console.log(`[Instagram] Selected ${selectedAspectRatio} aspect ratio in crop screen`);
       await page.waitForTimeout(1200);
     } else {
-      console.warn('[Instagram] Could not explicitly select 9:16 in crop screen; continuing without changing the working upload flow');
+      console.warn('[Instagram] Could not explicitly select 9:16 in crop screen; video will be uploaded with pre-processed 9:16 dimensions');
     }
 
     // Wait for the upload dialog/modal to appear

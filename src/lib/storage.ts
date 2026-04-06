@@ -156,6 +156,20 @@ export function getVideoUrl(storagePath: string): string {
   return data.publicUrl;
 }
 
+/**
+ * Split a tags/hashtags string into individual tags.
+ * Supports both comma-separated ("tag1, tag2") and space-separated hashtags ("#tag1 #tag2").
+ */
+function splitTags(value: string): string[] {
+  if (!value) return [];
+  // If the value contains commas, split by comma
+  if (value.includes(',')) {
+    return value.split(',').map((t) => t.trim()).filter(Boolean);
+  }
+  // Otherwise, split by spaces (handles "#tag1 #tag2 #tag3" format)
+  return value.split(/\s+/).map((t) => t.trim()).filter(Boolean);
+}
+
 // --- Text file parsing ---
 export function parseTextContent(content: string): VideoMetadata {
   const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -197,7 +211,7 @@ export function parseTextContent(content: string): VideoMetadata {
       case 'tags':
       case 'keywords':
       case 'hashtags':
-        metadata.tags = value.split(',').map((t) => t.trim()).filter(Boolean);
+        metadata.tags = splitTags(value);
         break;
       case 'platforms':
         metadata.platforms = value.split(',').map((p) => p.trim().toLowerCase()).filter(Boolean);

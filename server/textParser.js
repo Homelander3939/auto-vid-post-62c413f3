@@ -43,7 +43,7 @@ function parseTextFile(filePath) {
       case 'tags':
       case 'keywords':
       case 'hashtags':
-        metadata.tags = value.split(',').map(t => t.trim()).filter(Boolean);
+        metadata.tags = splitTags(value);
         break;
       case 'platforms':
         metadata.platforms = value.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
@@ -52,6 +52,20 @@ function parseTextFile(filePath) {
   }
 
   return metadata;
+}
+
+/**
+ * Split a tags/hashtags string into individual tags.
+ * Supports both comma-separated ("tag1, tag2") and space-separated hashtags ("#tag1 #tag2").
+ */
+function splitTags(value) {
+  if (!value) return [];
+  // If the value contains commas, split by comma
+  if (value.includes(',')) {
+    return value.split(',').map(t => t.trim()).filter(Boolean);
+  }
+  // Otherwise, split by spaces (handles "#tag1 #tag2 #tag3" format)
+  return value.split(/\s+/).map(t => t.trim()).filter(Boolean);
 }
 
 module.exports = { parseTextFile };
