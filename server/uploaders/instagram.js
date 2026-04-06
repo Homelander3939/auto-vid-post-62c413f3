@@ -1084,24 +1084,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       throw new Error('Instagram: Could not find Create/New post button. Make sure you are logged in.');
     }
 
-    await page.waitForTimeout(2500);
-
-    let reelFlowReady = await ensureInstagramReelFlow(page);
-    let uploadSurface = await waitForInstagramUploadSurface(page, 9000);
-
-    if (!uploadSurface.ready) {
-      console.warn('[Instagram] Create flow did not expose the upload surface yet; trying direct Instagram create routes...');
-      const forcedCreateSurface = await forceOpenInstagramUploadSurface(page);
-      if (forcedCreateSurface) {
-        reelFlowReady = true;
-        uploadSurface = await waitForInstagramUploadSurface(page, 5000);
-      }
-    }
-
-    if (!reelFlowReady && !uploadSurface.ready) {
-      console.warn('[Instagram] Reel option was not explicitly confirmed and upload surface is still missing; continuing with fallback uploader detection');
-    }
-    await page.waitForTimeout(1200);
+    await page.waitForTimeout(3000);
 
     // ===== PHASE 3: SELECT VIDEO FILE =====
     console.log('[Instagram] Setting video file...');
@@ -1255,85 +1238,120 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     await page.waitForTimeout(1500);
 
     // ===== PHASE 3.5: SELECT 9:16 VERTICAL ASPECT RATIO =====
-    // Instagram crop screen has aspect ratio icons — try to find and click the tall/vertical one
     console.log('[Instagram] Attempting to select 9:16 aspect ratio in crop screen...');
 
-    let aspectRatioSet = await page.evaluate(() => {
-      const dialog = document.querySelector('[role="dialog"]');
-      if (!dialog) return false;
+    const trySelectInstagramCropRatio = async () => page.evaluate(() => {
+      const scope = document.querySelector('[role="dialog"]') || document.body;
+      const isVisible = (node) => {
+        if (!node) return false;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const clickNode = (node) => {
+        const target = node.closest('button, label, [role="button"], [role="menuitem"], [role="tab"]') || node;
+        target.click();
+      };
 
-      // Strategy 1: Look for aspect ratio button with crop icon, then find 9:16 option
-      // The crop/resize toggle is usually a small icon button at the bottom-left of the crop area
-      const allButtons = Array.from(dialog.querySelectorAll('button, div[role="button"], span[role="button"]'));
+      const nodes = Array.from(scope.querySelectorAll('button, label, div[role="button"], span[role="button"], [role="menuitem"], [role="tab"], span, div'));
 
-      // First, try to click the aspect ratio/crop toggle to expand ratio options
-      let cropToggleClicked = false;
-      for (const btn of allButtons) {
-        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-        const text = (btn.textContent || '').trim().toLowerCase();
-        if (label.includes('aspect ratio') || label.includes('crop') || label.includes('select crop') ||
-            label.includes('resize') || text.includes('original') || text === '1:1' || text === '4:5') {
-          btn.click();
-          cropToggleClicked = true;
-          break;
+      for (const node of nodes) {
+        if (!isVisible(node)) continue;
+        const text = normalize(node.textContent);
+        const label = normalize(node.getAttribute('aria-label'));
+        if (text === '9:16' || text.includes('9:16') || label.includes('9:16') || label.includes('9 16')) {
+          clickNode(node);
+          return '9:16';
         }
       }
 
-      return cropToggleClicked ? 'toggled' : false;
-    }).catch(() => false);
+      for (const node of nodes) {
+        if (!isVisible(node)) continue;
+        const text = normalize(node.textContent);
+        const label = normalize(node.getAttribute('aria-label'));
+        if (text === 'original' || label === 'original' || label.includes('original')) {
+          clickNode(node);
+          return 'original';
+        }
+      }
 
-    if (aspectRatioSet === 'toggled') {
-      await page.waitForTimeout(1500);
+      return '';
+    }).catch(() => '');
 
-      // Now look for the 9:16 option in the expanded menu
-      const selected916 = await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"]');
-        if (!dialog) return false;
-        const allClickables = Array.from(dialog.querySelectorAll('button, div[role="button"], span, div'));
-        for (const el of allClickables) {
-          const text = (el.textContent || '').trim();
-          const label = (el.getAttribute('aria-label') || '').toLowerCase();
-          if (text === '9:16' || label.includes('9:16') || label.includes('9 16')) {
-            el.click();
-            return true;
+    let selectedAspectRatio = await trySelectInstagramCropRatio();
+
+    if (!selectedAspectRatio) {
+      const cropToggleClicked = await page.evaluate(() => {
+        const scope = document.querySelector('[role="dialog"]') || document.body;
+        const frame = (document.querySelector('[role="dialog"]') || document.querySelector('main, [role="main"]') || document.body).getBoundingClientRect();
+        const isVisible = (node) => {
+          if (!node) return false;
+          const rect = node.getBoundingClientRect();
+          const style = window.getComputedStyle(node);
+          return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+        const clickables = Array.from(scope.querySelectorAll('button, label, div[role="button"], span[role="button"], [role="menuitem"], [role="tab"], svg'));
+        let bestNode = null;
+        let bestScore = -1;
+
+        for (const rawNode of clickables) {
+          const node = rawNode.closest('button, label, [role="button"], [role="menuitem"], [role="tab"]') || rawNode;
+          if (!isVisible(node)) continue;
+
+          const rect = node.getBoundingClientRect();
+          if (rect.left > frame.left + frame.width * 0.45) continue;
+          if (rect.top < frame.top + frame.height * 0.45) continue;
+
+          const text = normalize(node.textContent);
+          const label = normalize(node.getAttribute('aria-label'));
+          let score = 0;
+
+          if (label.includes('crop') || label.includes('aspect') || label.includes('resize') || label.includes('original')) score += 10;
+          if (node.querySelector('svg') || node.tagName.toLowerCase() === 'svg') score += 4;
+          if (!text) score += 2;
+          score += Math.max(0, frame.left + frame.width * 0.35 - rect.left);
+          score += Math.max(0, rect.top - (frame.top + frame.height * 0.55));
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestNode = node;
           }
         }
-        // If no 9:16, try "Original" which preserves pre-processed vertical video
-        for (const el of allClickables) {
-          const text = (el.textContent || '').trim().toLowerCase();
-          const label = (el.getAttribute('aria-label') || '').toLowerCase();
-          if (text === 'original' || label.includes('original')) {
-            el.click();
-            return 'original';
-          }
-        }
-        return false;
+
+        if (!bestNode) return false;
+        bestNode.click();
+        return true;
       }).catch(() => false);
 
-      if (selected916 === true) {
-        console.log('[Instagram] Selected 9:16 aspect ratio');
-      } else if (selected916 === 'original') {
-        console.log('[Instagram] Selected Original aspect ratio (video is already 9:16)');
-      } else {
-        console.log('[Instagram] Could not find 9:16 or Original option');
+      if (cropToggleClicked) {
+        console.log('[Instagram] Opened crop ratio picker from lower-left control');
+        await page.waitForTimeout(1200);
+        selectedAspectRatio = await trySelectInstagramCropRatio();
       }
-      await page.waitForTimeout(1500);
     }
 
-    // Fallback: Try agent to select vertical aspect ratio
-    if (!aspectRatioSet) {
+    if (!selectedAspectRatio) {
       try {
-        console.log('[Instagram] Trying agent to set vertical aspect ratio...');
+        console.log('[Instagram] Trying agent to select 9:16 aspect ratio...');
         const result = await runAgentTask(page,
-          'In the Instagram crop/resize dialog, find and click the aspect ratio selector (a small icon at the bottom-left of the image area), then select "9:16" or the tallest/vertical option. If you see aspect ratio options like Original, 1:1, 4:5, 16:9 — look for 9:16. Do NOT click Next yet.',
-          { maxSteps: 6, stepDelayMs: 800, useVision: true });
+          'Instagram crop stage is open. In the lower-left crop size menu, select the visible "9:16" option. If 9:16 is not visible yet, first open the lower-left size/aspect control, then choose 9:16. Do NOT click Next.',
+          { maxSteps: 6, stepDelayMs: 700, useVision: true });
         if (result.success) {
-          console.log('[Instagram] Agent selected vertical aspect ratio');
-          await page.waitForTimeout(2000);
+          selectedAspectRatio = '9:16';
         }
       } catch (e) {
         console.warn('[Instagram] Agent aspect ratio selection failed:', e.message);
       }
+    }
+
+    if (selectedAspectRatio) {
+      console.log(`[Instagram] Selected ${selectedAspectRatio} aspect ratio in crop screen`);
+      await page.waitForTimeout(1200);
+    } else {
+      console.warn('[Instagram] Could not explicitly select 9:16 in crop screen; continuing without changing the working upload flow');
     }
 
     // Wait for the upload dialog/modal to appear
