@@ -51,8 +51,8 @@ function parseTextFile(filePath) {
       descLines.push(line);
       continue;
     } else if (activeSection === 'keywords') {
-      // Skip lines that look like metadata key:value pairs
-      if (!line.includes(':') || line.startsWith('#')) {
+      // Skip lines that look like metadata key:value pairs (e.g., "Campaign: Romal History")
+      if (!line.includes(':')) {
         keywordLines.push(line);
       }
       continue;
