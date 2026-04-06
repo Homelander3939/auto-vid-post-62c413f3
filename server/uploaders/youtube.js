@@ -955,17 +955,35 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       }
       const fullDescription = descParts.join('\n\n');
       console.log(`[YouTube] Description to fill (${fullDescription.length} chars): ${fullDescription.slice(0, 200)}...`);
-      await page.evaluate((desc) => {
+
+      // Strategy 1: execCommand — select-all first so we replace any existing text,
+      // not just insert at the cursor position.
+      const descFilled = await page.evaluate((desc) => {
         const textboxes = document.querySelectorAll('#textbox');
         if (textboxes.length > 1) {
           const descBox = textboxes[1];
           descBox.focus();
           descBox.click();
+          document.execCommand('selectAll', false, null);
           document.execCommand('insertText', false, desc);
           return true;
         }
         return false;
       }, fullDescription);
+
+      // Strategy 2: Playwright keyboard fallback (handles shadow-DOM and focus issues)
+      if (!descFilled) {
+        const allTextboxes = await page.$$('#textbox').catch(() => []);
+        const fallbackBox = allTextboxes[1] || null;
+        if (fallbackBox) {
+          await fallbackBox.click({ clickCount: 3 });
+          await page.waitForTimeout(200);
+          await page.keyboard.press('Control+a');
+          await page.waitForTimeout(100);
+          await page.keyboard.type(fullDescription, { delay: 20 });
+          console.log('[YouTube] Description filled via keyboard fallback');
+        }
+      }
     }
     // Try to expand "Show more" to access the Tags field
     if (metadata?.tags && metadata.tags.length > 0) {

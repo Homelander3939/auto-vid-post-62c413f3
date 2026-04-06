@@ -1266,7 +1266,29 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     console.log('[Instagram] Attempting to select 9:16 aspect ratio in crop screen...');
 
     const trySelectInstagramCropRatio = async () => {
-      // Find the 9:16 button and return its center coordinates for a Playwright-level click
+      // Strategy A: Playwright locator — handles scroll-into-view and React events natively.
+      // Try multiple text/label variants since Instagram sometimes changes the label.
+      const playwrightLocatorAttempts = [
+        () => page.locator('[role="dialog"]').getByText('9:16', { exact: true }).first(),
+        () => page.locator('[role="dialog"]').getByText('9:16').first(),
+        () => page.locator('[role="dialog"] [aria-label*="9:16" i]').first(),
+        () => page.locator('[role="dialog"] [aria-label*="9 16" i]').first(),
+        () => page.locator('[role="dialog"] [aria-label*="vertical" i]').first(),
+      ];
+
+      for (const getLocator of playwrightLocatorAttempts) {
+        try {
+          const loc = getLocator();
+          if (await loc.isVisible({ timeout: 600 })) {
+            await loc.click({ force: true });
+            await page.waitForTimeout(400);
+            return '9:16';
+          }
+        } catch {}
+      }
+
+      // Strategy B: Coordinate-based mouse click — find the button via DOM, then click at
+      // its viewport coordinates so React synthetic handlers fire (DOM .click() bypasses them).
       const nodeBox = await page.evaluate(() => {
         const scope = document.querySelector('[role="dialog"]') || document.body;
         const isVisible = (node) => {
@@ -1283,7 +1305,12 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           if (!isVisible(node)) continue;
           const text = normalize(node.textContent);
           const label = normalize(node.getAttribute('aria-label'));
-          if (text === '9:16' || text.includes('9:16') || label.includes('9:16') || label.includes('9 16')) {
+          // Match common text/label variants used by Instagram across different locales/versions
+          if (
+            text === '9:16' || text === '9 : 16' ||
+            text.includes('9:16') || text.includes('9 / 16') ||
+            label.includes('9:16') || label.includes('9 16') || label.includes('vertical')
+          ) {
             const target = node.closest('button, label, [role="button"], [role="menuitem"], [role="tab"]') || node;
             const rect = target.getBoundingClientRect();
             return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, found: true };
@@ -1296,6 +1323,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         // Use Playwright mouse click (dispatches full mousedown/mouseup/click chain)
         // which is more reliable than a bare DOM .click() for React event handlers
         await page.mouse.click(nodeBox.x, nodeBox.y);
+        await page.waitForTimeout(400);
         return '9:16';
       }
       return '';
@@ -1387,11 +1415,11 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       if (cropToggleClicked) {
         console.log('[Instagram] Opened crop ratio picker from lower-left control');
         // Wait for the aspect-ratio panel animation to fully complete
-        await page.waitForTimeout(2500);
+        await page.waitForTimeout(3000);
         selectedAspectRatio = await trySelectInstagramCropRatio();
-        // Retry once if the first attempt didn't register (e.g., panel still animating)
-        if (!selectedAspectRatio) {
-          await page.waitForTimeout(1000);
+        // Retry up to 3 more times if the first attempts didn't register (panel still animating)
+        for (let retryIdx = 0; retryIdx < 3 && !selectedAspectRatio; retryIdx++) {
+          await page.waitForTimeout(1200);
           selectedAspectRatio = await trySelectInstagramCropRatio();
         }
       }
@@ -1565,6 +1593,9 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       // Strategy 1: ClipboardEvent paste — most reliable for React/DraftJS contenteditable fields.
       // DraftJS listens to 'paste' events and handles them natively, whereas keyboard.type() can
       // fail when event handling is intercepted or the field is not in the expected focused state.
+      // IMPORTANT: DraftJS processes the paste event asynchronously (React batches state updates),
+      // so we must NOT check the DOM content immediately after dispatching — instead we wait and
+      // verify in a separate evaluate call.
       const captionTruncated = caption.slice(0, MAX_CAPTION_LENGTH);
       if (!captionFilled) {
         for (const sel of captionSelectors) {
@@ -1586,7 +1617,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
             // Fire a synthetic paste event carrying the caption text.
             // DraftJS handles ClipboardEvent('paste') correctly and updates its internal state.
-            const pasted = await page.evaluate((text) => {
+            await page.evaluate((text) => {
               const field = document.querySelector(
                 '[role="dialog"] [aria-label="Write a caption..."], ' +
                 '[role="dialog"] [aria-label*="Write a caption"], ' +
@@ -1594,7 +1625,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
                 '[role="dialog"] [contenteditable="true"], ' +
                 '[role="dialog"] textarea'
               );
-              if (!field) return false;
+              if (!field) return;
               field.focus();
               try {
                 const dt = new DataTransfer();
@@ -1602,15 +1633,25 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
                 const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
                 field.dispatchEvent(ev);
               } catch (dispatchErr) {
-                console.warn('[Instagram] ClipboardEvent dispatch error (non-fatal):', dispatchErr.message);
+                // Non-fatal — fall through to keyboard strategy
               }
-              // Verify something was inserted
-              const content = (field.textContent || field.value || '').trim();
-              return content.length > 0;
             }, captionTruncated);
 
+            // Wait for DraftJS React state to flush before checking DOM content.
+            await page.waitForTimeout(800);
+
+            // Verify something was inserted into ANY contenteditable / textarea in the dialog.
+            const pasted = await page.evaluate(() => {
+              const dialog = document.querySelector('[role="dialog"]') || document.body;
+              const candidates = Array.from(dialog.querySelectorAll('[contenteditable="true"], textarea'));
+              for (const field of candidates) {
+                const content = (field.textContent || field.value || '').trim();
+                if (content.length > 0) return true;
+              }
+              return false;
+            });
+
             if (pasted) {
-              await page.waitForTimeout(500);
               captionFilled = true;
               console.log(`[Instagram] Caption filled via ClipboardEvent paste on ${sel}`);
             }
