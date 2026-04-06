@@ -785,16 +785,38 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
           await page.keyboard.press('Control+a');
           await page.waitForTimeout(100);
           await page.keyboard.press('Backspace');
-          await page.waitForTimeout(100);
-          await page.keyboard.type(caption.slice(0, MAX_CAPTION_LENGTH), { delay: 5 });
-          captionFilled = true;
-          console.log(`[TikTok] Caption filled via ${sel}`);
+          await page.waitForTimeout(150);
+          // Use 20ms delay — TikTok's DraftJS needs time to process each keystroke
+          await page.keyboard.type(caption.slice(0, MAX_CAPTION_LENGTH), { delay: 20 });
+          await page.waitForTimeout(500);
+
+          // Verify the text was actually entered before marking as filled
+          const typed = await page.evaluate(() => {
+            const editors = document.querySelectorAll('[contenteditable="true"]');
+            for (const editor of editors) {
+              const content = (editor.textContent || '').trim();
+              if (content.length > 0) return content;
+            }
+            const textareas = document.querySelectorAll('textarea');
+            for (const ta of textareas) {
+              const content = (ta.value || '').trim();
+              if (content.length > 0) return content;
+            }
+            return '';
+          }).catch(() => '');
+
+          if (typed.length > 0) {
+            captionFilled = true;
+            console.log(`[TikTok] Caption filled via keyboard on ${sel} (${typed.length} chars verified)`);
+          } else {
+            console.log(`[TikTok] Keyboard fill on ${sel} unverified, trying next selector...`);
+          }
         } catch {}
       }
 
       // Strategy 2: DOM-based execCommand (may work for some DraftJS editors)
       if (!captionFilled) {
-        captionFilled = await page.evaluate((text) => {
+        await page.evaluate((text) => {
           const editors = document.querySelectorAll('[contenteditable="true"]');
           for (const editor of editors) {
             if (editor.offsetHeight === 0) continue;
@@ -802,7 +824,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
             editor.click();
             document.execCommand('selectAll', false, null);
             document.execCommand('insertText', false, text);
-            return true;
+            return;
           }
           const textareas = document.querySelectorAll('textarea');
           for (const ta of textareas) {
@@ -811,11 +833,27 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
               ta.value = text;
               ta.dispatchEvent(new Event('input', { bubbles: true }));
               ta.dispatchEvent(new Event('change', { bubbles: true }));
-              return true;
+              return;
             }
           }
+          console.warn('[TikTok] execCommand: no visible editor or textarea found');
+        }, caption.slice(0, MAX_CAPTION_LENGTH));
+
+        await page.waitForTimeout(400);
+
+        // Verify content was entered
+        captionFilled = await page.evaluate(() => {
+          const editors = document.querySelectorAll('[contenteditable="true"]');
+          for (const editor of editors) {
+            if ((editor.textContent || '').trim().length > 0) return true;
+          }
+          const textareas = document.querySelectorAll('textarea');
+          for (const ta of textareas) {
+            if ((ta.value || '').trim().length > 0) return true;
+          }
           return false;
-        }, caption);
+        }).catch(() => false);
+        if (captionFilled) console.log('[TikTok] Caption filled via execCommand');
       }
       
       if (!captionFilled) {
