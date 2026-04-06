@@ -1304,8 +1304,10 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     // Step 1: First try to find the aspect ratio toggle button in the bottom-left of the crop screen
     // and click it to open the aspect ratio picker
     const openCropPicker = async () => {
-      // Strategy A: Look for the aspect ratio / crop button by aria-label or SVG icon in bottom-left
-      const pickerOpened = await page.evaluate(() => {
+      // Collect candidate coordinates via page.evaluate, then use page.mouse.click() so that
+      // React synthetic event handlers (onClick, onMouseDown) fire correctly — DOM-level node.click()
+      // inside evaluate() bypasses React's event delegation and the picker never opens.
+      const coords = await page.evaluate(() => {
         const scope = document.querySelector('[role="dialog"]') || document.body;
         const frame = scope.getBoundingClientRect();
         const isVisible = (node) => {
@@ -1315,22 +1317,25 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
         };
         const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        const centerOf = (node) => {
+          const r = node.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        };
 
-        // First, try to find buttons with crop/aspect-related labels
         const clickables = Array.from(scope.querySelectorAll('button, div[role="button"], [role="button"], svg'));
+
+        // Strategy A: labeled crop/aspect button — highest confidence
         for (const rawNode of clickables) {
           const node = rawNode.closest('button, [role="button"]') || rawNode;
           if (!isVisible(node)) continue;
           const label = normalize(node.getAttribute('aria-label'));
           if (label.includes('crop') || label.includes('aspect') || label.includes('resize') ||
               label.includes('select crop') || label.includes('photo outline')) {
-            node.click();
-            return true;
+            return { ...centerOf(node), found: true };
           }
         }
 
-        // Strategy B: Find the bottom-left button with an SVG icon (the crop/aspect ratio toggle)
-        // Instagram's crop screen has a small icon button in the bottom-left corner
+        // Strategy B: bottom-left icon button in the crop preview area
         let bestNode = null;
         let bestScore = -1;
 
@@ -1348,13 +1353,9 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           const text = normalize(node.textContent);
           let score = 0;
 
-          // Prefer buttons with SVG icons (the crop toggle is an icon button)
           if (hasSvg) score += 8;
-          // Prefer buttons with no text (icon-only buttons)
           if (!text || text.length < 3) score += 4;
-          // Prefer buttons with crop-related labels
           if (label.includes('crop') || label.includes('aspect') || label.includes('resize') || label.includes('original')) score += 10;
-          // Position scoring: prefer further left and further down
           score += Math.max(0, (frame.left + frame.width * 0.3 - rect.left) / 10);
           score += Math.max(0, (rect.top - frame.top - frame.height * 0.5) / 10);
 
@@ -1365,14 +1366,18 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         }
 
         if (bestNode && bestScore > 3) {
-          bestNode.click();
-          return true;
+          return { ...centerOf(bestNode), found: true };
         }
 
-        return false;
-      }).catch(() => false);
+        return { found: false };
+      }).catch(() => ({ found: false }));
 
-      return pickerOpened;
+      if (coords?.found) {
+        await page.mouse.click(coords.x, coords.y);
+        return true;
+      }
+
+      return false;
     };
 
     let selectedAspectRatio = await trySelectInstagramCropRatio();
@@ -1544,7 +1549,6 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         .then(() => console.log('[Instagram] Caption field detected in dialog'))
         .catch(() => console.warn('[Instagram] Caption field not detected by waitForSelector, trying anyway'));
 
-      // Strategy 1: Keyboard-based approach scoped to dialog (most reliable for contenteditable)
       const captionSelectors = [
         '[role="dialog"] [aria-label="Write a caption..."]',
         '[role="dialog"] [aria-label*="Write a caption"]',
@@ -1558,49 +1562,107 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         'textarea',
       ];
 
-      for (const sel of captionSelectors) {
-        if (captionFilled) break;
-        try {
-          const el = await page.$(sel);
-          if (!el) continue;
-          const visible = await el.isVisible().catch(() => false);
-          if (!visible) continue;
-          
-          await el.click();
-          await page.waitForTimeout(800);
-          // Select all existing text and replace
-          await page.keyboard.press('Control+a');
-          await page.waitForTimeout(200);
-          await page.keyboard.press('Backspace');
-          await page.waitForTimeout(200);
-          // Type the caption character by character for reliability
-          await page.keyboard.type(caption.slice(0, MAX_CAPTION_LENGTH), { delay: 20 });
-          await page.waitForTimeout(800);
-          
-          // Verify caption was typed — use a content-based scan of all dialog
-          // contenteditables/textareas instead of re-querying by the original selector,
-          // because Instagram may update the element's aria-label after text is entered
-          // (causing the original selector to no longer match).
-          const typed = await page.evaluate(() => {
-            const dialog = document.querySelector('[role="dialog"]') || document.body;
-            const candidates = Array.from(dialog.querySelectorAll('[contenteditable="true"], textarea'));
-            for (const el of candidates) {
-              const content = (el.textContent || el.value || '').trim();
-              if (content.length > 0) return content;
+      // Strategy 1: ClipboardEvent paste — most reliable for React/DraftJS contenteditable fields.
+      // DraftJS listens to 'paste' events and handles them natively, whereas keyboard.type() can
+      // fail when event handling is intercepted or the field is not in the expected focused state.
+      const captionTruncated = caption.slice(0, MAX_CAPTION_LENGTH);
+      if (!captionFilled) {
+        for (const sel of captionSelectors) {
+          if (captionFilled) break;
+          try {
+            const el = await page.$(sel);
+            if (!el) continue;
+            const visible = await el.isVisible().catch(() => false);
+            if (!visible) continue;
+
+            await el.click();
+            await page.waitForTimeout(600);
+
+            // Select-all then delete any existing placeholder / text
+            await page.keyboard.press('Control+a');
+            await page.waitForTimeout(150);
+            await page.keyboard.press('Backspace');
+            await page.waitForTimeout(150);
+
+            // Fire a synthetic paste event carrying the caption text.
+            // DraftJS handles ClipboardEvent('paste') correctly and updates its internal state.
+            const pasted = await page.evaluate((text) => {
+              const field = document.querySelector(
+                '[role="dialog"] [aria-label="Write a caption..."], ' +
+                '[role="dialog"] [aria-label*="Write a caption"], ' +
+                '[role="dialog"] [aria-label*="caption" i], ' +
+                '[role="dialog"] [contenteditable="true"], ' +
+                '[role="dialog"] textarea'
+              );
+              if (!field) return false;
+              field.focus();
+              try {
+                const dt = new DataTransfer();
+                dt.setData('text/plain', text);
+                const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+                field.dispatchEvent(ev);
+              } catch (dispatchErr) {
+                console.warn('[Instagram] ClipboardEvent dispatch error (non-fatal):', dispatchErr.message);
+              }
+              // Verify something was inserted
+              const content = (field.textContent || field.value || '').trim();
+              return content.length > 0;
+            }, captionTruncated);
+
+            if (pasted) {
+              await page.waitForTimeout(500);
+              captionFilled = true;
+              console.log(`[Instagram] Caption filled via ClipboardEvent paste on ${sel}`);
             }
-            return '';
-          }).catch(() => '');
-          
-          if (typed.length > 0) {
-            captionFilled = true;
-            console.log(`[Instagram] Caption filled via ${sel} (${typed.length} chars verified)`);
-          } else {
-            console.log(`[Instagram] Caption via ${sel} may not have been applied, trying next method...`);
+          } catch (e) {
+            console.warn(`[Instagram] ClipboardEvent paste strategy failed on ${sel}:`, e.message);
           }
-        } catch {}
+        }
       }
 
-      // Strategy 2: DOM execCommand
+      // Strategy 2: Keyboard-based approach — fallback for non-DraftJS textareas
+      if (!captionFilled) {
+        for (const sel of captionSelectors) {
+          if (captionFilled) break;
+          try {
+            const el = await page.$(sel);
+            if (!el) continue;
+            const visible = await el.isVisible().catch(() => false);
+            if (!visible) continue;
+            
+            await el.click();
+            await page.waitForTimeout(800);
+            await page.keyboard.press('Control+a');
+            await page.waitForTimeout(200);
+            await page.keyboard.press('Backspace');
+            await page.waitForTimeout(200);
+            await page.keyboard.type(captionTruncated, { delay: 20 });
+            await page.waitForTimeout(800);
+            
+            // Verify caption was typed — content-based scan (aria-label may change after input)
+            const typed = await page.evaluate(() => {
+              const dialog = document.querySelector('[role="dialog"]') || document.body;
+              const candidates = Array.from(dialog.querySelectorAll('[contenteditable="true"], textarea'));
+              for (const el of candidates) {
+                const content = (el.textContent || el.value || '').trim();
+                if (content.length > 0) return content;
+              }
+              return '';
+            }).catch(() => '');
+            
+            if (typed.length > 0) {
+              captionFilled = true;
+              console.log(`[Instagram] Caption filled via keyboard on ${sel} (${typed.length} chars verified)`);
+            } else {
+              console.log(`[Instagram] Keyboard fill on ${sel} unverified, trying next...`);
+            }
+          } catch (e) {
+            console.warn(`[Instagram] Keyboard caption strategy failed on ${sel}:`, e.message);
+          }
+        }
+      }
+
+      // Strategy 3: DOM execCommand (deprecated but still works in some headless builds)
       if (!captionFilled) {
         captionFilled = await page.evaluate((text) => {
           const editors = document.querySelectorAll(
@@ -1614,16 +1676,15 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             editor.click();
             document.execCommand('selectAll', false, null);
             document.execCommand('insertText', false, text);
-            // Verify text was set
             const content = editor.textContent || editor.value || '';
             if (content.length > 0) return true;
           }
           return false;
-        }, caption);
+        }, captionTruncated);
         if (captionFilled) console.log('[Instagram] Caption filled via execCommand');
       }
 
-      // Strategy 3: Agent fallback
+      // Strategy 4: Agent fallback
       if (!captionFilled) {
         console.warn('[Instagram] Could not fill caption with standard methods, trying agent...');
         try {
