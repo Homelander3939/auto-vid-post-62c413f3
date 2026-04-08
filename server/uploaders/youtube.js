@@ -338,7 +338,7 @@ async function assessYouTubePostPublishState(page) {
 }
 
 async function selectVisibilityPublic(page) {
-  // Strategy 1: Playwright locators — pierce Shadow DOM natively (same pattern as selectAudienceNotMadeForKids)
+  // Strategy 1: Playwright locators — pierce Shadow DOM natively
   try {
     const radio = page.locator('[role="radio"]').filter({ hasText: /^public$/i }).first();
     if (await radio.isVisible({ timeout: 2000 }).catch(() => false)) {
@@ -355,7 +355,16 @@ async function selectVisibilityPublic(page) {
     }
   } catch {}
 
-  // Strategy 2: CSS attribute selectors via page.$() (Playwright pierces one Shadow DOM level)
+  // Strategy 2: Playwright getByLabel
+  try {
+    const label = page.getByLabel(/public/i).first();
+    if (await label.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await label.click();
+      return true;
+    }
+  } catch {}
+
+  // Strategy 3: CSS attribute selectors via smartClick
   const clicked = await smartClick(page, [
     'ytcp-radio-button[name="PUBLIC"]',
     'tp-yt-paper-radio-button[name="PUBLIC"]',
@@ -365,8 +374,17 @@ async function selectVisibilityPublic(page) {
 
   if (clicked) return true;
 
-  // Strategy 3: Deep Shadow DOM traversal via page.evaluate
-  return page.evaluate(() => {
+  // Strategy 4: getByText with broader matching
+  try {
+    const publicText = page.getByText('Public', { exact: true }).first();
+    if (await publicText.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await publicText.click();
+      return true;
+    }
+  } catch {}
+
+  // Strategy 5: Deep Shadow DOM traversal via page.evaluate
+  const deepClicked = await page.evaluate(() => {
     function deepQueryAll(root) {
       const results = [];
       const candidates = Array.from(root.querySelectorAll(
@@ -384,8 +402,6 @@ async function selectVisibilityPublic(page) {
     for (const node of nodes) {
       const text = (node.textContent || node.innerText || '').toLowerCase().trim();
       if (!text) continue;
-      // Match nodes whose text starts with "public" (e.g. "Public" or "Public\nEveryone can watch…")
-      // but does NOT contain "unlisted" or "private" (to avoid mis-matching descriptions)
       if (
         text.startsWith('public') &&
         !text.includes('unlisted') &&
@@ -399,6 +415,50 @@ async function selectVisibilityPublic(page) {
     }
     return false;
   }).catch(() => false);
+
+  if (deepClicked) return true;
+
+  // Strategy 6: Coordinate-based click on the "Public" radio using page.mouse
+  // This fires full React/Polymer event chain unlike DOM .click()
+  const coords = await page.evaluate(() => {
+    function deepQueryAll(root) {
+      const results = [];
+      const candidates = Array.from(root.querySelectorAll(
+        'ytcp-radio-button, tp-yt-paper-radio-button, [role="radio"], label'
+      ));
+      results.push(...candidates);
+      const all = root.querySelectorAll('*');
+      for (const el of all) {
+        if (el.shadowRoot) results.push(...deepQueryAll(el.shadowRoot));
+      }
+      return results;
+    }
+
+    const nodes = deepQueryAll(document);
+    for (const node of nodes) {
+      const text = (node.textContent || node.innerText || '').toLowerCase().trim();
+      if (!text) continue;
+      if (
+        text.startsWith('public') &&
+        !text.includes('unlisted') &&
+        !text.includes('private') &&
+        !text.includes('schedule')
+      ) {
+        const rect = node.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, found: true };
+        }
+      }
+    }
+    return { found: false };
+  }).catch(() => ({ found: false }));
+
+  if (coords?.found) {
+    await page.mouse.click(coords.x, coords.y);
+    return true;
+  }
+
+  return false;
 }
 
 async function selectAudienceNotMadeForKids(page) {
