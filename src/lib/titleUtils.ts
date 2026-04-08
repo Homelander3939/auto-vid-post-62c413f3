@@ -37,6 +37,7 @@ export function matchVideoTextFiles(
 }
 
 export const INTENSITY_OPTIONS = [
+  { value: 15, label: 'Every 15 minutes' },
   { value: 30, label: 'Every 30 minutes' },
   { value: 60, label: 'Every 1 hour' },
   { value: 120, label: 'Every 2 hours' },
