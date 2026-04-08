@@ -338,7 +338,7 @@ async function assessYouTubePostPublishState(page) {
 }
 
 async function selectVisibilityPublic(page) {
-  // Strategy 1: Playwright locators — pierce Shadow DOM natively (same pattern as selectAudienceNotMadeForKids)
+  // Strategy 1: Playwright locators — pierce Shadow DOM natively
   try {
     const radio = page.locator('[role="radio"]').filter({ hasText: /^public$/i }).first();
     if (await radio.isVisible({ timeout: 2000 }).catch(() => false)) {
@@ -355,7 +355,16 @@ async function selectVisibilityPublic(page) {
     }
   } catch {}
 
-  // Strategy 2: CSS attribute selectors via page.$() (Playwright pierces one Shadow DOM level)
+  // Strategy 2: Playwright getByLabel
+  try {
+    const label = page.getByLabel(/public/i).first();
+    if (await label.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await label.click();
+      return true;
+    }
+  } catch {}
+
+  // Strategy 3: CSS attribute selectors via smartClick
   const clicked = await smartClick(page, [
     'ytcp-radio-button[name="PUBLIC"]',
     'tp-yt-paper-radio-button[name="PUBLIC"]',
@@ -365,8 +374,17 @@ async function selectVisibilityPublic(page) {
 
   if (clicked) return true;
 
-  // Strategy 3: Deep Shadow DOM traversal via page.evaluate
-  return page.evaluate(() => {
+  // Strategy 4: getByText with broader matching
+  try {
+    const publicText = page.getByText('Public', { exact: true }).first();
+    if (await publicText.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await publicText.click();
+      return true;
+    }
+  } catch {}
+
+  // Strategy 5: Deep Shadow DOM traversal via page.evaluate
+  const deepClicked = await page.evaluate(() => {
     function deepQueryAll(root) {
       const results = [];
       const candidates = Array.from(root.querySelectorAll(
@@ -384,8 +402,6 @@ async function selectVisibilityPublic(page) {
     for (const node of nodes) {
       const text = (node.textContent || node.innerText || '').toLowerCase().trim();
       if (!text) continue;
-      // Match nodes whose text starts with "public" (e.g. "Public" or "Public\nEveryone can watch…")
-      // but does NOT contain "unlisted" or "private" (to avoid mis-matching descriptions)
       if (
         text.startsWith('public') &&
         !text.includes('unlisted') &&
@@ -399,6 +415,50 @@ async function selectVisibilityPublic(page) {
     }
     return false;
   }).catch(() => false);
+
+  if (deepClicked) return true;
+
+  // Strategy 6: Coordinate-based click on the "Public" radio using page.mouse
+  // This fires full React/Polymer event chain unlike DOM .click()
+  const coords = await page.evaluate(() => {
+    function deepQueryAll(root) {
+      const results = [];
+      const candidates = Array.from(root.querySelectorAll(
+        'ytcp-radio-button, tp-yt-paper-radio-button, [role="radio"], label'
+      ));
+      results.push(...candidates);
+      const all = root.querySelectorAll('*');
+      for (const el of all) {
+        if (el.shadowRoot) results.push(...deepQueryAll(el.shadowRoot));
+      }
+      return results;
+    }
+
+    const nodes = deepQueryAll(document);
+    for (const node of nodes) {
+      const text = (node.textContent || node.innerText || '').toLowerCase().trim();
+      if (!text) continue;
+      if (
+        text.startsWith('public') &&
+        !text.includes('unlisted') &&
+        !text.includes('private') &&
+        !text.includes('schedule')
+      ) {
+        const rect = node.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, found: true };
+        }
+      }
+    }
+    return { found: false };
+  }).catch(() => ({ found: false }));
+
+  if (coords?.found) {
+    await page.mouse.click(coords.x, coords.y);
+    return true;
+  }
+
+  return false;
 }
 
 async function selectAudienceNotMadeForKids(page) {
@@ -982,24 +1042,27 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);
 
     // ===== PHASE 4: FILL TITLE & DESCRIPTION =====
+    // Wait for the title textbox to appear (YouTube Studio loads it async)
+    for (let waitIdx = 0; waitIdx < 10; waitIdx++) {
+      const hasTextbox = await page.$('#textbox');
+      if (hasTextbox) break;
+      await page.waitForTimeout(1500);
+    }
+
     if (metadata?.title) {
-      console.log('[YouTube] Setting title...');
-      // YouTube Studio uses a contenteditable div with id="textbox"
+      console.log(`[YouTube] Setting title: "${metadata.title.slice(0, 60)}"`);
       const titleFilled = await page.evaluate((title) => {
-        // Find the title textbox (first #textbox element)
         const textboxes = document.querySelectorAll('#textbox');
         const titleBox = textboxes[0];
         if (!titleBox) return false;
         titleBox.focus();
         titleBox.click();
-        // Select all and replace
         document.execCommand('selectAll', false, null);
         document.execCommand('insertText', false, title);
         return true;
       }, metadata.title);
 
       if (!titleFilled) {
-        // Fallback: try keyboard approach
         const titleBox = await page.$('#textbox');
         if (titleBox) {
           await titleBox.click({ clickCount: 3 });
@@ -1008,10 +1071,10 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
           await page.keyboard.type(metadata.title, { delay: 20 });
         }
       }
+      if (titleFilled) console.log('[YouTube] Title filled successfully');
     }
 
     if (metadata?.description || (metadata?.tags && metadata.tags.length > 0)) {
-      // Build full description: description text + hashtags from tags
       const descParts = [];
       if (metadata.description) descParts.push(metadata.description);
       if (metadata.tags && metadata.tags.length > 0) {
@@ -1020,8 +1083,31 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       const fullDescription = descParts.join('\n\n');
       console.log(`[YouTube] Description to fill (${fullDescription.length} chars): ${fullDescription.slice(0, 200)}...`);
 
-      // Strategy 1: execCommand — select-all first so we replace any existing text,
-      // not just insert at the cursor position.
+      // Wait for description textbox to appear (2nd #textbox)
+      let descBoxReady = false;
+      for (let waitIdx = 0; waitIdx < 15; waitIdx++) {
+        const count = await page.$$eval('#textbox', els => els.length).catch(() => 0);
+        if (count >= 2) { descBoxReady = true; break; }
+        await page.waitForTimeout(1000);
+      }
+
+      if (!descBoxReady) {
+        console.warn('[YouTube] Description textbox (#textbox[1]) not found after waiting — trying click on description area');
+        // Try clicking on the description placeholder area to reveal it
+        await page.evaluate(() => {
+          const labels = document.querySelectorAll('label, span, div');
+          for (const el of labels) {
+            const text = (el.textContent || '').toLowerCase().trim();
+            if (text.includes('tell viewers about your video') || text.includes('description')) {
+              el.click();
+              return;
+            }
+          }
+        });
+        await page.waitForTimeout(1500);
+      }
+
+      // Strategy 1: execCommand
       const descFilled = await page.evaluate((desc) => {
         const textboxes = document.querySelectorAll('#textbox');
         if (textboxes.length > 1) {
@@ -1030,13 +1116,17 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
           descBox.click();
           document.execCommand('selectAll', false, null);
           document.execCommand('insertText', false, desc);
-          return true;
+          // Verify content was inserted
+          const content = (descBox.textContent || descBox.innerText || '').trim();
+          return content.length > 0;
         }
         return false;
       }, fullDescription);
 
-      // Strategy 2: Playwright keyboard fallback (handles shadow-DOM and focus issues)
-      if (!descFilled) {
+      if (descFilled) {
+        console.log('[YouTube] Description filled successfully');
+      } else {
+        // Strategy 2: Playwright keyboard fallback
         const allTextboxes = await page.$$('#textbox').catch(() => []);
         const fallbackBox = allTextboxes[1] || null;
         if (fallbackBox) {
@@ -1044,15 +1134,17 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
           await page.waitForTimeout(200);
           await page.keyboard.press('Control+a');
           await page.waitForTimeout(100);
-          await page.keyboard.type(fullDescription, { delay: 20 });
+          await page.keyboard.type(fullDescription, { delay: 15 });
           console.log('[YouTube] Description filled via keyboard fallback');
+        } else {
+          console.warn('[YouTube] Could not find description textbox — description NOT filled');
         }
       }
     }
+
     // Try to expand "Show more" to access the Tags field
     if (metadata?.tags && metadata.tags.length > 0) {
       try {
-        // Click "Show more" / "SHOW MORE" to reveal extra fields
         const expanded = await page.evaluate(() => {
           const buttons = Array.from(document.querySelectorAll('button, ytcp-button, [role="button"]'));
           for (const btn of buttons) {
@@ -1066,10 +1158,8 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
         });
         if (expanded) {
           await page.waitForTimeout(1500);
-          // Find the Tags input and fill it
           const tagString = metadata.tags.map(t => t.replace(/^#/, '')).join(', ');
           const tagsFilled = await page.evaluate((tags) => {
-            // YouTube tags input usually has placeholder "Add tag" or aria-label containing "Tags"
             const inputs = document.querySelectorAll('input[placeholder*="tag" i], input[aria-label*="tag" i], #tags-container input');
             for (const input of inputs) {
               if (input.offsetHeight === 0) continue;
@@ -1080,7 +1170,6 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
               input.dispatchEvent(new Event('change', { bubbles: true }));
               return true;
             }
-            // Try textbox approach
             const textboxes = document.querySelectorAll('#chip-bar input, #tags-textbox input, [aria-label*="Tags" i] input');
             for (const tb of textboxes) {
               if (tb.offsetHeight === 0) continue;
@@ -1102,8 +1191,7 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     }
     await page.waitForTimeout(2000);
 
-    // Audience is often mandatory before moving to the next step.
-    // Retry a few times to ensure the Shadow DOM element is visible and clicked.
+    // Audience selection
     for (let attempt = 0; attempt < 3; attempt++) {
       const picked = await selectAudienceNotMadeForKids(page);
       if (picked) break;
@@ -1166,12 +1254,19 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     // ===== PHASE 6: SET VISIBILITY TO PUBLIC =====
     console.log('[YouTube] Setting visibility to Public...');
     let publicSelected = false;
-    for (let vAttempt = 0; vAttempt < 4 && !publicSelected; vAttempt++) {
-      if (vAttempt > 0) await page.waitForTimeout(1200);
+    for (let vAttempt = 0; vAttempt < 6 && !publicSelected; vAttempt++) {
+      if (vAttempt > 0) {
+        await page.waitForTimeout(1500);
+        // On retries, try scrolling to make visibility options visible
+        await page.evaluate(() => {
+          const dialog = document.querySelector('ytcp-uploads-dialog, [role="dialog"]');
+          if (dialog) dialog.scrollTop = dialog.scrollHeight;
+        }).catch(() => {});
+        await page.waitForTimeout(500);
+      }
       publicSelected = await selectVisibilityPublic(page);
 
       if (publicSelected) {
-        // Verify the Public radio is actually checked before proceeding
         await page.waitForTimeout(800);
         const confirmed = await page.evaluate(() => {
           function deepQueryAll(root) {
@@ -1202,8 +1297,25 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       }
     }
 
+    // Last resort: use Telegram to ask human to set Public manually
     if (!publicSelected) {
-      console.warn('[YouTube] Could not confirm Public visibility selection; proceeding anyway (video may default to Private on YouTube)');
+      console.warn('[YouTube] Could not auto-select Public visibility — asking for human help...');
+      try {
+        await requestHumanObstacleHelp(
+          page,
+          credentials,
+          'Could not select "Public" visibility. Please click the "Public" radio button on this screen, then reply APPROVED.'
+        );
+        // After human intervention, re-verify
+        publicSelected = await selectVisibilityPublic(page).catch(() => false);
+        if (!publicSelected) {
+          // Even if we can't confirm, human said they did it, so proceed
+          publicSelected = true;
+          console.log('[YouTube] Proceeding after human confirmed Public visibility');
+        }
+      } catch (humanErr) {
+        console.warn('[YouTube] Human help for visibility failed:', humanErr.message);
+      }
     }
     await page.waitForTimeout(1500);
     cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);

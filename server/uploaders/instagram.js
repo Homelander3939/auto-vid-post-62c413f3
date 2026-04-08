@@ -438,7 +438,7 @@ async function clickInstagramShareButton(page) {
   return shareClicked;
 }
 
-async function ensureInstagramPostFlow(page) {
+async function ensureInstagramReelFlow(page) {
   const readyState = await page.evaluate(() => {
     const scope = document.querySelector('[role="dialog"]') || document.body;
     const text = (scope.innerText || scope.textContent || '').toLowerCase();
@@ -449,11 +449,6 @@ async function ensureInstagramPostFlow(page) {
     });
 
     return {
-      // Only trust indicators that are specific to the file-upload surface.
-      // 'new post' / 'create new post' must NOT be included here — they match
-      // the always-visible sidebar "New post" nav button (via document.body fallback)
-      // and the create-type dropdown title, causing a false-positive that skips
-      // the actual "Post" selection step.
       ready:
         !!scope.querySelector('input[type="file"]') ||
         hasSelectFromComputer ||
@@ -466,12 +461,12 @@ async function ensureInstagramPostFlow(page) {
   }).catch(() => ({ ready: false }));
 
   if (readyState.ready) {
-    console.log('[Instagram] Post/file picker stage already open');
+    console.log('[Instagram] Upload surface already open');
     return true;
   }
 
-  // Select "Post" from the create menu (not "Reel")
-  let postSelected = await page.evaluate(() => {
+  // Select "Reel" from the create menu so video uploads as a Reel (vertical, full-screen)
+  let reelSelected = await page.evaluate(() => {
     const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
     const isVisible = (node) => {
       if (!node) return false;
@@ -491,13 +486,7 @@ async function ensureInstagramPostFlow(page) {
       if (!isVisible(node)) continue;
       const text = normalize(node.textContent);
       const label = normalize(node.getAttribute('aria-label'));
-      // Match the "Post" menu item in the create dropdown.
-      // Do NOT include 'new post' or 'create new post' — those match the sidebar nav
-      // button and the file-upload dialog title, causing the wrong element to be clicked.
-      if (
-        text === 'post' ||
-        label === 'post'
-      ) {
+      if (text === 'reel' || label === 'reel') {
         return clickNode(node);
       }
     }
@@ -505,41 +494,63 @@ async function ensureInstagramPostFlow(page) {
     return false;
   }).catch(() => false);
 
-  if (!postSelected) {
-    postSelected = await smartClick(page, [
-      '[role="menuitem"]:has-text("Post")',
-      'button:has-text("Post")',
-      'a:has-text("Post")',
-      '[role="tab"]:has-text("Post")',
-      '[role="dialog"] button:has-text("Post")',
-      '[aria-label="Post" i]',
-      '[aria-label="New post" i]',
-    ], 'Post');
+  if (!reelSelected) {
+    reelSelected = await smartClick(page, [
+      '[role="menuitem"]:has-text("Reel")',
+      'button:has-text("Reel")',
+      'a:has-text("Reel")',
+      '[role="tab"]:has-text("Reel")',
+      '[role="dialog"] button:has-text("Reel")',
+      '[aria-label="Reel" i]',
+    ], 'Reel');
   }
 
-  if (!postSelected) {
+  if (!reelSelected) {
+    // Fallback: try "Post" if "Reel" option not found (some accounts)
+    reelSelected = await page.evaluate(() => {
+      const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const isVisible = (node) => {
+        if (!node) return false;
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const nodes = Array.from(document.querySelectorAll('button, a, div[role="button"], [role="menuitem"], [role="tab"], span, div'));
+      for (const node of nodes) {
+        if (!isVisible(node)) continue;
+        const text = normalize(node.textContent);
+        const label = normalize(node.getAttribute('aria-label'));
+        if (text === 'post' || label === 'post') {
+          const target = node.closest('button, a, [role="button"], [role="tab"], label') || node;
+          target.click();
+          return true;
+        }
+      }
+      return false;
+    }).catch(() => false);
+  }
+
+  if (!reelSelected) {
     try {
       const result = await runAgentTask(
         page,
-        'Inside Instagram create flow menu, choose the "Post" option so this upload is created as a regular Post (not a Reel or Story). Only interact with the popup/dialog.',
+        'Inside Instagram create flow menu, choose the "Reel" option so this upload is created as a Reel (vertical video). If "Reel" is not available, choose "Post". Only interact with the popup/dialog.',
         { maxSteps: 5, stepDelayMs: 600, useVision: true },
       );
-      postSelected = result.success;
+      reelSelected = result.success;
     } catch (e) {
-      console.warn('[Instagram] Agent post selection failed:', e.message);
+      console.warn('[Instagram] Agent reel selection failed:', e.message);
     }
   }
 
-  if (postSelected) {
+  if (reelSelected) {
     await page.waitForTimeout(1800);
-    console.log('[Instagram] Explicitly selected Post flow');
+    console.log('[Instagram] Explicitly selected Reel flow');
   }
 
-  const postFlowReady = await page.waitForFunction(() => {
+  const reelFlowReady = await page.waitForFunction(() => {
     const scope = document.querySelector('[role="dialog"]') || document.body;
     const text = (scope.innerText || scope.textContent || '').toLowerCase();
-    // Do NOT include 'new post' or 'create new post' — they match sidebar nav / dropdown
-    // title and resolve immediately before the file-upload surface has actually appeared.
     return (
       !!scope.querySelector('input[type="file"]') ||
       text.includes('select from computer') ||
@@ -550,12 +561,12 @@ async function ensureInstagramPostFlow(page) {
     );
   }, { timeout: 8000 }).then(() => true).catch(() => false);
 
-  if (postFlowReady) {
-    console.log('[Instagram] Post composer/file picker confirmed');
+  if (reelFlowReady) {
+    console.log('[Instagram] Reel composer/file picker confirmed');
     return true;
   }
 
-  return postSelected;
+  return reelSelected;
 }
 
 async function waitForInstagramUploadSurface(page, maxWaitMs = 15000) {
@@ -635,7 +646,7 @@ async function forceOpenInstagramUploadSurface(page) {
 
       let uploadSurface = await waitForInstagramUploadSurface(page, 6000);
       if (!uploadSurface.ready) {
-        await ensureInstagramPostFlow(page).catch(() => false);
+        await ensureInstagramReelFlow(page).catch(() => false);
         uploadSurface = await waitForInstagramUploadSurface(page, 4000);
       }
 
@@ -1090,24 +1101,24 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
     await page.waitForTimeout(3000);
 
-    // ===== PHASE 2.5: SELECT "POST" FROM CREATE MENU =====
+    // ===== PHASE 2.5: SELECT "REEL" FROM CREATE MENU =====
     // After clicking "+", Instagram may show a dropdown menu with options: Post, Reel, Story, etc.
-    // Explicitly select "Post" to ensure we enter the regular post flow.
-    console.log('[Instagram] Checking for create menu to select Post...');
-    let postFlowReady = await ensureInstagramPostFlow(page);
+    // Explicitly select "Reel" to ensure vertical 9:16 format and proper reel experience.
+    console.log('[Instagram] Checking for create menu to select Reel...');
+    let reelFlowReady = await ensureInstagramReelFlow(page);
     let uploadSurface = await waitForInstagramUploadSurface(page, 9000);
 
     if (!uploadSurface.ready) {
       console.warn('[Instagram] Create flow did not expose the upload surface yet; trying direct Instagram create routes...');
       const forcedCreateSurface = await forceOpenInstagramUploadSurface(page);
       if (forcedCreateSurface) {
-        postFlowReady = true;
+        reelFlowReady = true;
         uploadSurface = await waitForInstagramUploadSurface(page, 5000);
       }
     }
 
-    if (!postFlowReady && !uploadSurface.ready) {
-      console.warn('[Instagram] Post option was not explicitly confirmed and upload surface is still missing; continuing with fallback uploader detection');
+    if (!reelFlowReady && !uploadSurface.ready) {
+      console.warn('[Instagram] Reel option was not explicitly confirmed and upload surface is still missing; continuing with fallback uploader detection');
     }
     await page.waitForTimeout(1200);
 
