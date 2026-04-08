@@ -1111,24 +1111,24 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
     await page.waitForTimeout(3000);
 
-    // ===== PHASE 2.5: SELECT "REEL" FROM CREATE MENU =====
+    // ===== PHASE 2.5: SELECT "POST" FROM CREATE MENU =====
     // After clicking "+", Instagram may show a dropdown menu with options: Post, Reel, Story, etc.
-    // Explicitly select "Reel" to ensure vertical 9:16 format and proper reel experience.
+    // Explicitly select "Post" to get the standard video upload flow with 9:16 crop option.
     console.log('[Instagram] Checking for create menu to select Post...');
-    let reelFlowReady = await ensureInstagramPostFlow(page);
+    let postFlowReady = await ensureInstagramPostFlow(page);
     let uploadSurface = await waitForInstagramUploadSurface(page, 9000);
 
     if (!uploadSurface.ready) {
       console.warn('[Instagram] Create flow did not expose the upload surface yet; trying direct Instagram create routes...');
       const forcedCreateSurface = await forceOpenInstagramUploadSurface(page);
       if (forcedCreateSurface) {
-        reelFlowReady = true;
+        postFlowReady = true;
         uploadSurface = await waitForInstagramUploadSurface(page, 5000);
       }
     }
 
-    if (!reelFlowReady && !uploadSurface.ready) {
-      console.warn('[Instagram] Reel option was not explicitly confirmed and upload surface is still missing; continuing with fallback uploader detection');
+    if (!postFlowReady && !uploadSurface.ready) {
+      console.warn('[Instagram] Post option was not explicitly confirmed and upload surface is still missing; continuing with fallback uploader detection');
     }
     await page.waitForTimeout(1200);
 
