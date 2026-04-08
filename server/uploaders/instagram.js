@@ -1621,11 +1621,13 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
       const captionTruncated = caption.slice(0, MAX_CAPTION_LENGTH);
 
-      // Strategy 0: Direct textarea value set — most reliable for native <textarea> elements.
-      // Instagram Posts use a <textarea> (not a DraftJS contenteditable), so setting .value
-      // directly and dispatching an input event is the most reliable approach for them.
+      // Strategy 0: Direct textarea value set — for native <textarea> elements.
+      // Instagram Posts may use a <textarea>. We set the value via the native setter
+      // to bypass React's synthetic event handling, then verify AFTER React has had
+      // time to process the event (the previous implementation verified synchronously,
+      // which always returned true even when React/DraftJS didn't update its state).
       if (!captionFilled) {
-        captionFilled = await page.evaluate((text) => {
+        const attempted = await page.evaluate((text) => {
           const dialog = document.querySelector('[role="dialog"]') || document.body;
           const textareas = Array.from(dialog.querySelectorAll('textarea'));
           for (const ta of textareas) {
@@ -1634,7 +1636,6 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             if (rect.height < 5 || style.display === 'none' || style.visibility === 'hidden') continue;
             ta.focus();
             ta.click();
-            // Use the native input value setter to bypass React's synthetic event handling
             const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
             if (nativeInputValueSetter) {
               nativeInputValueSetter.call(ta, text);
@@ -1643,11 +1644,27 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             }
             ta.dispatchEvent(new Event('input', { bubbles: true }));
             ta.dispatchEvent(new Event('change', { bubbles: true }));
-            if ((ta.value || '').trim().length > 0) return true;
+            return true;
           }
           return false;
         }, captionTruncated);
-        if (captionFilled) console.log('[Instagram] Caption filled via direct textarea value set');
+
+        if (attempted) {
+          // Wait for React to process the event and potentially re-render.
+          // If React ignored the event, it will reset ta.value to '' on next render.
+          // If React accepted it, ta.value will remain non-empty.
+          await page.waitForTimeout(900);
+          captionFilled = await page.evaluate(() => {
+            const dialog = document.querySelector('[role="dialog"]') || document.body;
+            for (const ta of Array.from(dialog.querySelectorAll('textarea'))) {
+              const style = window.getComputedStyle(ta);
+              if (style.display === 'none' || style.visibility === 'hidden') continue;
+              if ((ta.value || '').trim().length > 5) return true;
+            }
+            return false;
+          });
+          if (captionFilled) console.log('[Instagram] Caption filled via direct textarea value set');
+        }
       }
 
       // Strategy 1: ClipboardEvent paste — most reliable for React/DraftJS contenteditable fields.
