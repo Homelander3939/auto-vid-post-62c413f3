@@ -601,9 +601,10 @@ async function waitForInstagramUploadSurface(page, maxWaitMs = 15000) {
       // Do NOT include 'new post' or 'create new post' — those strings appear in the
       // always-visible sidebar nav and the create-type dropdown title, producing false
       // positives before the actual file-upload surface (drag zone / file input) is open.
+      // Do NOT use path.includes('/create/') — that matches user profile pages like
+      // instagram.com/create/select/ which is a real account, not an upload route.
       const looksLikeCreateFlow =
-        path.includes('/create/')
-        || text.includes('new reel')
+        text.includes('new reel')
         || text.includes('share to reels')
         || text.includes('reel details')
         || text.includes('drag photos and videos here')
@@ -633,32 +634,59 @@ async function waitForInstagramUploadSurface(page, maxWaitMs = 15000) {
 }
 
 async function forceOpenInstagramUploadSurface(page) {
-  const createRoutes = [
-    'https://www.instagram.com/create/select/',
-    'https://www.instagram.com/create/style/',
-  ];
+  // Go back to home and retry clicking the + / Create button, then wait for the dialog.
+  // Do NOT navigate to /create/select/ or /create/style/ — those are user profile pages,
+  // not upload routes.
+  try {
+    console.log('[Instagram] Returning to home and retrying Create button...');
+    await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.waitForTimeout(2000);
 
-  for (const route of createRoutes) {
-    try {
-      console.log(`[Instagram] Trying direct create route: ${route}`);
-      await page.goto(route, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await page.waitForTimeout(1800);
+    // Re-click the + button
+    let clicked = await smartClick(page, [
+      '[aria-label="New post"]',
+      'svg[aria-label="New post"]',
+      '[aria-label="Create"]',
+      'svg[aria-label="Create"]',
+      '[aria-label="New Post"]',
+      'svg[aria-label="New Post"]',
+    ], 'New post');
 
-      let uploadSurface = await waitForInstagramUploadSurface(page, 6000);
-      if (!uploadSurface.ready) {
-        await ensureInstagramReelFlow(page).catch(() => false);
-        uploadSurface = await waitForInstagramUploadSurface(page, 4000);
-      }
-
-      if (uploadSurface.ready) {
-        return true;
-      }
-    } catch (err) {
-      console.warn(`[Instagram] Direct create route failed (${route}): ${err.message}`);
+    if (!clicked) {
+      clicked = await page.evaluate(() => {
+        const svgLabels = ['New post', 'Create', 'New Post', 'Новая публикация', 'Crear'];
+        for (const label of svgLabels) {
+          const svg = document.querySelector(`svg[aria-label="${label}"]`);
+          if (svg) {
+            const parent = svg.closest('a, button, div[role="button"], span[role="link"]');
+            if (parent) { parent.click(); return true; }
+            svg.click();
+            return true;
+          }
+        }
+        const sidebarLinks = document.querySelectorAll('nav a, nav div[role="button"], [role="navigation"] a');
+        for (const link of sidebarLinks) {
+          const text = (link.textContent || '').trim().toLowerCase();
+          const label = (link.getAttribute('aria-label') || '').toLowerCase();
+          if (text === 'create' || text === 'new post' || label === 'create' || label === 'new post') {
+            link.click();
+            return true;
+          }
+        }
+        return false;
+      }).catch(() => false);
     }
-  }
 
-  return false;
+    if (!clicked) return false;
+
+    await page.waitForTimeout(2500);
+    await ensureInstagramReelFlow(page).catch(() => false);
+    const uploadSurface = await waitForInstagramUploadSurface(page, 6000);
+    return uploadSurface.ready;
+  } catch (err) {
+    console.warn(`[Instagram] forceOpenInstagramUploadSurface failed: ${err.message}`);
+    return false;
+  }
 }
 
 async function closeInstagramShareResultPopup(page) {
@@ -1044,8 +1072,6 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       'svg[aria-label="Create"]',
       '[aria-label="New Post"]',
       'svg[aria-label="New Post"]',
-      'a[href="/create/style/"]',
-      'a[href="/create/select/"]',
     ], 'New post');
     
     if (!newPostClicked) {
@@ -1060,12 +1086,6 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             svg.click();
             return true;
           }
-        }
-        // Try nav links with create-related paths
-        const navLinks = document.querySelectorAll('a[href*="create"], a[href*="new"]');
-        for (const link of navLinks) {
-          link.click();
-          return true;
         }
         // Try finding the create/plus icon by its typical position (left sidebar)
         const sidebarLinks = document.querySelectorAll('nav a, nav div[role="button"], [role="navigation"] a');
