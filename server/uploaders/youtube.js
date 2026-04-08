@@ -338,24 +338,28 @@ async function assessYouTubePostPublishState(page) {
 }
 
 async function selectVisibilityPublic(page) {
-  // Strategy 1: Playwright locators — pierce Shadow DOM natively
+  // Strategy 1: getByRole — most reliable ARIA-based selection, pierces Shadow DOM
+  // YouTube radio buttons may contain extra text like "Public\nMake your video visible to everyone"
+  // so we use /public/i (non-anchored) instead of exact match.
   try {
-    const radio = page.locator('[role="radio"]').filter({ hasText: /^public$/i }).first();
+    const radio = page.getByRole('radio', { name: /public/i }).first();
     if (await radio.isVisible({ timeout: 2000 }).catch(() => false)) {
       await radio.click();
       return true;
     }
   } catch {}
 
+  // Strategy 2: Playwright locators with non-anchored hasText — works even when the radio
+  // button element contains additional description text beyond just "Public".
   try {
-    const radio = page.locator('[role="radio"]').filter({ hasText: /^public\b/i }).first();
+    const radio = page.locator('[role="radio"]').filter({ hasText: 'Public' }).first();
     if (await radio.isVisible({ timeout: 1500 }).catch(() => false)) {
       await radio.click();
       return true;
     }
   } catch {}
 
-  // Strategy 2: Playwright getByLabel
+  // Strategy 3: Playwright getByLabel
   try {
     const label = page.getByLabel(/public/i).first();
     if (await label.isVisible({ timeout: 1500 }).catch(() => false)) {
@@ -1051,27 +1055,38 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
     if (metadata?.title) {
       console.log(`[YouTube] Setting title: "${metadata.title.slice(0, 60)}"`);
-      const titleFilled = await page.evaluate((title) => {
-        const textboxes = document.querySelectorAll('#textbox');
-        const titleBox = textboxes[0];
-        if (!titleBox) return false;
-        titleBox.focus();
-        titleBox.click();
-        document.execCommand('selectAll', false, null);
-        document.execCommand('insertText', false, title);
-        return true;
-      }, metadata.title);
-
-      if (!titleFilled) {
-        const titleBox = await page.$('#textbox');
-        if (titleBox) {
+      // Primary: keyboard approach — most reliable across Chromium versions.
+      // execCommand is deprecated and may silently fail without updating the field.
+      let titleFilled = false;
+      const titleBox = await page.$('#textbox');
+      if (titleBox) {
+        try {
           await titleBox.click({ clickCount: 3 });
           await page.waitForTimeout(200);
           await page.keyboard.press('Control+a');
-          await page.keyboard.type(metadata.title, { delay: 20 });
+          await page.waitForTimeout(100);
+          await page.keyboard.press('Backspace');
+          await page.waitForTimeout(100);
+          await page.keyboard.type(metadata.title, { delay: 15 });
+          titleFilled = true;
+          console.log('[YouTube] Title filled via keyboard');
+        } catch (e) {
+          console.warn('[YouTube] Keyboard title fill failed:', e.message);
         }
       }
-      if (titleFilled) console.log('[YouTube] Title filled successfully');
+      if (!titleFilled) {
+        // Fallback: execCommand
+        await page.evaluate((title) => {
+          const textboxes = document.querySelectorAll('#textbox');
+          const titleBox = textboxes[0];
+          if (!titleBox) return;
+          titleBox.focus();
+          titleBox.click();
+          document.execCommand('selectAll', false, null);
+          document.execCommand('insertText', false, title);
+        }, metadata.title);
+        console.log('[YouTube] Title fill attempted via execCommand fallback');
+      }
     }
 
     if (metadata?.description || (metadata?.tags && metadata.tags.length > 0)) {
@@ -1083,59 +1098,65 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       const fullDescription = descParts.join('\n\n');
       console.log(`[YouTube] Description to fill (${fullDescription.length} chars): ${fullDescription.slice(0, 200)}...`);
 
+      // First, try to click the description area to ensure it's expanded and focused.
+      // YouTube Studio collapses the description box until clicked.
+      await page.evaluate(() => {
+        const labels = document.querySelectorAll('label, span, div, [placeholder]');
+        for (const el of labels) {
+          const text = (el.textContent || '').toLowerCase().trim();
+          if (text.includes('tell viewers about your video') || text.includes('description')) {
+            el.click();
+            return;
+          }
+        }
+      }).catch(() => {});
+      await page.waitForTimeout(800);
+
       // Wait for description textbox to appear (2nd #textbox)
       let descBoxReady = false;
-      for (let waitIdx = 0; waitIdx < 15; waitIdx++) {
+      for (let waitIdx = 0; waitIdx < 10; waitIdx++) {
         const count = await page.$$eval('#textbox', els => els.length).catch(() => 0);
         if (count >= 2) { descBoxReady = true; break; }
         await page.waitForTimeout(1000);
       }
 
-      if (!descBoxReady) {
-        console.warn('[YouTube] Description textbox (#textbox[1]) not found after waiting — trying click on description area');
-        // Try clicking on the description placeholder area to reveal it
-        await page.evaluate(() => {
-          const labels = document.querySelectorAll('label, span, div');
-          for (const el of labels) {
-            const text = (el.textContent || '').toLowerCase().trim();
-            if (text.includes('tell viewers about your video') || text.includes('description')) {
-              el.click();
-              return;
-            }
-          }
-        });
-        await page.waitForTimeout(1500);
-      }
-
-      // Strategy 1: execCommand
-      const descFilled = await page.evaluate((desc) => {
-        const textboxes = document.querySelectorAll('#textbox');
-        if (textboxes.length > 1) {
-          const descBox = textboxes[1];
-          descBox.focus();
-          descBox.click();
-          document.execCommand('selectAll', false, null);
-          document.execCommand('insertText', false, desc);
-          // Verify content was inserted
-          const content = (descBox.textContent || descBox.innerText || '').trim();
-          return content.length > 0;
-        }
-        return false;
-      }, fullDescription);
-
-      if (descFilled) {
-        console.log('[YouTube] Description filled successfully');
-      } else {
-        // Strategy 2: Playwright keyboard fallback
-        const allTextboxes = await page.$$('#textbox').catch(() => []);
-        const fallbackBox = allTextboxes[1] || null;
-        if (fallbackBox) {
-          await fallbackBox.click({ clickCount: 3 });
+      // Primary: keyboard approach (most reliable)
+      const allTextboxes = await page.$$('#textbox').catch(() => []);
+      const descBox = allTextboxes[1] || null;
+      let descFilled = false;
+      if (descBox) {
+        try {
+          await descBox.click({ clickCount: 3 });
           await page.waitForTimeout(200);
           await page.keyboard.press('Control+a');
           await page.waitForTimeout(100);
+          await page.keyboard.press('Backspace');
+          await page.waitForTimeout(100);
           await page.keyboard.type(fullDescription, { delay: 15 });
-          console.log('[YouTube] Description filled via keyboard fallback');
+          descFilled = true;
+          console.log('[YouTube] Description filled via keyboard');
+        } catch (e) {
+          console.warn('[YouTube] Keyboard description fill failed:', e.message);
+        }
+      }
+
+      if (!descFilled) {
+        // Fallback: execCommand
+        const execFilled = await page.evaluate((desc) => {
+          const textboxes = document.querySelectorAll('#textbox');
+          if (textboxes.length > 1) {
+            const descBox = textboxes[1];
+            descBox.focus();
+            descBox.click();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('insertText', false, desc);
+            const content = (descBox.textContent || descBox.innerText || '').trim();
+            return content.length > 0;
+          }
+          return false;
+        }, fullDescription);
+        if (execFilled) {
+          console.log('[YouTube] Description filled via execCommand fallback');
         } else {
           console.warn('[YouTube] Could not find description textbox — description NOT filled');
         }
