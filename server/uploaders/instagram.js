@@ -438,7 +438,7 @@ async function clickInstagramShareButton(page) {
   return shareClicked;
 }
 
-async function ensureInstagramReelFlow(page) {
+async function ensureInstagramPostFlow(page) {
   const readyState = await page.evaluate(() => {
     const scope = document.querySelector('[role="dialog"]') || document.body;
     const text = (scope.innerText || scope.textContent || '').toLowerCase();
@@ -465,8 +465,8 @@ async function ensureInstagramReelFlow(page) {
     return true;
   }
 
-  // Select "Reel" from the create menu so video uploads as a Reel (vertical, full-screen)
-  let reelSelected = await page.evaluate(() => {
+  // Select "Post" from the create menu so video uploads as a Post with selectable crop (9:16)
+  let postSelected = await page.evaluate(() => {
     const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
     const isVisible = (node) => {
       if (!node) return false;
@@ -482,6 +482,18 @@ async function ensureInstagramReelFlow(page) {
     };
 
     const nodes = Array.from(document.querySelectorAll('button, a, div[role="button"], [role="menuitem"], [role="tab"], span, div'));
+
+    // Try "Post" first
+    for (const node of nodes) {
+      if (!isVisible(node)) continue;
+      const text = normalize(node.textContent);
+      const label = normalize(node.getAttribute('aria-label'));
+      if (text === 'post' || label === 'post') {
+        return clickNode(node);
+      }
+    }
+
+    // Fallback: try "Reel" if "Post" option not found (some account types)
     for (const node of nodes) {
       if (!isVisible(node)) continue;
       const text = normalize(node.textContent);
@@ -494,61 +506,39 @@ async function ensureInstagramReelFlow(page) {
     return false;
   }).catch(() => false);
 
-  if (!reelSelected) {
-    reelSelected = await smartClick(page, [
+  if (!postSelected) {
+    postSelected = await smartClick(page, [
+      '[role="menuitem"]:has-text("Post")',
+      'button:has-text("Post")',
+      'a:has-text("Post")',
+      '[role="tab"]:has-text("Post")',
+      '[role="dialog"] button:has-text("Post")',
+      '[aria-label="Post" i]',
       '[role="menuitem"]:has-text("Reel")',
       'button:has-text("Reel")',
-      'a:has-text("Reel")',
-      '[role="tab"]:has-text("Reel")',
-      '[role="dialog"] button:has-text("Reel")',
       '[aria-label="Reel" i]',
-    ], 'Reel');
+    ], 'Post');
   }
 
-  if (!reelSelected) {
-    // Fallback: try "Post" if "Reel" option not found (some accounts)
-    reelSelected = await page.evaluate(() => {
-      const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
-      const isVisible = (node) => {
-        if (!node) return false;
-        const rect = node.getBoundingClientRect();
-        const style = window.getComputedStyle(node);
-        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-      };
-      const nodes = Array.from(document.querySelectorAll('button, a, div[role="button"], [role="menuitem"], [role="tab"], span, div'));
-      for (const node of nodes) {
-        if (!isVisible(node)) continue;
-        const text = normalize(node.textContent);
-        const label = normalize(node.getAttribute('aria-label'));
-        if (text === 'post' || label === 'post') {
-          const target = node.closest('button, a, [role="button"], [role="tab"], label') || node;
-          target.click();
-          return true;
-        }
-      }
-      return false;
-    }).catch(() => false);
-  }
-
-  if (!reelSelected) {
+  if (!postSelected) {
     try {
       const result = await runAgentTask(
         page,
-        'Inside Instagram create flow menu, choose the "Reel" option so this upload is created as a Reel (vertical video). If "Reel" is not available, choose "Post". Only interact with the popup/dialog.',
+        'Inside Instagram create flow menu, choose the "Post" option to upload a new post. If "Post" is not available, choose "Reel". Only interact with the popup/dialog.',
         { maxSteps: 5, stepDelayMs: 600, useVision: true },
       );
-      reelSelected = result.success;
+      postSelected = result.success;
     } catch (e) {
-      console.warn('[Instagram] Agent reel selection failed:', e.message);
+      console.warn('[Instagram] Agent post selection failed:', e.message);
     }
   }
 
-  if (reelSelected) {
+  if (postSelected) {
     await page.waitForTimeout(1800);
-    console.log('[Instagram] Explicitly selected Reel flow');
+    console.log('[Instagram] Explicitly selected Post flow');
   }
 
-  const reelFlowReady = await page.waitForFunction(() => {
+  const postFlowReady = await page.waitForFunction(() => {
     const scope = document.querySelector('[role="dialog"]') || document.body;
     const text = (scope.innerText || scope.textContent || '').toLowerCase();
     return (
@@ -561,12 +551,12 @@ async function ensureInstagramReelFlow(page) {
     );
   }, { timeout: 8000 }).then(() => true).catch(() => false);
 
-  if (reelFlowReady) {
-    console.log('[Instagram] Reel composer/file picker confirmed');
+  if (postFlowReady) {
+    console.log('[Instagram] Post composer/file picker confirmed');
     return true;
   }
 
-  return reelSelected;
+  return postSelected;
 }
 
 async function waitForInstagramUploadSurface(page, maxWaitMs = 15000) {
@@ -680,7 +670,7 @@ async function forceOpenInstagramUploadSurface(page) {
     if (!clicked) return false;
 
     await page.waitForTimeout(2500);
-    await ensureInstagramReelFlow(page).catch(() => false);
+    await ensureInstagramPostFlow(page).catch(() => false);
     const uploadSurface = await waitForInstagramUploadSurface(page, 6000);
     return uploadSurface.ready;
   } catch (err) {
@@ -1121,24 +1111,24 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
     await page.waitForTimeout(3000);
 
-    // ===== PHASE 2.5: SELECT "REEL" FROM CREATE MENU =====
+    // ===== PHASE 2.5: SELECT "POST" FROM CREATE MENU =====
     // After clicking "+", Instagram may show a dropdown menu with options: Post, Reel, Story, etc.
-    // Explicitly select "Reel" to ensure vertical 9:16 format and proper reel experience.
-    console.log('[Instagram] Checking for create menu to select Reel...');
-    let reelFlowReady = await ensureInstagramReelFlow(page);
+    // Explicitly select "Post" to get the standard video upload flow with 9:16 crop option.
+    console.log('[Instagram] Checking for create menu to select Post...');
+    let postFlowReady = await ensureInstagramPostFlow(page);
     let uploadSurface = await waitForInstagramUploadSurface(page, 9000);
 
     if (!uploadSurface.ready) {
       console.warn('[Instagram] Create flow did not expose the upload surface yet; trying direct Instagram create routes...');
       const forcedCreateSurface = await forceOpenInstagramUploadSurface(page);
       if (forcedCreateSurface) {
-        reelFlowReady = true;
+        postFlowReady = true;
         uploadSurface = await waitForInstagramUploadSurface(page, 5000);
       }
     }
 
-    if (!reelFlowReady && !uploadSurface.ready) {
-      console.warn('[Instagram] Reel option was not explicitly confirmed and upload surface is still missing; continuing with fallback uploader detection');
+    if (!postFlowReady && !uploadSurface.ready) {
+      console.warn('[Instagram] Post option was not explicitly confirmed and upload surface is still missing; continuing with fallback uploader detection');
     }
     await page.waitForTimeout(1200);
 
@@ -1736,13 +1726,24 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             // Wait for DraftJS React state to flush before checking DOM content.
             await page.waitForTimeout(800);
 
-            // Verify something was inserted into ANY contenteditable / textarea in the dialog.
+            // Verify the caption field specifically was updated — check caption-specific
+            // selectors only to avoid false positives from other contenteditables in the
+            // dialog (profile name display, location input, mention areas, etc.).
             const pasted = await page.evaluate(() => {
               const dialog = document.querySelector('[role="dialog"]') || document.body;
-              const candidates = Array.from(dialog.querySelectorAll('[contenteditable="true"], textarea'));
-              for (const field of candidates) {
-                const content = (field.textContent || field.value || '').trim();
-                if (content.length > 0) return true;
+              const captionFieldSelectors = [
+                '[aria-label="Write a caption..."]',
+                '[aria-label*="Write a caption"]',
+                '[aria-label*="caption" i]',
+                'textarea[placeholder*="caption" i]',
+              ];
+              for (const s of captionFieldSelectors) {
+                const f = dialog.querySelector(s);
+                if (!f) continue;
+                const rect = f.getBoundingClientRect();
+                if (rect.height < 5) continue;
+                const content = (f.textContent || f.value || '').trim();
+                if (content.length > 5) return true;
               }
               return false;
             });
@@ -1776,12 +1777,22 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             await page.keyboard.type(captionTruncated, { delay: 20 });
             await page.waitForTimeout(800);
             
-            // Verify caption was typed — content-based scan (aria-label may change after input)
+            // Verify caption was typed — check caption-specific fields to avoid false positives
+            // from other contenteditables in the dialog (aria-label may change after input)
             const typed = await page.evaluate(() => {
               const dialog = document.querySelector('[role="dialog"]') || document.body;
-              const candidates = Array.from(dialog.querySelectorAll('[contenteditable="true"], textarea'));
-              for (const el of candidates) {
-                const content = (el.textContent || el.value || '').trim();
+              const captionFieldSelectors = [
+                '[aria-label="Write a caption..."]',
+                '[aria-label*="Write a caption"]',
+                '[aria-label*="caption" i]',
+                'textarea[placeholder*="caption" i]',
+              ];
+              for (const s of captionFieldSelectors) {
+                const f = dialog.querySelector(s);
+                if (!f) continue;
+                const rect = f.getBoundingClientRect();
+                if (rect.height < 5) continue;
+                const content = (f.textContent || f.value || '').trim();
                 if (content.length > 0) return content;
               }
               return '';
