@@ -646,7 +646,7 @@ async function forceOpenInstagramUploadSurface(page) {
 
       let uploadSurface = await waitForInstagramUploadSurface(page, 6000);
       if (!uploadSurface.ready) {
-        await ensureInstagramPostFlow(page).catch(() => false);
+        await ensureInstagramReelFlow(page).catch(() => false);
         uploadSurface = await waitForInstagramUploadSurface(page, 4000);
       }
 
