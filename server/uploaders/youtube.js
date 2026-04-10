@@ -640,6 +640,51 @@ async function isVideoUploadInProgress(page) {
   }).catch(() => false);
 }
 
+// Detects if YouTube Studio is still transcoding/processing the video
+// (e.g. "Processing video..." / "Processing up to HD… 3 minutes left").
+// This is different from the file-upload phase — the file is already transferred
+// but YouTube is still encoding it server-side.
+async function isVideoTranscodingInProgress(page) {
+  try {
+    if (await page.getByText(/processing up to hd/i).isVisible({ timeout: 1000 })) return true;
+  } catch {}
+  try {
+    if (await page.getByText(/processing video/i).isVisible({ timeout: 1000 })) return true;
+  } catch {}
+  return page.evaluate(() => {
+    const text = (document.body?.innerText || '').toLowerCase();
+    return (
+      text.includes('processing up to hd') ||
+      (text.includes('processing') && /\d+\s*minutes? left/.test(text))
+    );
+  }).catch(() => false);
+}
+
+// Waits (up to maxWaitMs, default 10 min) for YouTube's server-side transcoding to finish.
+// Polls every 20 s. Returns true when processing is no longer detected.
+async function waitForVideoTranscodingToComplete(page, maxWaitMs = 10 * 60 * 1000) {
+  const started = Date.now();
+  const maxMinutes = Math.round(maxWaitMs / 60000);
+  console.log(`[YouTube] Video transcoding in progress — waiting for it to complete (up to ${maxMinutes} minutes)...`);
+
+  while (Date.now() - started < maxWaitMs) {
+    const elapsed = Math.round((Date.now() - started) / 1000);
+    const stillProcessing = await isVideoTranscodingInProgress(page);
+    if (!stillProcessing) {
+      console.log(`[YouTube] Video transcoding completed after ${elapsed}s`);
+      return true;
+    }
+    const progressText = await page.evaluate(() => {
+      const match = (document.body?.innerText || '').match(/processing[^\n]*/i);
+      return match ? match[0].trim().slice(0, 80) : '';
+    }).catch(() => '');
+    console.log(`[YouTube] Still transcoding... (${elapsed}s elapsed)${progressText ? ' — ' + progressText : ''}`);
+    await page.waitForTimeout(20000);
+  }
+  console.warn('[YouTube] Transcoding wait timed out');
+  return false;
+}
+
 // Waits (up to maxWaitMs, default 90 min) for the upload progress dialog to clear
 // and a success/processing confirmation to appear. Polls every 20 s so it doesn't
 // overwhelm YouTube Studio with unnecessary checks.
@@ -1249,6 +1294,14 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
       stuckRounds += 1;
       if (next.disabled && stuckRounds >= 2) {
+        // Before asking for human help, check if the Next button is disabled because
+        // the video is still being transcoded by YouTube — just wait in that case.
+        if (await isVideoTranscodingInProgress(page)) {
+          console.log('[YouTube] Next button disabled because video is still transcoding — waiting for processing to complete...');
+          await waitForVideoTranscodingToComplete(page);
+          stuckRounds = 0;
+          continue;
+        }
         await requestHumanObstacleHelp(
           page,
           credentials,
@@ -1259,6 +1312,13 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       }
 
       if (stuckRounds >= 4) {
+        // Same transcoding check for the general "stuck" case.
+        if (await isVideoTranscodingInProgress(page)) {
+          console.log('[YouTube] Wizard stuck because video is still transcoding — waiting for processing to complete...');
+          await waitForVideoTranscodingToComplete(page);
+          stuckRounds = 0;
+          continue;
+        }
         await requestHumanObstacleHelp(
           page,
           credentials,
@@ -1319,6 +1379,22 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     }
 
     // Last resort: use Telegram to ask human to set Public manually
+    if (!publicSelected) {
+      // Before escalating to human, check if the video is still being transcoded by
+      // YouTube ("Processing up to HD… X minutes left"). In that state the radio
+      // buttons are often disabled — just wait and retry automatically.
+      if (await isVideoTranscodingInProgress(page)) {
+        console.log('[YouTube] Cannot select Public visibility because video is still transcoding — waiting for processing to complete...');
+        await waitForVideoTranscodingToComplete(page);
+        await page.waitForTimeout(1500);
+        for (let retryAttempt = 0; retryAttempt < 4 && !publicSelected; retryAttempt++) {
+          if (retryAttempt > 0) await page.waitForTimeout(1500);
+          publicSelected = await selectVisibilityPublic(page);
+          if (publicSelected) console.log('[YouTube] Visibility set to Public after waiting for transcoding');
+        }
+      }
+    }
+
     if (!publicSelected) {
       console.warn('[YouTube] Could not auto-select Public visibility — asking for human help...');
       try {
