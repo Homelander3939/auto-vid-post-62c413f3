@@ -651,6 +651,9 @@ async function isVideoTranscodingInProgress(page) {
   try {
     if (await page.getByText(/processing video/i).isVisible({ timeout: 1000 })) return true;
   } catch {}
+  try {
+    if (await page.getByText(/checking\s+\d+\s*%/i).isVisible({ timeout: 1000 })) return true;
+  } catch {}
   return page.evaluate(() => {
     const text = (document.body?.innerText || '').toLowerCase();
     return (
