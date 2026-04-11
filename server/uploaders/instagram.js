@@ -1677,12 +1677,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         }
       }
 
-      // Strategy 1: ClipboardEvent paste — most reliable for React/DraftJS contenteditable fields.
-      // DraftJS listens to 'paste' events and handles them natively, whereas keyboard.type() can
-      // fail when event handling is intercepted or the field is not in the expected focused state.
-      // IMPORTANT: DraftJS processes the paste event asynchronously (React batches state updates),
-      // so we must NOT check the DOM content immediately after dispatching — instead we wait and
-      // verify in a separate evaluate call.
+      // Strategy 1: Native clipboard paste via Playwright keyboard shortcut.
+      // DraftJS ignores synthetic ClipboardEvent but processes real Ctrl+V natively.
       if (!captionFilled) {
         for (const sel of captionSelectors) {
           if (captionFilled) break;
@@ -1695,49 +1691,37 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             await el.click();
             await page.waitForTimeout(600);
 
-            // Select-all then delete any existing placeholder / text
+            // Clear existing content
             await page.keyboard.press('Control+a');
             await page.waitForTimeout(150);
             await page.keyboard.press('Backspace');
             await page.waitForTimeout(150);
 
-            // Fire a synthetic paste event carrying the caption text.
-            // DraftJS handles ClipboardEvent('paste') correctly and updates its internal state.
-            await page.evaluate((text) => {
-              const field = document.querySelector(
-                '[role="dialog"] [aria-label="Write a caption..."], ' +
-                '[role="dialog"] [aria-label*="Write a caption"], ' +
-                '[role="dialog"] [aria-label*="caption" i], ' +
-                '[role="dialog"] [contenteditable="true"], ' +
-                '[role="dialog"] textarea'
-              );
-              if (!field) return;
-              field.focus();
-              try {
-                const dt = new DataTransfer();
-                dt.setData('text/plain', text);
-                const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
-                field.dispatchEvent(ev);
-              } catch (dispatchErr) {
-                // Non-fatal — fall through to keyboard strategy
-              }
-            }, captionTruncated);
+            // Write to clipboard and paste natively
+            await page.evaluate((text) => navigator.clipboard.writeText(text), captionTruncated);
+            await page.waitForTimeout(200);
+            await page.keyboard.press('Control+v');
+            await page.waitForTimeout(1500);
 
-            // Wait for DraftJS React state to flush before checking DOM content.
-            await page.waitForTimeout(800);
+            // Settle: click away then back to force DraftJS state flush
+            const neutralEl = await page.$('[role="dialog"] video, [role="dialog"] img, [role="dialog"] [role="img"]');
+            if (neutralEl) {
+              await neutralEl.click().catch(() => {});
+              await page.waitForTimeout(500);
+              await el.click();
+              await page.waitForTimeout(500);
+            }
 
-            // Verify the caption field specifically was updated — check caption-specific
-            // selectors only to avoid false positives from other contenteditables in the
-            // dialog (profile name display, location input, mention areas, etc.).
+            // Verify caption persisted in DraftJS state
             const pasted = await page.evaluate(() => {
               const dialog = document.querySelector('[role="dialog"]') || document.body;
-              const captionFieldSelectors = [
+              const sels = [
                 '[aria-label="Write a caption..."]',
                 '[aria-label*="Write a caption"]',
                 '[aria-label*="caption" i]',
                 'textarea[placeholder*="caption" i]',
               ];
-              for (const s of captionFieldSelectors) {
+              for (const s of sels) {
                 const f = dialog.querySelector(s);
                 if (!f) continue;
                 const rect = f.getBoundingClientRect();
@@ -1745,20 +1729,25 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
                 const content = (f.textContent || f.value || '').trim();
                 if (content.length > 5) return true;
               }
+              // Also check any contenteditable with substantial text
+              for (const ce of dialog.querySelectorAll('[contenteditable="true"]')) {
+                if (ce.getBoundingClientRect().height < 5) continue;
+                if ((ce.textContent || '').trim().length > 5) return true;
+              }
               return false;
             });
 
             if (pasted) {
               captionFilled = true;
-              console.log(`[Instagram] Caption filled via ClipboardEvent paste on ${sel}`);
+              console.log(`[Instagram] Caption filled via native Ctrl+V paste on ${sel}`);
             }
           } catch (e) {
-            console.warn(`[Instagram] ClipboardEvent paste strategy failed on ${sel}:`, e.message);
+            console.warn(`[Instagram] Native paste strategy failed on ${sel}:`, e.message);
           }
         }
       }
 
-      // Strategy 2: Keyboard-based approach — fallback for non-DraftJS textareas
+      // Strategy 2: Keyboard typing with higher delay for DraftJS to keep up
       if (!captionFilled) {
         for (const sel of captionSelectors) {
           if (captionFilled) break;
@@ -1774,26 +1763,45 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             await page.waitForTimeout(200);
             await page.keyboard.press('Backspace');
             await page.waitForTimeout(200);
-            await page.keyboard.type(captionTruncated, { delay: 20 });
-            await page.waitForTimeout(800);
+
+            // Type in chunks with intermediate verification
+            const chunkSize = 500;
+            for (let i = 0; i < captionTruncated.length; i += chunkSize) {
+              const chunk = captionTruncated.slice(i, i + chunkSize);
+              await page.keyboard.type(chunk, { delay: 35 });
+              await page.waitForTimeout(300);
+            }
+            await page.waitForTimeout(1000);
+
+            // Settle: click away and back
+            const neutralEl = await page.$('[role="dialog"] video, [role="dialog"] img');
+            if (neutralEl) {
+              await neutralEl.click().catch(() => {});
+              await page.waitForTimeout(500);
+              await el.click();
+              await page.waitForTimeout(500);
+            }
             
-            // Verify caption was typed — check caption-specific fields to avoid false positives
-            // from other contenteditables in the dialog (aria-label may change after input)
             const typed = await page.evaluate(() => {
               const dialog = document.querySelector('[role="dialog"]') || document.body;
-              const captionFieldSelectors = [
+              const sels = [
                 '[aria-label="Write a caption..."]',
                 '[aria-label*="Write a caption"]',
                 '[aria-label*="caption" i]',
                 'textarea[placeholder*="caption" i]',
               ];
-              for (const s of captionFieldSelectors) {
+              for (const s of sels) {
                 const f = dialog.querySelector(s);
                 if (!f) continue;
                 const rect = f.getBoundingClientRect();
                 if (rect.height < 5) continue;
                 const content = (f.textContent || f.value || '').trim();
                 if (content.length > 0) return content;
+              }
+              for (const ce of dialog.querySelectorAll('[contenteditable="true"]')) {
+                if (ce.getBoundingClientRect().height < 5) continue;
+                const c = (ce.textContent || '').trim();
+                if (c.length > 0) return c;
               }
               return '';
             }).catch(() => '');
@@ -1850,6 +1858,57 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       }
     }
     await page.waitForTimeout(2000);
+
+    // ===== PRE-SHARE CAPTION VERIFICATION =====
+    // Final check: re-read caption field right before Share. If empty despite earlier success, retry once.
+    if (captionFilled && caption) {
+      const preShareCheck = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"]') || document.body;
+        const sels = [
+          '[aria-label="Write a caption..."]',
+          '[aria-label*="Write a caption"]',
+          '[aria-label*="caption" i]',
+          '[contenteditable="true"]',
+          'textarea',
+        ];
+        for (const s of sels) {
+          const f = dialog.querySelector(s);
+          if (!f) continue;
+          if (f.getBoundingClientRect().height < 5) continue;
+          const content = (f.textContent || f.value || '').trim();
+          if (content.length > 5) return true;
+        }
+        return false;
+      });
+
+      if (!preShareCheck) {
+        console.warn('[Instagram] Pre-share check: caption field appears empty! Retrying with keyboard.type...');
+        const captionTruncated = caption.length > 2200 ? caption.slice(0, 2200) : caption;
+        // Find and fill caption field one last time
+        for (const sel of captionSelectors) {
+          try {
+            const el = await page.$(sel);
+            if (!el) continue;
+            const visible = await el.isVisible().catch(() => false);
+            if (!visible) continue;
+            await el.click();
+            await page.waitForTimeout(500);
+            await page.keyboard.press('Control+a');
+            await page.waitForTimeout(150);
+            await page.keyboard.press('Backspace');
+            await page.waitForTimeout(150);
+            await page.keyboard.type(captionTruncated, { delay: 35 });
+            await page.waitForTimeout(1500);
+            console.log('[Instagram] Pre-share caption retry completed');
+            break;
+          } catch (e) {
+            console.warn('[Instagram] Pre-share caption retry failed:', e.message);
+          }
+        }
+      } else {
+        console.log('[Instagram] Pre-share check: caption content verified ✓');
+      }
+    }
 
     // ===== PHASE 6: SHARE =====
     console.log('[Instagram] Sharing...');
