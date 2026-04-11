@@ -568,10 +568,58 @@ async function clickNextWizardStep(page) {
 
 async function isVisibilityStep(page) {
   return page.evaluate(() => {
-    const text = (document.body?.innerText || '').toLowerCase();
-    const hasVisibilityText = text.includes('visibility');
-    const hasPublicOption = text.includes('public') && (text.includes('unlisted') || text.includes('private'));
-    return hasVisibilityText && hasPublicOption;
+    const isVisible = (el) => {
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+
+    const deepQueryAll = (root, selector) => {
+      const results = [];
+      results.push(...Array.from(root.querySelectorAll(selector)));
+      for (const el of root.querySelectorAll('*')) {
+        if (el.shadowRoot) results.push(...deepQueryAll(el.shadowRoot, selector));
+      }
+      return results;
+    };
+
+    const visibleDialog = deepQueryAll(document, 'ytcp-uploads-dialog, [role="dialog"]')
+      .find((node) => isVisible(node));
+    const scope = visibleDialog || document;
+
+    const stepNodes = deepQueryAll(scope, '[aria-label], [role="tab"], [role="listitem"], tp-yt-paper-tab, ytcp-step-badge');
+    const activeVisibilityStep = stepNodes.some((node) => {
+      const text = (node.textContent || node.innerText || '').toLowerCase().trim();
+      if (!text.includes('visibility')) return false;
+      if (!isVisible(node)) return false;
+
+      const selected =
+        node.getAttribute('aria-selected') === 'true' ||
+        node.getAttribute('aria-current') === 'step' ||
+        node.getAttribute('aria-current') === 'true' ||
+        node.getAttribute('aria-checked') === 'true' ||
+        node.classList.contains('selected') ||
+        node.classList.contains('active') ||
+        node.classList.contains('iron-selected');
+
+      return selected;
+    });
+
+    const visibleRadios = deepQueryAll(scope, 'ytcp-radio-button, tp-yt-paper-radio-button, [role="radio"], input[type="radio"], label');
+    const visibleVisibilityOptions = new Set();
+
+    for (const node of visibleRadios) {
+      if (!isVisible(node)) continue;
+      const text = (node.textContent || node.innerText || node.getAttribute?.('aria-label') || '').toLowerCase().trim();
+      if (!text) continue;
+      if (text.includes('public')) visibleVisibilityOptions.add('public');
+      if (text.includes('private')) visibleVisibilityOptions.add('private');
+      if (text.includes('unlisted')) visibleVisibilityOptions.add('unlisted');
+      if (visibleVisibilityOptions.size >= 2) break;
+    }
+
+    return activeVisibilityStep || visibleVisibilityOptions.size >= 2;
   }).catch(() => false);
 }
 
