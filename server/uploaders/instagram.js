@@ -1545,19 +1545,25 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       const candidates = [];
       const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
       const allEls = dialogEl.querySelectorAll(nextCandidateSelector);
-      const matchesNextLabel = (el) => {
+      const getNextLabelMeta = (el) => {
         const raw = (el.textContent || '').trim().toLowerCase();
         const rendered = (el.innerText || raw).trim().toLowerCase();
         const label = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-        return (
+        const hasVisibleTextMatch =
           raw === 'next' || rendered === 'next' ||
-          raw === 'continue' || rendered === 'continue' ||
-          label === 'next' || label === 'continue'
+          raw === 'continue' || rendered === 'continue';
+        const hasAriaLabelMatch = label === 'next' || label === 'continue';
+        return (
+          {
+            matches: hasVisibleTextMatch || hasAriaLabelMatch,
+            hasVisibleTextMatch,
+          }
         );
       };
 
       for (const el of allEls) {
-        if (!matchesNextLabel(el)) continue;
+        const labelMeta = getNextLabelMeta(el);
+        if (!labelMeta.matches) continue;
 
         const candidate = el.closest(interactiveSelector) || el;
         if (!dialogEl.contains(candidate) || seen.has(candidate)) continue;
@@ -1567,7 +1573,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           // Skip wrapper nodes when a deeper matching child exists so coordinate clicks land on the
           // innermost visible control instead of an outer layout container with the same text.
           const hasMatchingChild = Array.from(candidate.querySelectorAll(nextCandidateSelector))
-            .some((child) => child !== candidate && matchesNextLabel(child));
+            .some((child) => child !== candidate && getNextLabelMeta(child).matches);
           if (hasMatchingChild) continue;
         }
 
@@ -1601,14 +1607,17 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           x,
           y,
           disabled,
+          hasVisibleTextMatch: labelMeta.hasVisibleTextMatch,
         });
       }
 
       if (candidates.length === 0) return null;
+      const visibleTextCandidates = candidates.filter((c) => c.hasVisibleTextMatch);
+      const prioritized = visibleTextCandidates.length > 0 ? visibleTextCandidates : candidates;
       // Sort by header height first (top ascending), then by horizontal position (left descending)
       // so ties resolve to the furthest-right header action instead of left-side controls.
-      candidates.sort((a, b) => (a.top - b.top) || (b.left - a.left));
-      return candidates[0];
+      prioritized.sort((a, b) => (a.top - b.top) || (b.left - a.left));
+      return prioritized[0];
     }, options).catch(() => null);
 
     const waitForDialogHeaderNextEnabled = async (timeoutMs) => {
