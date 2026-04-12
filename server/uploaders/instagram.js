@@ -1524,11 +1524,19 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     const findDialogHeaderNextButton = (options = {}) => page.evaluate(({ includeDisabled = false } = {}) => {
       const dialogEl = document.querySelector('[role="dialog"]') || document.body;
       const dialogRect = dialogEl.getBoundingClientRect();
-      const headerBandMaxTop = Math.min(140, Math.max(72, dialogRect.height * 0.22));
+      const HEADER_BAND_MAX_PX = 140;
+      const HEADER_BAND_MIN_PX = 72;
+      const HEADER_BAND_HEIGHT_RATIO = 0.22;
+      const nextCandidateSelector = 'button, [role="button"], a, span, div[tabindex], div';
+      const headerBandMaxTop = Math.min(
+        HEADER_BAND_MAX_PX,
+        Math.max(HEADER_BAND_MIN_PX, dialogRect.height * HEADER_BAND_HEIGHT_RATIO),
+      );
       const interactiveSelector = 'button, [role="button"], a, [tabindex]';
       const seen = new Set();
       const candidates = [];
-      const allEls = dialogEl.querySelectorAll('button, [role="button"], a, span, div[tabindex], div');
+      const clampToElementBounds = (value, min, max) => Math.min(max, Math.max(min, value));
+      const allEls = dialogEl.querySelectorAll(nextCandidateSelector);
       const matchesNextLabel = (el) => {
         const raw = (el.textContent || '').trim().toLowerCase();
         const rendered = (el.innerText || raw).trim().toLowerCase();
@@ -1548,7 +1556,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         seen.add(candidate);
 
         if (!candidate.matches(interactiveSelector)) {
-          const hasMatchingChild = Array.from(candidate.querySelectorAll('button, [role="button"], a, span, div[tabindex], div'))
+          const hasMatchingChild = Array.from(candidate.querySelectorAll(nextCandidateSelector))
             .some((child) => child !== candidate && matchesNextLabel(child));
           if (hasMatchingChild) continue;
         }
@@ -1572,8 +1580,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         const disabled = candidate.hasAttribute('disabled') || candidate.getAttribute('aria-disabled') === 'true';
         if (!includeDisabled && disabled) continue;
 
-        const x = Math.min(rect.right - 1, Math.max(rect.left + 1, rect.left + rect.width / 2));
-        const y = Math.min(rect.bottom - 1, Math.max(rect.top + 1, rect.top + rect.height / 2));
+        const x = clampToElementBounds(rect.left + rect.width / 2, rect.left + 1, rect.right - 1);
+        const y = clampToElementBounds(rect.top + rect.height / 2, rect.top + 1, rect.bottom - 1);
         const topEl = document.elementFromPoint(x, y);
         if (topEl && !(candidate === topEl || candidate.contains(topEl) || topEl.contains(candidate))) continue;
 
@@ -1587,6 +1595,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       }
 
       if (candidates.length === 0) return null;
+      // Prefer the highest match in the header band; when several share that row, choose the
+      // furthest-right one so we keep targeting the header action instead of left-side controls.
       candidates.sort((a, b) => (a.top - b.top) || (b.left - a.left));
       return candidates[0];
     }, options).catch(() => null);
