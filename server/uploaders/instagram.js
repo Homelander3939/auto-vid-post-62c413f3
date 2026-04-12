@@ -1549,25 +1549,33 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         // innerText to avoid being tripped up by SVG/icon child text appended to textContent.
         const nextButtonBecameEnabled = await page.waitForFunction(() => {
           const dialog = document.querySelector('[role="dialog"]') || document.body;
+          const dialogRect = dialog.getBoundingClientRect();
           const allEls = dialog.querySelectorAll('button, div[role="button"], a, span, div[tabindex], div');
+          // Collect ALL "Next" candidates (text or aria-label match) with their vertical position.
+          // This lets us identify the dialog-header button (topmost) vs cover-photo thumbnail
+          // navigation arrows (mid-dialog, also carry aria-label="Next") and wait specifically
+          // for the header button to become enabled — not just any "Next" in the dialog.
+          const candidates = [];
           for (const el of allEls) {
             const raw = (el.textContent || '').trim().toLowerCase();
             const rendered = (el.innerText || raw).trim().toLowerCase();
             const label = (el.getAttribute('aria-label') || '').toLowerCase();
             const matchesText = raw === 'next' || rendered === 'next' || label === 'next';
-            // Use rendered.length (innerText) instead of raw.length (textContent) so that
-            // buttons whose textContent is padded with SVG/screen-reader hidden text are not
-            // falsely rejected when their visible text is simply "Next".
             if (matchesText && rendered.length < 20) {
-              // Skip disabled elements and keep searching — there may be another "Next" element
-              // (e.g. a cover-photo thumbnail navigation arrow) that is disabled while the real
-              // dialog-header "Next" button is already enabled.
-              if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') continue;
-              return true;
+              const rect = el.getBoundingClientRect();
+              if (rect.width < 1 || rect.height < 1) continue;
+              candidates.push({
+                top: rect.top - dialogRect.top,
+                disabled: el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true',
+              });
             }
           }
-          // Button not found yet — keep polling
-          return false;
+          if (candidates.length === 0) return false;
+          // Sort by distance from the top of the dialog.  The dialog-header "Next" button is
+          // always the topmost candidate; thumbnail navigation arrows appear lower down.
+          candidates.sort((a, b) => a.top - b.top);
+          // Only signal "ready" when the topmost candidate (the header button) is enabled.
+          return !candidates[0].disabled;
         }, { timeout: 50000 }).then(() => true).catch(() => {
           console.log('[Instagram] Edit screen: Next button not enabled after 50s wait, trying anyway');
           return false;
@@ -1580,10 +1588,11 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         if (!nextButtonBecameEnabled) {
           try {
             const dialogLoc = page.locator('[role="dialog"]').first();
-            // :text-is matches elements whose trimmed text is exactly "Next"
+            // Use :text-is("Next") which matches by VISIBLE text only — thumbnail navigation
+            // arrows carry aria-label="Next" but have no visible text, so they won't match.
+            // This ensures we force-click the dialog-header Next button, not a thumbnail arrow.
             const candidates = [
               dialogLoc.locator(':text-is("Next")').first(),
-              dialogLoc.locator('[aria-label="Next"]').first(),
               page.locator(':text-is("Next")').first(),
             ];
             for (const loc of candidates) {
@@ -1608,11 +1617,20 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       // Instagram renders "Next" as various element types (button, div, a, span) depending on the screen.
       // Only click if the button is NOT disabled to avoid false-positive "clicked" on the Edit screen.
       // Returns true only if an enabled Next/Continue button was found and clicked.
+      //
+      // IMPORTANT: On the Cover Photo / Edit screen there are TWO kinds of "Next" element:
+      //   1. The dialog-HEADER "Next" button (top of the dialog) — advances to the next screen.
+      //   2. Thumbnail navigation "Next" arrow (mid-dialog, aria-label="Next") — cycles covers.
+      // Both match the text/label criteria.  We MUST click the topmost one (header button).
+      // Sorting candidates by their vertical position and picking the smallest top value achieves
+      // this regardless of DOM order and regardless of which Instagram renders the button as.
       const clickNextInDialog = () => page.evaluate(() => {
         const dialogEl = document.querySelector('[role="dialog"]') || document.body;
+        const dialogRect = dialogEl.getBoundingClientRect();
         // Include plain divs — Instagram sometimes renders the Next button without role="button" or tabindex.
         // The text.length < 20 guard prevents false matches on large container divs.
         const allEls = dialogEl.querySelectorAll('button, div[role="button"], a, span, div[tabindex], div');
+        const candidates = [];
         for (const el of allEls) {
           const raw = (el.textContent || '').trim();
           // Also check innerText which excludes CSS-hidden elements (e.g. aria-hidden SVG icons)
@@ -1626,15 +1644,20 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           // hidden screen-reader spans can inflate textContent beyond 20 chars while the visible
           // "Next" text is only 4 chars, causing the real button to be falsely skipped.
           if (matchesText && rendered.length < 20) {
-            // Skip disabled buttons and keep searching — don't return false early, as a disabled
-            // thumbnail-navigation "Next" earlier in the DOM must not prevent the enabled
-            // dialog-header "Next" button from being found and clicked.
+            // Skip disabled buttons and keep searching — don't return false early.
             if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') continue;
-            el.click();
-            return true;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 1 || rect.height < 1) continue;
+            candidates.push({ el, top: rect.top - dialogRect.top });
           }
         }
-        return false;
+        if (candidates.length === 0) return false;
+        // The dialog-header "Next" is always at the TOP of the dialog.
+        // Thumbnail navigation arrows are lower (mid-dialog). Picking the candidate with the
+        // smallest top offset guarantees we click the header button, not a thumbnail nav arrow.
+        candidates.sort((a, b) => a.top - b.top);
+        candidates[0].el.click();
+        return true;
       });
 
       let clicked = await clickNextInDialog();
