@@ -1555,9 +1555,14 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             const rendered = (el.innerText || raw).trim().toLowerCase();
             const label = (el.getAttribute('aria-label') || '').toLowerCase();
             const matchesText = raw === 'next' || rendered === 'next' || label === 'next';
-            if (matchesText && raw.length < 20) {
-              // Check not disabled — return false to keep polling until enabled
-              if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
+            // Use rendered.length (innerText) instead of raw.length (textContent) so that
+            // buttons whose textContent is padded with SVG/screen-reader hidden text are not
+            // falsely rejected when their visible text is simply "Next".
+            if (matchesText && rendered.length < 20) {
+              // Skip disabled elements and keep searching — there may be another "Next" element
+              // (e.g. a cover-photo thumbnail navigation arrow) that is disabled while the real
+              // dialog-header "Next" button is already enabled.
+              if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') continue;
               return true;
             }
           }
@@ -1617,10 +1622,14 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           const matchesText = raw.toLowerCase() === 'next' || rendered.toLowerCase() === 'next' ||
             raw.toLowerCase() === 'continue' || rendered.toLowerCase() === 'continue' ||
             label === 'next' || label === 'continue';
-          // raw.length < 20 avoids matching container divs whose textContent includes many children
-          if (matchesText && raw.length < 20) {
-            // Skip disabled buttons — clicking them does nothing but would falsely report success
-            if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
+          // Use rendered.length (innerText) instead of raw.length (textContent) — SVG icons and
+          // hidden screen-reader spans can inflate textContent beyond 20 chars while the visible
+          // "Next" text is only 4 chars, causing the real button to be falsely skipped.
+          if (matchesText && rendered.length < 20) {
+            // Skip disabled buttons and keep searching — don't return false early, as a disabled
+            // thumbnail-navigation "Next" earlier in the DOM must not prevent the enabled
+            // dialog-header "Next" button from being found and clicked.
+            if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') continue;
             el.click();
             return true;
           }
