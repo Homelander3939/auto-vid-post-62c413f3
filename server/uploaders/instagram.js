@@ -1547,7 +1547,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         // before enabling Next, which can take 20-40+ seconds.
         // Searches broad element types (including plain divs) and uses both textContent and
         // innerText to avoid being tripped up by SVG/icon child text appended to textContent.
-        const editNextEnabled = await page.waitForFunction(() => {
+        const nextButtonBecameEnabled = await page.waitForFunction(() => {
           const dialog = document.querySelector('[role="dialog"]') || document.body;
           const allEls = dialog.querySelectorAll('button, div[role="button"], a, span, div[tabindex], div');
           for (const el of allEls) {
@@ -1572,7 +1572,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         // force-click to bypass CSS pointer-events:none that Instagram applies to disabled buttons.
         // aria-disabled elements still receive JS-level click events; pointer-events:none does not
         // block Playwright force-clicks.
-        if (!editNextEnabled) {
+        if (!nextButtonBecameEnabled) {
           try {
             const dialogLoc = page.locator('[role="dialog"]').first();
             // :text-is matches elements whose trimmed text is exactly "Next"
@@ -1588,9 +1588,14 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
                   console.log('[Instagram] Edit screen: Force-clicked Next button after timeout');
                   break;
                 }
-              } catch {}
+              } catch {
+                // Force-click may throw (e.g. element detached mid-transition) — safe to ignore,
+                // the next candidate will be tried or clickNextInDialog() will retry below.
+              }
             }
-          } catch {}
+          } catch {
+            // Outer try-catch guards against unexpected locator API errors — safe to ignore.
+          }
         }
       }
 
