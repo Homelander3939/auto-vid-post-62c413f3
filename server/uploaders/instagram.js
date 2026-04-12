@@ -1533,15 +1533,17 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       }
 
       // Strategy 1: Scope the click to within the dialog to avoid background page interactions
+      // Instagram renders "Next" as various element types (button, div, a, span) depending on the screen
       let clicked = await page.evaluate(() => {
-        // Look for Next button specifically inside the dialog/modal
         const dialogEl = document.querySelector('[role="dialog"]') || document.body;
-        const buttons = dialogEl.querySelectorAll('button, div[role="button"]');
-        for (const btn of buttons) {
-          const text = (btn.textContent || '').trim().toLowerCase();
-          const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-          if (text === 'next' || text === 'continue' || label === 'next' || label === 'continue') {
-            btn.click();
+        // Search ALL elements inside dialog for "Next" text — Instagram uses different tags on different screens
+        const allEls = dialogEl.querySelectorAll('button, div[role="button"], a, span, div[tabindex]');
+        for (const el of allEls) {
+          const text = (el.textContent || '').trim();
+          const label = (el.getAttribute('aria-label') || '').toLowerCase();
+          // Match exact "Next" or "Continue" text (case-insensitive), avoid matching elements with lots of child text
+          if ((text.toLowerCase() === 'next' || text.toLowerCase() === 'continue' || label === 'next' || label === 'continue') && text.length < 20) {
+            el.click();
             return true;
           }
         }
@@ -1554,10 +1556,12 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           '[role="dialog"] button:has-text("Next")',
           '[role="dialog"] [aria-label="Next"]',
           '[role="dialog"] div[role="button"]:has-text("Next")',
+          '[role="dialog"] a:has-text("Next")',
+          '[role="dialog"] span:has-text("Next")',
           'button:has-text("Next")',
           '[aria-label="Next"]',
           'div[role="button"]:has-text("Next")',
-          'button:has-text("Continue")',
+          'a:has-text("Next")',
         ], 'Next');
       }
 
