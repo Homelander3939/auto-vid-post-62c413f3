@@ -1636,12 +1636,16 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       // Stop early if we've reached the caption/share screen
       const alreadyOnCaption = await page.evaluate(() => {
         const dialog = document.querySelector('[role="dialog"]') || document.body;
-        const text = (dialog.innerText || dialog.textContent || '').toLowerCase();
-        // Use specific checks to avoid false positives from the Crop/Filter screens
-        const hasCaptionField = !!dialog.querySelector(
-          '[aria-label="Write a caption..."], [aria-label*="Write a caption"], ' +
-          'textarea[placeholder*="caption" i], [contenteditable="true"][aria-label*="caption" i]'
-        );
+        // Use specific checks to avoid false positives from the Crop/Edit screens.
+        // Instagram pre-renders the caption field in the DOM even while on the Edit/Cover-photo
+        // screen, so we MUST verify the field is actually visible inside the dialog viewport —
+        // not just that it exists in the DOM or that "write a caption" appears anywhere in the
+        // page text (which would catch hidden pre-rendered content).
+        const dialogViewRect = dialog.getBoundingClientRect();
+        const isInDialogViewport = (rect) =>
+          rect.width > 0 && rect.height > 5 &&
+          rect.top >= (dialogViewRect.top - 20) &&
+          rect.bottom <= (dialogViewRect.bottom + 20);
         const captionFieldVisible = (() => {
           // Check contenteditable caption fields
           const ceSelectors = ['[aria-label="Write a caption..."]', '[aria-label*="Write a caption"]', '[contenteditable="true"][aria-label*="caption" i]'];
@@ -1650,18 +1654,18 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             if (!el) continue;
             const rect = el.getBoundingClientRect();
             const style = window.getComputedStyle(el);
-            if (rect.height > 5 && style.display !== 'none' && style.visibility !== 'hidden') return true;
+            if (isInDialogViewport(rect) && style.display !== 'none' && style.visibility !== 'hidden') return true;
           }
           // Also check textarea caption fields (Instagram Posts may use <textarea>)
           const ta = dialog.querySelector('textarea[placeholder*="caption" i]');
           if (ta) {
             const rect = ta.getBoundingClientRect();
             const style = window.getComputedStyle(ta);
-            if (rect.height > 5 && style.display !== 'none' && style.visibility !== 'hidden') return true;
+            if (isInDialogViewport(rect) && style.display !== 'none' && style.visibility !== 'hidden') return true;
           }
           return false;
         })();
-        return hasCaptionField && captionFieldVisible || text.includes('write a caption');
+        return captionFieldVisible;
       }).catch(() => false);
       if (alreadyOnCaption) {
         console.log('[Instagram] Already on caption screen, stopping Next clicks');
@@ -1786,14 +1790,34 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       // On the Edit screen, verify we actually navigated away after clicking Next.
       // If still on Edit/Crop screen, the click may have landed on a still-disabled button — reset
       // clicked so the next iteration retries properly (avoids burning all 5 loop slots).
-      // Require BOTH "cover photo" AND "trim" to avoid false positives from a neighbouring screen
-      // that might contain just one of these words (e.g. the word "trim" appearing on the Filter screen).
+      // IMPORTANT: Do NOT use "write a caption" text as a negative signal — Instagram pre-renders
+      // the caption field DOM node on all steps, so innerText may contain "write a caption" even
+      // while the Edit screen is visible.  Instead check that a caption input is VISIBLE in the
+      // dialog viewport, which is a reliable indication we actually advanced to the caption screen.
       if (clicked && onEditScreen) {
         await page.waitForTimeout(1500);
         const stillOnEdit = await page.evaluate(() => {
           const dialog = document.querySelector('[role="dialog"]') || document.body;
           const text = (dialog.innerText || dialog.textContent || '').toLowerCase();
-          return text.includes('cover photo') && text.includes('trim') && !text.includes('write a caption');
+          // Must still show Edit screen indicators
+          if (!text.includes('cover photo') && !text.includes('trim')) return false;
+          // Check whether a caption input is NOW visible in the viewport — if so we've navigated
+          const dialogViewRect = dialog.getBoundingClientRect();
+          const captionInputs = dialog.querySelectorAll(
+            '[aria-label="Write a caption..."], [aria-label*="Write a caption"], ' +
+            'textarea[placeholder*="caption" i], [contenteditable="true"][aria-label*="caption" i]'
+          );
+          for (const el of captionInputs) {
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            if (
+              rect.height > 5 && style.display !== 'none' && style.visibility !== 'hidden' &&
+              rect.top >= (dialogViewRect.top - 20) && rect.bottom <= (dialogViewRect.bottom + 20)
+            ) {
+              return false; // caption input is visible — we've left the Edit screen
+            }
+          }
+          return true; // Edit indicators present and no visible caption input → still on Edit
         }).catch(() => false);
         if (stillOnEdit) {
           console.log('[Instagram] Edit screen: still visible after Next click — click may not have registered, will retry');
@@ -1817,28 +1841,44 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     }
 
     // ===== PHASE 5: ADD CAPTION =====
-    // First verify we're on the caption/share screen — look for the caption INPUT field
-    // specifically (not generic "share" text, which is present on all screens via Share button)
+    // First verify we're on the caption/share screen — look for a VISIBLE caption INPUT field
+    // within the dialog viewport. Do NOT use broad selectors like [contenteditable="true"] or
+    // [aria-label*="caption" i] here because Instagram renders those on the Edit/Cover-photo
+    // screen too (the alt-text input and pre-rendered caption field), causing false positives.
     const onCaptionScreen = await page.evaluate(() => {
       const dialog = document.querySelector('[role="dialog"]') || document.body;
-      const hasCaptionField = !!dialog.querySelector(
+      const dialogViewRect = dialog.getBoundingClientRect();
+      const captionInputs = dialog.querySelectorAll(
         '[aria-label="Write a caption..."], [aria-label*="Write a caption"], ' +
-        '[aria-label*="caption" i], textarea[placeholder*="caption" i], ' +
-        '[contenteditable="true"]'
+        'textarea[placeholder*="caption" i], [contenteditable="true"][aria-label*="caption" i]'
       );
-      if (hasCaptionField) return true;
-      const text = (document.body?.innerText || '').toLowerCase();
-      return text.includes('write a caption') || text.includes('create new post');
+      for (const el of captionInputs) {
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        if (
+          rect.height > 5 && style.display !== 'none' && style.visibility !== 'hidden' &&
+          rect.top >= (dialogViewRect.top - 20) && rect.bottom <= (dialogViewRect.bottom + 20)
+        ) {
+          return true;
+        }
+      }
+      return false;
     }).catch(() => false);
 
     if (!onCaptionScreen) {
       console.log('[Instagram] Not on caption screen yet, trying to advance...');
-      await smartClick(page, [
-        '[role="dialog"] button:has-text("Next")',
-        'button:has-text("Next")',
-        '[aria-label="Next"]',
-        'div[role="button"]:has-text("Next")',
-      ], 'Next');
+      // Use coordinate-based click to avoid [aria-label="Next"] which matches the cover-photo
+      // carousel arrow. findDialogHeaderNextButton() restricts to the header band only.
+      const nextCoords = await findDialogHeaderNextButton();
+      if (nextCoords) {
+        await page.mouse.click(nextCoords.x, nextCoords.y);
+      } else {
+        await smartClick(page, [
+          '[role="dialog"] button:has-text("Next")',
+          'button:has-text("Next")',
+          'div[role="button"]:has-text("Next")',
+        ], 'Next');
+      }
       await page.waitForTimeout(2000);
     }
 
@@ -1855,8 +1895,15 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       caption = captionParts.join('\n\n').trim();
       console.log(`[Instagram] Caption to fill (${caption.length} chars): ${caption.slice(0, 200)}...`);
 
-      // Wait for caption field to appear in the dialog
-      await page.waitForSelector('[role="dialog"] [contenteditable="true"], [role="dialog"] textarea, [role="dialog"] [aria-label*="caption" i]', { timeout: 10000 })
+      // Wait for a caption-specific field to appear in the dialog (not a generic contenteditable
+      // which can match elements on the Edit/Cover-photo screen and cause false-ready signals).
+      await page.waitForSelector(
+        '[role="dialog"] [aria-label="Write a caption..."], ' +
+        '[role="dialog"] [aria-label*="Write a caption"], ' +
+        '[role="dialog"] textarea[placeholder*="caption" i], ' +
+        '[role="dialog"] [contenteditable="true"][aria-label*="caption" i]',
+        { timeout: 10000 }
+      )
         .then(() => console.log('[Instagram] Caption field detected in dialog'))
         .catch(() => console.warn('[Instagram] Caption field not detected by waitForSelector, trying anyway'));
 
