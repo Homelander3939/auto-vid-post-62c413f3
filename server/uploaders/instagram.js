@@ -1545,13 +1545,17 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         // Wait up to 50 seconds for the Next button to become enabled.
         // Long videos (60-120s) require Instagram to generate cover photo thumbnails
         // before enabling Next, which can take 20-40+ seconds.
-        await page.waitForFunction(() => {
+        // Searches broad element types (including plain divs) and uses both textContent and
+        // innerText to avoid being tripped up by SVG/icon child text appended to textContent.
+        const nextButtonBecameEnabled = await page.waitForFunction(() => {
           const dialog = document.querySelector('[role="dialog"]') || document.body;
-          const allEls = dialog.querySelectorAll('button, div[role="button"], a, span, div[tabindex]');
+          const allEls = dialog.querySelectorAll('button, div[role="button"], a, span, div[tabindex], div');
           for (const el of allEls) {
-            const text = (el.textContent || '').trim().toLowerCase();
+            const raw = (el.textContent || '').trim().toLowerCase();
+            const rendered = (el.innerText || raw).trim().toLowerCase();
             const label = (el.getAttribute('aria-label') || '').toLowerCase();
-            if ((text === 'next' || label === 'next') && text.length < 20) {
+            const matchesText = raw === 'next' || rendered === 'next' || label === 'next';
+            if (matchesText && raw.length < 20) {
               // Check not disabled — return false to keep polling until enabled
               if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
               return true;
@@ -1559,9 +1563,40 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           }
           // Button not found yet — keep polling
           return false;
-        }, { timeout: 50000 }).catch(() => {
+        }, { timeout: 50000 }).then(() => true).catch(() => {
           console.log('[Instagram] Edit screen: Next button not enabled after 50s wait, trying anyway');
+          return false;
         });
+
+        // If the button never became enabled (still disabled after 50s), attempt a Playwright
+        // force-click to bypass CSS pointer-events:none that Instagram applies to disabled buttons.
+        // aria-disabled elements still receive JS-level click events; pointer-events:none does not
+        // block Playwright force-clicks.
+        if (!nextButtonBecameEnabled) {
+          try {
+            const dialogLoc = page.locator('[role="dialog"]').first();
+            // :text-is matches elements whose trimmed text is exactly "Next"
+            const candidates = [
+              dialogLoc.locator(':text-is("Next")').first(),
+              dialogLoc.locator('[aria-label="Next"]').first(),
+              page.locator(':text-is("Next")').first(),
+            ];
+            for (const loc of candidates) {
+              try {
+                if (await loc.count() > 0) {
+                  await loc.click({ force: true, timeout: 2000 });
+                  console.log('[Instagram] Edit screen: Force-clicked Next button after timeout');
+                  break;
+                }
+              } catch {
+                // Force-click may throw (e.g. element detached mid-transition) — safe to ignore,
+                // the next candidate will be tried or clickNextInDialog() will retry below.
+              }
+            }
+          } catch {
+            // Outer try-catch guards against unexpected locator API errors — safe to ignore.
+          }
+        }
       }
 
       // Strategy 1: Scope the click to within the dialog to avoid background page interactions.
@@ -1570,13 +1605,20 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       // Returns true only if an enabled Next/Continue button was found and clicked.
       const clickNextInDialog = () => page.evaluate(() => {
         const dialogEl = document.querySelector('[role="dialog"]') || document.body;
-        // Search ALL elements inside dialog for "Next" text — Instagram uses different tags on different screens
-        const allEls = dialogEl.querySelectorAll('button, div[role="button"], a, span, div[tabindex]');
+        // Include plain divs — Instagram sometimes renders the Next button without role="button" or tabindex.
+        // The text.length < 20 guard prevents false matches on large container divs.
+        const allEls = dialogEl.querySelectorAll('button, div[role="button"], a, span, div[tabindex], div');
         for (const el of allEls) {
-          const text = (el.textContent || '').trim();
+          const raw = (el.textContent || '').trim();
+          // Also check innerText which excludes CSS-hidden elements (e.g. aria-hidden SVG icons)
+          // that can pollute textContent with icon label text.
+          const rendered = (el.innerText || raw).trim();
           const label = (el.getAttribute('aria-label') || '').toLowerCase();
-          // Match exact "Next" or "Continue" text (case-insensitive), avoid matching elements with lots of child text
-          if ((text.toLowerCase() === 'next' || text.toLowerCase() === 'continue' || label === 'next' || label === 'continue') && text.length < 20) {
+          const matchesText = raw.toLowerCase() === 'next' || rendered.toLowerCase() === 'next' ||
+            raw.toLowerCase() === 'continue' || rendered.toLowerCase() === 'continue' ||
+            label === 'next' || label === 'continue';
+          // raw.length < 20 avoids matching container divs whose textContent includes many children
+          if (matchesText && raw.length < 20) {
             // Skip disabled buttons — clicking them does nothing but would falsely report success
             if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
             el.click();
@@ -1623,12 +1665,14 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       // On the Edit screen, verify we actually navigated away after clicking Next.
       // If still on Edit screen, the click may have landed on a still-disabled button — reset
       // clicked so the next iteration retries properly (avoids burning all 5 loop slots).
+      // Require BOTH "cover photo" AND "trim" to avoid false positives from a neighbouring screen
+      // that might contain just one of these words (e.g. the word "trim" appearing on the Filter screen).
       if (clicked && onEditScreen) {
         await page.waitForTimeout(1500);
         const stillOnEdit = await page.evaluate(() => {
           const dialog = document.querySelector('[role="dialog"]') || document.body;
           const text = (dialog.innerText || dialog.textContent || '').toLowerCase();
-          return (text.includes('cover photo') || text.includes('trim')) && !text.includes('write a caption');
+          return text.includes('cover photo') && text.includes('trim') && !text.includes('write a caption');
         }).catch(() => false);
         if (stillOnEdit) {
           console.log('[Instagram] Edit screen: still visible after Next click — click may not have registered, will retry');
