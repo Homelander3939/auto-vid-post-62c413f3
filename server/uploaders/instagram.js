@@ -1542,7 +1542,9 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       }).catch(() => false);
       if (onEditScreen) {
         console.log('[Instagram] On Edit screen (Cover photo/Trim), waiting for video processing...');
-        // Wait up to 8 extra seconds for the Next button to become enabled
+        // Wait up to 50 seconds for the Next button to become enabled.
+        // Long videos (60-120s) require Instagram to generate cover photo thumbnails
+        // before enabling Next, which can take 20-40+ seconds.
         await page.waitForFunction(() => {
           const dialog = document.querySelector('[role="dialog"]') || document.body;
           const allEls = dialog.querySelectorAll('button, div[role="button"], a, span, div[tabindex]');
@@ -1550,19 +1552,21 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             const text = (el.textContent || '').trim().toLowerCase();
             const label = (el.getAttribute('aria-label') || '').toLowerCase();
             if ((text === 'next' || label === 'next') && text.length < 20) {
-              // Check not disabled
+              // Check not disabled — return false to keep polling until enabled
               if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
               return true;
             }
           }
+          // Button not found yet — keep polling
           return false;
-        }, { timeout: 8000 }).catch(() => {
-          console.log('[Instagram] Edit screen: Next button not enabled after 8s wait, trying anyway');
+        }, { timeout: 50000 }).catch(() => {
+          console.log('[Instagram] Edit screen: Next button not enabled after 50s wait, trying anyway');
         });
       }
 
-      // Strategy 1: Scope the click to within the dialog to avoid background page interactions
-      // Instagram renders "Next" as various element types (button, div, a, span) depending on the screen
+      // Strategy 1: Scope the click to within the dialog to avoid background page interactions.
+      // Instagram renders "Next" as various element types (button, div, a, span) depending on the screen.
+      // Only click if the button is NOT disabled to avoid false-positive "clicked" on the Edit screen.
       let clicked = await page.evaluate(() => {
         const dialogEl = document.querySelector('[role="dialog"]') || document.body;
         // Search ALL elements inside dialog for "Next" text — Instagram uses different tags on different screens
@@ -1572,12 +1576,33 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           const label = (el.getAttribute('aria-label') || '').toLowerCase();
           // Match exact "Next" or "Continue" text (case-insensitive), avoid matching elements with lots of child text
           if ((text.toLowerCase() === 'next' || text.toLowerCase() === 'continue' || label === 'next' || label === 'continue') && text.length < 20) {
+            // Skip disabled buttons — clicking them does nothing but would falsely report success
+            if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
             el.click();
             return true;
           }
         }
         return false;
       });
+
+      // On the Edit screen, if the button appears disabled in Strategy 1, wait a bit more and retry
+      if (!clicked && onEditScreen) {
+        await page.waitForTimeout(3000);
+        clicked = await page.evaluate(() => {
+          const dialogEl = document.querySelector('[role="dialog"]') || document.body;
+          const allEls = dialogEl.querySelectorAll('button, div[role="button"], a, span, div[tabindex]');
+          for (const el of allEls) {
+            const text = (el.textContent || '').trim();
+            const label = (el.getAttribute('aria-label') || '').toLowerCase();
+            if ((text.toLowerCase() === 'next' || text.toLowerCase() === 'continue' || label === 'next' || label === 'continue') && text.length < 20) {
+              if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
+              el.click();
+              return true;
+            }
+          }
+          return false;
+        });
+      }
 
       // Strategy 2: Playwright-level click with dialog-scoped selector
       if (!clicked) {
@@ -1602,6 +1627,22 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             { maxSteps: 4, stepDelayMs: 600, useVision: true });
           clicked = result.success;
         } catch {}
+      }
+
+      // On the Edit screen, verify we actually navigated away after clicking Next.
+      // If still on Edit screen, the click may have landed on a still-disabled button — reset
+      // clicked so the next iteration retries properly (avoids burning all 5 loop slots).
+      if (clicked && onEditScreen) {
+        await page.waitForTimeout(1500);
+        const stillOnEdit = await page.evaluate(() => {
+          const dialog = document.querySelector('[role="dialog"]') || document.body;
+          const text = (dialog.innerText || dialog.textContent || '').toLowerCase();
+          return (text.includes('cover photo') || text.includes('trim')) && !text.includes('write a caption');
+        }).catch(() => false);
+        if (stillOnEdit) {
+          console.log('[Instagram] Edit screen: still visible after Next click — click may not have registered, will retry');
+          clicked = false;
+        }
       }
 
       // On the Edit screen, don't break early on a failed click — the button may still be loading.
