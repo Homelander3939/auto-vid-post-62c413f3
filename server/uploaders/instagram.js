@@ -1521,6 +1521,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     // Helper: find the header "Next"/"Continue" button inside the upload dialog.
     // The cover-photo step renders many non-header "Next" nodes, so restrict matching to the
     // visible header band and prefer the rightmost candidate there.
+    const NEXT_BUTTON_POLL_INTERVAL_MS = 400;
     const findDialogHeaderNextButton = (options = {}) => page.evaluate(({ includeDisabled = false } = {}) => {
       const dialogEl = document.querySelector('[role="dialog"]') || document.body;
       const dialogRect = dialogEl.getBoundingClientRect();
@@ -1530,7 +1531,6 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       const HEADER_BAND_MAX_PX = 140;
       const HEADER_BAND_MIN_PX = 72;
       const HEADER_BAND_HEIGHT_RATIO = 0.22;
-      const NEXT_BUTTON_POLL_INTERVAL_MS = 400;
       // Keep the final bare div selector because Instagram sometimes renders the header action as
       // a plain div with only text; later filters narrow this broad scan back to the top header band.
       const nextCandidateSelector = 'button, [role="button"], a, span, div[tabindex], div';
