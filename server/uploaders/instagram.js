@@ -255,20 +255,100 @@ async function fetchRecentInstagramPostUrlsQuick(page, username, limit = 8) {
   return [];
 }
 
+// Finds the Share/Post/Publish button in the dialog header band using the same coordinate-based
+// approach as findDialogHeaderNextButton inside the upload flow. This is necessary because
+// Instagram renders the "Share" action in the header as a plain <div>/<a>/<span> — NOT as a
+// <button> or <div role="button"> — so standard button queries miss it.
+async function findDialogHeaderShareButton(page) {
+  return page.evaluate(() => {
+    const dialogEl = document.querySelector('[role="dialog"]') || document.body;
+    const dialogRect = dialogEl.getBoundingClientRect();
+    const HEADER_BAND_MAX_PX = 140;
+    const HEADER_BAND_MIN_PX = 72;
+    const HEADER_BAND_HEIGHT_RATIO = 0.22;
+    const headerBandMaxTop = Math.min(
+      HEADER_BAND_MAX_PX,
+      Math.max(HEADER_BAND_MIN_PX, dialogRect.height * HEADER_BAND_HEIGHT_RATIO),
+    );
+    const SHARE_LABELS = ['share', 'post', 'publish'];
+    const interactiveSelector = 'button, [role="button"], a, [tabindex]';
+    const candidateSelector = 'button, [role="button"], a, span, div[tabindex], div';
+    const seen = new Set();
+    const candidates = [];
+    const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+
+    const matchesShareLabel = (el) => {
+      const raw = (el.textContent || '').trim().toLowerCase();
+      const rendered = (el.innerText || raw).trim().toLowerCase();
+      const ariaLabel = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+      return SHARE_LABELS.some((l) => raw === l || rendered === l || ariaLabel === l);
+    };
+
+    for (const el of dialogEl.querySelectorAll(candidateSelector)) {
+      if (!matchesShareLabel(el)) continue;
+      const candidate = el.closest(interactiveSelector) || el;
+      if (!dialogEl.contains(candidate) || seen.has(candidate)) continue;
+      seen.add(candidate);
+
+      if (!candidate.matches(interactiveSelector)) {
+        const hasMatchingChild = Array.from(candidate.querySelectorAll(candidateSelector))
+          .some((child) => child !== candidate && matchesShareLabel(child));
+        if (hasMatchingChild) continue;
+      }
+
+      const rect = candidate.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) continue;
+      const relativeTop = rect.top - dialogRect.top;
+      if (relativeTop < -4 || relativeTop > headerBandMaxTop) continue;
+
+      const style = window.getComputedStyle(candidate);
+      if (
+        style.display === 'none' || style.visibility === 'hidden' ||
+        style.opacity === '0' || style.pointerEvents === 'none'
+      ) continue;
+      if (candidate.hasAttribute('disabled') || candidate.getAttribute('aria-disabled') === 'true') continue;
+
+      const x = clamp(rect.left + rect.width / 2, rect.left + 1, rect.right - 1);
+      const y = clamp(rect.top + rect.height / 2, rect.top + 1, rect.bottom - 1);
+      const topEl = document.elementFromPoint(x, y);
+      if (topEl && !(candidate === topEl || candidate.contains(topEl) || topEl.contains(candidate))) continue;
+
+      candidates.push({ top: relativeTop, left: rect.left - dialogRect.left, x, y });
+    }
+
+    if (candidates.length === 0) return null;
+    // Sort by vertical position (top ascending) first so we get the highest header element.
+    // For ties, sort by horizontal position descending (rightmost wins) because Instagram
+    // always places the primary action button (Share / Next) at the far right of the header.
+    candidates.sort((a, b) => (a.top - b.top) || (b.left - a.left));
+    return candidates[0];
+  }).catch(() => null);
+}
+
 async function waitForInstagramShareButtonReady(page, maxWaitMs = INSTAGRAM_SHARE_READY_MAX_WAIT_MS) {
   const started = Date.now();
 
   while (Date.now() - started < maxWaitMs) {
+    // First, try to find the Share button in the dialog header band using coordinate-based lookup.
+    // Instagram renders the "Share" action as a plain div/a/span in the header (same as "Next"),
+    // so standard button queries would miss it. findDialogHeaderShareButton handles this.
+    const headerShareCoords = await findDialogHeaderShareButton(page);
+    if (headerShareCoords) {
+      return { ready: true, reason: 'Share button found in dialog header band.' };
+    }
+
     const state = await page.evaluate(() => {
       const dialog = document.querySelector('[role="dialog"]');
       const scope = dialog || document;
       const text = (scope.textContent || '').toLowerCase();
 
-      const buttons = Array.from(scope.querySelectorAll('button, div[role="button"]'));
-      const shareBtn = buttons.find((btn) => {
-        const label = (btn.getAttribute('aria-label') || '').trim().toLowerCase();
-        const btnText = (btn.textContent || '').trim().toLowerCase();
-        return btnText === 'share' || btnText === 'post' || btnText === 'publish' || label === 'share' || label === 'post' || label === 'publish';
+      // Broader selector: include a, span, div in addition to button/div[role="button"] because
+      // Instagram renders the header Share action without a role="button" attribute.
+      const allEls = Array.from(scope.querySelectorAll('button, [role="button"], a, span'));
+      const shareBtn = allEls.find((el) => {
+        const label = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+        const elText = (el.innerText || el.textContent || '').trim().toLowerCase();
+        return elText === 'share' || elText === 'post' || elText === 'publish' || label === 'share' || label === 'post' || label === 'publish';
       });
 
       const style = shareBtn ? window.getComputedStyle(shareBtn) : null;
@@ -392,19 +472,32 @@ async function openLatestInstagramPostAndCaptureUrl(page, username, options = {}
 }
 
 async function clickInstagramShareButton(page) {
+  // Strategy 0: Coordinate-based mouse click on the Share button in the dialog header band.
+  // Instagram renders the "Share" action as a plain <div>/<a>/<span> in the header (same
+  // pattern as the "Next" button on previous screens). page.mouse.click() dispatches the full
+  // mousedown→click chain so React events fire reliably without any page scrolling.
+  const headerCoords = await findDialogHeaderShareButton(page);
+  if (headerCoords) {
+    await page.mouse.click(headerCoords.x, headerCoords.y);
+    console.log('[Instagram] Strategy 0: Coordinate-clicked Share button in dialog header band');
+    return true;
+  }
+
+  // Strategy 1: DOM click on button/[role="button"]/a/span with matching text
   let shareClicked = await page.evaluate(() => {
     const dialogEl = document.querySelector('[role="dialog"]') || document.body;
-    const buttons = dialogEl.querySelectorAll('button, div[role="button"]');
-    for (const btn of buttons) {
-      const text = (btn.textContent || '').trim().toLowerCase();
-      const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+    // Broader selector: Instagram may use a, span, or plain div without role="button"
+    const allEls = dialogEl.querySelectorAll('button, [role="button"], a, span');
+    for (const el of allEls) {
+      const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+      const label = (el.getAttribute('aria-label') || '').toLowerCase();
       const disabled =
-        btn.disabled ||
-        btn.getAttribute('aria-disabled') === 'true' ||
-        String(btn.className || '').toLowerCase().includes('disabled');
+        el.disabled ||
+        el.getAttribute('aria-disabled') === 'true' ||
+        String(el.className || '').toLowerCase().includes('disabled');
       if (disabled) continue;
       if (text === 'share' || text === 'post' || text === 'publish' || label === 'share' || label === 'post' || label === 'publish') {
-        btn.click();
+        el.click();
         return true;
       }
     }
@@ -415,6 +508,8 @@ async function clickInstagramShareButton(page) {
     shareClicked = await smartClick(page, [
       '[role="dialog"] button:has-text("Share")',
       '[role="dialog"] [aria-label="Share"]',
+      '[role="dialog"] a:has-text("Share")',
+      '[role="dialog"] span:has-text("Share")',
       'button:has-text("Share")',
       '[aria-label="Share"]',
       'div[role="button"]:has-text("Share")',
@@ -2006,8 +2101,11 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             await page.keyboard.press('Control+v');
             await page.waitForTimeout(1500);
 
-            // Settle: click away then back to force DraftJS state flush
-            const neutralEl = await page.$('[role="dialog"] video, [role="dialog"] img, [role="dialog"] [role="img"]');
+            // Settle: click away then back to force DraftJS state flush.
+            // IMPORTANT: Only use the video element as neutral target — clicking img or [role="img"]
+            // elements can match cover photo thumbnails still in the DOM and navigate back to the
+            // Edit screen, breaking the caption flow.
+            const neutralEl = await page.$('[role="dialog"] video');
             if (neutralEl) {
               await neutralEl.click().catch(() => {});
               await page.waitForTimeout(500);
@@ -2076,8 +2174,10 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             }
             await page.waitForTimeout(1000);
 
-            // Settle: click away and back
-            const neutralEl = await page.$('[role="dialog"] video, [role="dialog"] img');
+            // Settle: click away and back.
+            // Only use the video element as neutral target — img elements can match cover photo
+            // thumbnails and trigger navigation back to the Edit screen.
+            const neutralEl = await page.$('[role="dialog"] video');
             if (neutralEl) {
               await neutralEl.click().catch(() => {});
               await page.waitForTimeout(500);
