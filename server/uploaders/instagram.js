@@ -1492,9 +1492,9 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     }
 
     // ===== PHASE 4: CLICK THROUGH CROP/ADJUST SCREENS =====
-    // Instagram shows: Crop → Filter → Caption screens
+    // Instagram shows: Crop → Edit (Cover photo/Trim) → Filter → Caption screens
     // The "Next" button is at the TOP of the dialog popup — do NOT scroll the page background.
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 5; i++) {
       await page.waitForTimeout(2000);
 
       // Stop early if we've reached the caption/share screen
@@ -1530,6 +1530,35 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       if (alreadyOnCaption) {
         console.log('[Instagram] Already on caption screen, stopping Next clicks');
         break;
+      }
+
+      // Detect if we're on the "Edit" screen (Cover photo / Trim visible).
+      // Instagram loads video thumbnails asynchronously on this screen, which can temporarily
+      // disable or delay the Next button. Wait extra time for video processing to finish.
+      const onEditScreen = await page.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"]') || document.body;
+        const text = (dialog.innerText || dialog.textContent || '').toLowerCase();
+        return (text.includes('cover photo') || text.includes('trim')) && !text.includes('write a caption');
+      }).catch(() => false);
+      if (onEditScreen) {
+        console.log('[Instagram] On Edit screen (Cover photo/Trim), waiting for video processing...');
+        // Wait up to 8 extra seconds for the Next button to become enabled
+        await page.waitForFunction(() => {
+          const dialog = document.querySelector('[role="dialog"]') || document.body;
+          const allEls = dialog.querySelectorAll('button, div[role="button"], a, span, div[tabindex]');
+          for (const el of allEls) {
+            const text = (el.textContent || '').trim().toLowerCase();
+            const label = (el.getAttribute('aria-label') || '').toLowerCase();
+            if ((text === 'next' || label === 'next') && text.length < 20) {
+              // Check not disabled
+              if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
+              return true;
+            }
+          }
+          return false;
+        }, { timeout: 8000 }).catch(() => {
+          console.log('[Instagram] Edit screen: Next button not enabled after 8s wait, trying anyway');
+        });
       }
 
       // Strategy 1: Scope the click to within the dialog to avoid background page interactions
@@ -1574,8 +1603,10 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
           clicked = result.success;
         } catch {}
       }
-      
-      if (!clicked) break;
+
+      // On the Edit screen, don't break early on a failed click — the button may still be loading.
+      // On other screens, break if Next wasn't found at all.
+      if (!clicked && !onEditScreen) break;
       await page.waitForTimeout(2000);
     }
 
