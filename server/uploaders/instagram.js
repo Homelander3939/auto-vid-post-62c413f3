@@ -1601,22 +1601,25 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       await page.waitForTimeout(2000);
     }
 
+    let caption = '';
+    let captionFilled = false;
+    let captionSelectors = [];
+    let captionTruncated = '';
+
     if (metadata?.title || metadata?.description || (metadata?.tags && metadata.tags.length > 0)) {
       const captionParts = [];
       if (metadata.title) captionParts.push(metadata.title);
       if (metadata.description) captionParts.push(metadata.description);
       if (metadata.tags?.length) captionParts.push(metadata.tags.map(t => t.startsWith('#') ? t : '#' + t).join(' '));
-      const caption = captionParts.join('\n\n').trim();
+      caption = captionParts.join('\n\n').trim();
       console.log(`[Instagram] Caption to fill (${caption.length} chars): ${caption.slice(0, 200)}...`);
-      
-      let captionFilled = false;
 
       // Wait for caption field to appear in the dialog
       await page.waitForSelector('[role="dialog"] [contenteditable="true"], [role="dialog"] textarea, [role="dialog"] [aria-label*="caption" i]', { timeout: 10000 })
         .then(() => console.log('[Instagram] Caption field detected in dialog'))
         .catch(() => console.warn('[Instagram] Caption field not detected by waitForSelector, trying anyway'));
 
-      const captionSelectors = [
+      captionSelectors = [
         '[role="dialog"] [aria-label="Write a caption..."]',
         '[role="dialog"] [aria-label*="Write a caption"]',
         '[role="dialog"] [aria-label*="caption" i]',
@@ -1629,7 +1632,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         'textarea',
       ];
 
-      const captionTruncated = caption.slice(0, MAX_CAPTION_LENGTH);
+      captionTruncated = caption.slice(0, MAX_CAPTION_LENGTH);
 
       // Strategy 0: Direct textarea value set — for native <textarea> elements.
       // Instagram Posts may use a <textarea>. We set the value via the native setter
@@ -1861,7 +1864,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
     // ===== PRE-SHARE CAPTION VERIFICATION =====
     // Final check: re-read caption field right before Share. If empty despite earlier success, retry once.
-    if (captionFilled && caption) {
+    if (caption && captionFilled) {
       const preShareCheck = await page.evaluate(() => {
         const dialog = document.querySelector('[role="dialog"]') || document.body;
         const sels = [
@@ -1883,7 +1886,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
       if (!preShareCheck) {
         console.warn('[Instagram] Pre-share check: caption field appears empty! Retrying with keyboard.type...');
-        const captionTruncated = caption.length > 2200 ? caption.slice(0, 2200) : caption;
+        const retryCaption = captionTruncated || caption.slice(0, MAX_CAPTION_LENGTH);
         // Find and fill caption field one last time
         for (const sel of captionSelectors) {
           try {
@@ -1897,7 +1900,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             await page.waitForTimeout(150);
             await page.keyboard.press('Backspace');
             await page.waitForTimeout(150);
-            await page.keyboard.type(captionTruncated, { delay: 35 });
+            await page.keyboard.type(retryCaption, { delay: 35 });
             await page.waitForTimeout(1500);
             console.log('[Instagram] Pre-share caption retry completed');
             break;
