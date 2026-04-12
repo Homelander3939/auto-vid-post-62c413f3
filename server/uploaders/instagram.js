@@ -1494,6 +1494,30 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     // ===== PHASE 4: CLICK THROUGH CROP/ADJUST SCREENS =====
     // Instagram shows: Crop → Edit (Cover photo/Trim) → Filter → Caption screens
     // The "Next" button is at the TOP of the dialog popup — do NOT scroll the page background.
+
+    // Helper: detect which upload step the dialog is currently on.
+    // Returns one of: 'caption' | 'edit' | 'filter' | 'crop' | 'unknown'
+    const detectUploadStep = () => page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]') || document.body;
+      const text = (dialog.innerText || dialog.textContent || '').toLowerCase();
+      // Caption screen — check for the actual caption input field first (most specific)
+      const hasCaptionField = !!dialog.querySelector(
+        '[aria-label="Write a caption..."], [aria-label*="Write a caption"], ' +
+        'textarea[placeholder*="caption" i], [contenteditable="true"][aria-label*="caption" i]',
+      );
+      if (hasCaptionField || text.includes('write a caption')) return 'caption';
+      // Edit screen (Cover photo / Trim) — appears after Crop
+      if ((text.includes('cover photo') || text.includes('trim')) && !text.includes('write a caption')) return 'edit';
+      // Filter/Lux screen — appears between Edit and Caption on Reels
+      if (text.includes('add a filter') || (text.includes('filter') && !text.includes('cover photo'))) return 'filter';
+      // Crop / aspect-ratio screen — first screen after file selection
+      if (
+        text.includes('crop') || text.includes('original') ||
+        text.includes('9:16') || text.includes('1:1') || text.includes('4:5') || text.includes('16:9')
+      ) return 'crop';
+      return 'unknown';
+    }).catch(() => 'unknown');
+
     for (let i = 0; i < 5; i++) {
       await page.waitForTimeout(2000);
 
@@ -1532,29 +1556,28 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         break;
       }
 
-      // Detect if we're on the "Edit" screen (Cover photo / Trim visible).
-      // Instagram loads video thumbnails asynchronously on this screen, which can temporarily
-      // disable or delay the Next button. Wait extra time for video processing to finish.
-      const onEditScreen = await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"]') || document.body;
-        const text = (dialog.innerText || dialog.textContent || '').toLowerCase();
-        return (text.includes('cover photo') || text.includes('trim')) && !text.includes('write a caption');
-      }).catch(() => false);
-      if (onEditScreen) {
-        console.log('[Instagram] On Edit screen (Cover photo/Trim), waiting for video processing...');
-        // Wait up to 50 seconds for the Next button to become enabled.
-        // Long videos (60-120s) require Instagram to generate cover photo thumbnails
-        // before enabling Next, which can take 20-40+ seconds.
-        // Searches broad element types (including plain divs) and uses both textContent and
-        // innerText to avoid being tripped up by SVG/icon child text appended to textContent.
+      // Detect current screen for step-aware handling.
+      // Crop and Edit screens both need extra waiting for the Next button to become enabled.
+      const currentStep = await detectUploadStep();
+      const onEditScreen = currentStep === 'edit';
+      const onCropScreen = currentStep === 'crop';
+      console.log(`[Instagram] Upload step ${i + 1}/5: current screen = "${currentStep}"`);
+
+      // Wait for the topmost "Next" button to become enabled.
+      // On the Edit screen Instagram must finish generating cover-photo thumbnails (can take
+      // 20-40+ s for long videos).  On the Crop screen the button may be briefly disabled while
+      // the aspect-ratio animation settles.
+      const needsNextWait = onEditScreen || onCropScreen;
+      if (needsNextWait) {
+        const waitLabel = onEditScreen ? 'Edit screen (Cover photo/Trim)' : 'Crop screen';
+        const waitTimeout = onEditScreen ? 50000 : 12000;
+        console.log(`[Instagram] On ${waitLabel}, waiting for Next button to become enabled...`);
         const nextButtonBecameEnabled = await page.waitForFunction(() => {
           const dialog = document.querySelector('[role="dialog"]') || document.body;
           const dialogRect = dialog.getBoundingClientRect();
           const allEls = dialog.querySelectorAll('button, div[role="button"], a, span, div[tabindex], div');
-          // Collect ALL "Next" candidates (text or aria-label match) with their vertical position.
-          // This lets us identify the dialog-header button (topmost) vs cover-photo thumbnail
-          // navigation arrows (mid-dialog, also carry aria-label="Next") and wait specifically
-          // for the header button to become enabled — not just any "Next" in the dialog.
+          // Collect ALL "Next" candidates with their vertical position.
+          // The dialog-header "Next" is the topmost; thumbnail nav arrows are lower down.
           const candidates = [];
           for (const el of allEls) {
             const raw = (el.textContent || '').trim().toLowerCase();
@@ -1571,26 +1594,20 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
             }
           }
           if (candidates.length === 0) return false;
-          // Sort by distance from the top of the dialog.  The dialog-header "Next" button is
-          // always the topmost candidate; thumbnail navigation arrows appear lower down.
           candidates.sort((a, b) => a.top - b.top);
-          // Only signal "ready" when the topmost candidate (the header button) is enabled.
           return !candidates[0].disabled;
-        }, { timeout: 50000 }).then(() => true).catch(() => {
-          console.log('[Instagram] Edit screen: Next button not enabled after 50s wait, trying anyway');
+        }, { timeout: waitTimeout }).then(() => true).catch(() => {
+          console.log(`[Instagram] ${waitLabel}: Next button not enabled after ${waitTimeout / 1000}s wait, trying anyway`);
           return false;
         });
 
-        // If the button never became enabled (still disabled after 50s), attempt a Playwright
-        // force-click to bypass CSS pointer-events:none that Instagram applies to disabled buttons.
-        // aria-disabled elements still receive JS-level click events; pointer-events:none does not
-        // block Playwright force-clicks.
+        // If still disabled, force-click the visible "Next" text button in the dialog header.
+        // Playwright force:true bypasses pointer-events:none without scrolling the page background.
         if (!nextButtonBecameEnabled) {
           try {
             const dialogLoc = page.locator('[role="dialog"]').first();
-            // Use :text-is("Next") which matches by VISIBLE text only — thumbnail navigation
-            // arrows carry aria-label="Next" but have no visible text, so they won't match.
-            // This ensures we force-click the dialog-header Next button, not a thumbnail arrow.
+            // :text-is("Next") matches by VISIBLE text only — thumbnail nav arrows carry
+            // aria-label="Next" but have no visible text, so they won't accidentally match.
             const candidates = [
               dialogLoc.locator(':text-is("Next")').first(),
               page.locator(':text-is("Next")').first(),
@@ -1599,88 +1616,103 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
               try {
                 if (await loc.count() > 0) {
                   await loc.click({ force: true, timeout: 2000 });
-                  console.log('[Instagram] Edit screen: Force-clicked Next button after timeout');
+                  console.log(`[Instagram] ${waitLabel}: Force-clicked Next button after timeout`);
                   break;
                 }
               } catch {
-                // Force-click may throw (e.g. element detached mid-transition) — safe to ignore,
-                // the next candidate will be tried or clickNextInDialog() will retry below.
+                // Force-click may throw if element detaches mid-transition — safe to ignore.
               }
             }
           } catch {
-            // Outer try-catch guards against unexpected locator API errors — safe to ignore.
+            // Outer guard for unexpected locator API errors.
           }
         }
       }
 
-      // Strategy 1: Scope the click to within the dialog to avoid background page interactions.
-      // Instagram renders "Next" as various element types (button, div, a, span) depending on the screen.
-      // Only click if the button is NOT disabled to avoid false-positive "clicked" on the Edit screen.
-      // Returns true only if an enabled Next/Continue button was found and clicked.
+      // Strategy 1: Coordinate-based mouse click — get viewport coordinates of the topmost
+      // enabled "Next" button via page.evaluate(), then fire a real page.mouse.click() at those
+      // coordinates.  This is the SAME reliable approach used by openCropPicker() and
+      // trySelectInstagramCropRatio().  Benefits:
+      //   • Dispatches full mousedown/mousemove/mouseup/click chain → React events fire reliably.
+      //   • Clicks at existing viewport coordinates — no scroll-into-view, so the page background
+      //     behind the dialog is NEVER accidentally scrolled.
+      //   • Works regardless of whether Instagram renders the button as <button>, <div>, <span>.
       //
       // IMPORTANT: On the Cover Photo / Edit screen there are TWO kinds of "Next" element:
       //   1. The dialog-HEADER "Next" button (top of the dialog) — advances to the next screen.
       //   2. Thumbnail navigation "Next" arrow (mid-dialog, aria-label="Next") — cycles covers.
-      // Both match the text/label criteria.  We MUST click the topmost one (header button).
-      // Sorting candidates by their vertical position and picking the smallest top value achieves
-      // this regardless of DOM order and regardless of which Instagram renders the button as.
-      const clickNextInDialog = () => page.evaluate(() => {
-        const dialogEl = document.querySelector('[role="dialog"]') || document.body;
-        const dialogRect = dialogEl.getBoundingClientRect();
-        // Include plain divs — Instagram sometimes renders the Next button without role="button" or tabindex.
-        // The text.length < 20 guard prevents false matches on large container divs.
-        const allEls = dialogEl.querySelectorAll('button, div[role="button"], a, span, div[tabindex], div');
-        const candidates = [];
-        for (const el of allEls) {
-          const raw = (el.textContent || '').trim();
-          // Also check innerText which excludes CSS-hidden elements (e.g. aria-hidden SVG icons)
-          // that can pollute textContent with icon label text.
-          const rendered = (el.innerText || raw).trim();
-          const label = (el.getAttribute('aria-label') || '').toLowerCase();
-          const matchesText = raw.toLowerCase() === 'next' || rendered.toLowerCase() === 'next' ||
-            raw.toLowerCase() === 'continue' || rendered.toLowerCase() === 'continue' ||
-            label === 'next' || label === 'continue';
-          // Use rendered.length (innerText) instead of raw.length (textContent) — SVG icons and
-          // hidden screen-reader spans can inflate textContent beyond 20 chars while the visible
-          // "Next" text is only 4 chars, causing the real button to be falsely skipped.
-          if (matchesText && rendered.length < 20) {
-            // Skip disabled buttons and keep searching — don't return false early.
-            if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') continue;
-            const rect = el.getBoundingClientRect();
-            if (rect.width < 1 || rect.height < 1) continue;
-            candidates.push({ el, top: rect.top - dialogRect.top });
+      // Sorting candidates by their distance from the top of the dialog and picking the smallest
+      // value guarantees we always click the header button, not a thumbnail navigation arrow.
+      const clickNextInDialog = async () => {
+        const coords = await page.evaluate(() => {
+          const dialogEl = document.querySelector('[role="dialog"]') || document.body;
+          const dialogRect = dialogEl.getBoundingClientRect();
+          // Include plain divs — Instagram sometimes renders Next without role="button"/tabindex.
+          // rendered.length < 20 prevents false matches on large container divs.
+          const allEls = dialogEl.querySelectorAll('button, div[role="button"], a, span, div[tabindex], div');
+          const candidates = [];
+          for (const el of allEls) {
+            const raw = (el.textContent || '').trim();
+            // innerText excludes CSS-hidden content (aria-hidden SVG icons) that inflates textContent.
+            const rendered = (el.innerText || raw).trim();
+            const label = (el.getAttribute('aria-label') || '').toLowerCase();
+            const matchesText = raw.toLowerCase() === 'next' || rendered.toLowerCase() === 'next' ||
+              raw.toLowerCase() === 'continue' || rendered.toLowerCase() === 'continue' ||
+              label === 'next' || label === 'continue';
+            if (matchesText && rendered.length < 20) {
+              // Skip disabled buttons — keep searching for an enabled one.
+              if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') continue;
+              const rect = el.getBoundingClientRect();
+              if (rect.width < 1 || rect.height < 1) continue;
+              candidates.push({
+                top: rect.top - dialogRect.top,
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2,
+              });
+            }
           }
-        }
-        if (candidates.length === 0) return false;
-        // The dialog-header "Next" is always at the TOP of the dialog.
-        // Thumbnail navigation arrows are lower (mid-dialog). Picking the candidate with the
-        // smallest top offset guarantees we click the header button, not a thumbnail nav arrow.
-        candidates.sort((a, b) => a.top - b.top);
-        candidates[0].el.click();
+          if (candidates.length === 0) return null;
+          // The dialog-header "Next" is always the topmost candidate.
+          candidates.sort((a, b) => a.top - b.top);
+          return { x: candidates[0].x, y: candidates[0].y };
+        }).catch(() => null);
+
+        if (!coords) return false;
+        // page.mouse.click() at the current viewport position — no element scrolling occurs.
+        await page.mouse.click(coords.x, coords.y);
         return true;
-      });
+      };
 
       let clicked = await clickNextInDialog();
 
-      // On the Edit screen, if the button is still disabled after the 50s waitForFunction, give it
-      // one more 3-second grace period (handles edge cases where the button enables just after timeout)
-      if (!clicked && onEditScreen) {
+      // On the Edit/Crop screen, if still not clicked after the wait, give it one more grace period.
+      if (!clicked && (onEditScreen || onCropScreen)) {
         await page.waitForTimeout(3000);
         clicked = await clickNextInDialog();
       }
 
-      // Strategy 2: Playwright-level click with dialog-scoped selector
+      // Strategy 2: Playwright locator click scoped to the dialog.
+      // Use force:true to skip scroll-into-view — this prevents Playwright from scrolling
+      // the page background behind the dialog popup when trying to reach the button.
+      if (!clicked) {
+        try {
+          const dialogLoc = page.locator('[role="dialog"]').first();
+          const nextLoc = dialogLoc.locator(':text-is("Next"), :text-is("Continue")').first();
+          if (await nextLoc.count() > 0) {
+            await nextLoc.click({ force: true, timeout: 3000 });
+            clicked = true;
+            console.log('[Instagram] Strategy 2: Clicked Next via Playwright locator (force:true)');
+          }
+        } catch {}
+      }
+
+      // Strategy 2b: Broader selector fallback (still dialog-scoped)
       if (!clicked) {
         clicked = await smartClick(page, [
           '[role="dialog"] button:has-text("Next")',
-          '[role="dialog"] [aria-label="Next"]',
           '[role="dialog"] div[role="button"]:has-text("Next")',
           '[role="dialog"] a:has-text("Next")',
           '[role="dialog"] span:has-text("Next")',
-          'button:has-text("Next")',
-          '[aria-label="Next"]',
-          'div[role="button"]:has-text("Next")',
-          'a:has-text("Next")',
         ], 'Next');
       }
 
@@ -1695,7 +1727,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       }
 
       // On the Edit screen, verify we actually navigated away after clicking Next.
-      // If still on Edit screen, the click may have landed on a still-disabled button — reset
+      // If still on Edit/Crop screen, the click may have landed on a still-disabled button — reset
       // clicked so the next iteration retries properly (avoids burning all 5 loop slots).
       // Require BOTH "cover photo" AND "trim" to avoid false positives from a neighbouring screen
       // that might contain just one of these words (e.g. the word "trim" appearing on the Filter screen).
@@ -1712,9 +1744,18 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         }
       }
 
-      // On the Edit screen, don't break early on a failed click — the button may still be loading.
-      // On other screens, break if Next wasn't found at all.
-      if (!clicked && !onEditScreen) break;
+      if (clicked && onCropScreen) {
+        await page.waitForTimeout(1500);
+        const stillOnCrop = await detectUploadStep().then(s => s === 'crop').catch(() => false);
+        if (stillOnCrop) {
+          console.log('[Instagram] Crop screen: still visible after Next click — click may not have registered, will retry');
+          clicked = false;
+        }
+      }
+
+      // Don't break early on a failed click when we know which step we're on and it needs retries.
+      // Only break if Next wasn't found AND we're on an unknown/filter step (no special retry needed).
+      if (!clicked && !onEditScreen && !onCropScreen) break;
       await page.waitForTimeout(2000);
     }
 
