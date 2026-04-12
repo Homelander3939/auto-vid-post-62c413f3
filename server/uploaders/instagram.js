@@ -1518,6 +1518,109 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       return 'unknown';
     }).catch(() => 'unknown');
 
+    // Helper: find the header "Next"/"Continue" button inside the upload dialog.
+    // The cover-photo step renders many non-header "Next" nodes, so restrict matching to the
+    // visible header band and prefer the rightmost candidate there.
+    const NEXT_BUTTON_POLL_INTERVAL_MS = 400;
+    const findDialogHeaderNextButton = (options = {}) => page.evaluate(({ includeDisabled = false } = {}) => {
+      const dialogEl = document.querySelector('[role="dialog"]') || document.body;
+      const dialogRect = dialogEl.getBoundingClientRect();
+      // Instagram keeps the header action row within a shallow top band of the dialog.
+      // Use a capped ratio so we still match the header on both short and tall upload modals
+      // without drifting into the cover-photo carousel controls below it.
+      const HEADER_BAND_MAX_PX = 140;
+      const HEADER_BAND_MIN_PX = 72;
+      const HEADER_BAND_HEIGHT_RATIO = 0.22;
+      // Keep the final bare div selector because Instagram sometimes renders the header action as
+      // a plain div with only text; later filters narrow this broad scan back to the top header band.
+      const nextCandidateSelector = 'button, [role="button"], a, span, div[tabindex], div';
+      // Prefer true interactive ancestors when available, but still allow a plain text wrapper as a
+      // last resort because Instagram occasionally omits role/tabindex on the header action.
+      const headerBandMaxTop = Math.min(
+        HEADER_BAND_MAX_PX,
+        Math.max(HEADER_BAND_MIN_PX, dialogRect.height * HEADER_BAND_HEIGHT_RATIO),
+      );
+      const interactiveSelector = 'button, [role="button"], a, [tabindex]';
+      const seen = new Set();
+      const candidates = [];
+      const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+      const allEls = dialogEl.querySelectorAll(nextCandidateSelector);
+      const matchesNextLabel = (el) => {
+        const raw = (el.textContent || '').trim().toLowerCase();
+        const rendered = (el.innerText || raw).trim().toLowerCase();
+        const label = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+        return (
+          raw === 'next' || rendered === 'next' ||
+          raw === 'continue' || rendered === 'continue' ||
+          label === 'next' || label === 'continue'
+        );
+      };
+
+      for (const el of allEls) {
+        if (!matchesNextLabel(el)) continue;
+
+        const candidate = el.closest(interactiveSelector) || el;
+        if (!dialogEl.contains(candidate) || seen.has(candidate)) continue;
+        seen.add(candidate);
+
+        if (!candidate.matches(interactiveSelector)) {
+          // Skip wrapper nodes when a deeper matching child exists so coordinate clicks land on the
+          // innermost visible control instead of an outer layout container with the same text.
+          const hasMatchingChild = Array.from(candidate.querySelectorAll(nextCandidateSelector))
+            .some((child) => child !== candidate && matchesNextLabel(child));
+          if (hasMatchingChild) continue;
+        }
+
+        const rect = candidate.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) continue;
+
+        const relativeTop = rect.top - dialogRect.top;
+        if (relativeTop < -4 || relativeTop > headerBandMaxTop) continue;
+
+        const style = window.getComputedStyle(candidate);
+        if (
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          style.opacity === '0' ||
+          style.pointerEvents === 'none'
+        ) {
+          continue;
+        }
+
+        const disabled = candidate.hasAttribute('disabled') || candidate.getAttribute('aria-disabled') === 'true';
+        if (!includeDisabled && disabled) continue;
+
+        const x = clamp(rect.left + rect.width / 2, rect.left + 1, rect.right - 1);
+        const y = clamp(rect.top + rect.height / 2, rect.top + 1, rect.bottom - 1);
+        const topEl = document.elementFromPoint(x, y);
+        if (topEl && !(candidate === topEl || candidate.contains(topEl) || topEl.contains(candidate))) continue;
+
+        candidates.push({
+          top: relativeTop,
+          left: rect.left - dialogRect.left,
+          x,
+          y,
+          disabled,
+        });
+      }
+
+      if (candidates.length === 0) return null;
+      // Sort by header height first (top ascending), then by horizontal position (left descending)
+      // so ties resolve to the furthest-right header action instead of left-side controls.
+      candidates.sort((a, b) => (a.top - b.top) || (b.left - a.left));
+      return candidates[0];
+    }, options).catch(() => null);
+
+    const waitForDialogHeaderNextEnabled = async (timeoutMs) => {
+      const startedAt = Date.now();
+      while ((Date.now() - startedAt) < timeoutMs) {
+        const candidate = await findDialogHeaderNextButton({ includeDisabled: true });
+        if (candidate && !candidate.disabled) return true;
+        await page.waitForTimeout(NEXT_BUTTON_POLL_INTERVAL_MS);
+      }
+      return false;
+    };
+
     for (let i = 0; i < 5; i++) {
       await page.waitForTimeout(2000);
 
@@ -1572,34 +1675,10 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
         const waitLabel = onEditScreen ? 'Edit screen (Cover photo/Trim)' : 'Crop screen';
         const waitTimeout = onEditScreen ? 50000 : 12000;
         console.log(`[Instagram] On ${waitLabel}, waiting for Next button to become enabled...`);
-        const nextButtonBecameEnabled = await page.waitForFunction(() => {
-          const dialog = document.querySelector('[role="dialog"]') || document.body;
-          const dialogRect = dialog.getBoundingClientRect();
-          const allEls = dialog.querySelectorAll('button, div[role="button"], a, span, div[tabindex], div');
-          // Collect ALL "Next" candidates with their vertical position.
-          // The dialog-header "Next" is the topmost; thumbnail nav arrows are lower down.
-          const candidates = [];
-          for (const el of allEls) {
-            const raw = (el.textContent || '').trim().toLowerCase();
-            const rendered = (el.innerText || raw).trim().toLowerCase();
-            const label = (el.getAttribute('aria-label') || '').toLowerCase();
-            const matchesText = raw === 'next' || rendered === 'next' || label === 'next';
-            if (matchesText && rendered.length < 20) {
-              const rect = el.getBoundingClientRect();
-              if (rect.width < 1 || rect.height < 1) continue;
-              candidates.push({
-                top: rect.top - dialogRect.top,
-                disabled: el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true',
-              });
-            }
-          }
-          if (candidates.length === 0) return false;
-          candidates.sort((a, b) => a.top - b.top);
-          return !candidates[0].disabled;
-        }, { timeout: waitTimeout }).then(() => true).catch(() => {
+        const nextButtonBecameEnabled = await waitForDialogHeaderNextEnabled(waitTimeout);
+        if (!nextButtonBecameEnabled) {
           console.log(`[Instagram] ${waitLabel}: Next button not enabled after ${waitTimeout / 1000}s wait, trying anyway`);
-          return false;
-        });
+        }
 
         // If still disabled, force-click the visible "Next" text button in the dialog header.
         // Playwright force:true bypasses pointer-events:none without scrolling the page background.
@@ -1644,38 +1723,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       // Sorting candidates by their distance from the top of the dialog and picking the smallest
       // value guarantees we always click the header button, not a thumbnail navigation arrow.
       const clickNextInDialog = async () => {
-        const coords = await page.evaluate(() => {
-          const dialogEl = document.querySelector('[role="dialog"]') || document.body;
-          const dialogRect = dialogEl.getBoundingClientRect();
-          // Include plain divs — Instagram sometimes renders Next without role="button"/tabindex.
-          // rendered.length < 20 prevents false matches on large container divs.
-          const allEls = dialogEl.querySelectorAll('button, div[role="button"], a, span, div[tabindex], div');
-          const candidates = [];
-          for (const el of allEls) {
-            const raw = (el.textContent || '').trim();
-            // innerText excludes CSS-hidden content (aria-hidden SVG icons) that inflates textContent.
-            const rendered = (el.innerText || raw).trim();
-            const label = (el.getAttribute('aria-label') || '').toLowerCase();
-            const matchesText = raw.toLowerCase() === 'next' || rendered.toLowerCase() === 'next' ||
-              raw.toLowerCase() === 'continue' || rendered.toLowerCase() === 'continue' ||
-              label === 'next' || label === 'continue';
-            if (matchesText && rendered.length < 20) {
-              // Skip disabled buttons — keep searching for an enabled one.
-              if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') continue;
-              const rect = el.getBoundingClientRect();
-              if (rect.width < 1 || rect.height < 1) continue;
-              candidates.push({
-                top: rect.top - dialogRect.top,
-                x: rect.left + rect.width / 2,
-                y: rect.top + rect.height / 2,
-              });
-            }
-          }
-          if (candidates.length === 0) return null;
-          // The dialog-header "Next" is always the topmost candidate.
-          candidates.sort((a, b) => a.top - b.top);
-          return { x: candidates[0].x, y: candidates[0].y };
-        }).catch(() => null);
+        const coords = await findDialogHeaderNextButton();
 
         if (!coords) return false;
         // page.mouse.click() at the current viewport position — no element scrolling occurs.
