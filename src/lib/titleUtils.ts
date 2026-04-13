@@ -5,12 +5,11 @@
 export function cleanVideoTitle(filename: string): string {
   let name = filename.replace(/\.[^.]+$/, ''); // strip extension
   // Remove date patterns: 2024-01-15, 20240115, 2024_01_15
-  name = name.replace(/\b\d{4}[-_]?\d{2}[-_]?\d{2}\b/g, '');
-  // Remove timestamps: 123456, _1234567890
+  name = name.replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}/g, '');
+  // Remove timestamps: _123456, _1234567890
   name = name.replace(/[-_]\d{6,}/g, '');
-  // Remove leading/trailing numbers with separators
-  name = name.replace(/^\d+[-_\s]+/, '');
-  name = name.replace(/[-_\s]+\d+$/, '');
+  // Remove time patterns like _11-13-59
+  name = name.replace(/[-_]\d{2}[-_]\d{2}[-_]\d{2}\b/g, '');
   // Replace separators with spaces
   name = name.replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim();
   return name || filename.replace(/\.[^.]+$/, '');
