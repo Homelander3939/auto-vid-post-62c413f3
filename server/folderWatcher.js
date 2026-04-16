@@ -71,8 +71,13 @@ function scanAllFiles(folderPath) {
     });
   }
 
-  // Sort oldest first so they upload in order
-  pairs.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  // Sort by series number (lowest first), fallback to modification time
+  pairs.sort((a, b) => {
+    const numA = extractSeriesNum(a.videoFile);
+    const numB = extractSeriesNum(b.videoFile);
+    if (numA !== numB) return numA - numB;
+    return a.mtimeMs - b.mtimeMs;
+  });
   return pairs;
 }
 
