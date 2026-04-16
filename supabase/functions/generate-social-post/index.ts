@@ -618,6 +618,13 @@ Deno.serve(async (req) => {
           if (!body.includeImage || plan.imageStrategy === 'none') return { url: null, path: null, strategy: 'none' };
           const strategy = plan.imageStrategy;
           const query = plan.imageQuery || body.prompt;
+          // Rich AI image prompt: subject + context + style + composition. Stock photo searches use the short query.
+          const richAIPrompt = [
+            query,
+            plan.angle ? `Editorial angle: ${plan.angle}.` : '',
+            `User goal: ${body.prompt.slice(0, 200)}.`,
+            'Photographic, vibrant, modern, eye-catching social media visual. Square 1:1 framing. Strong subject in focus. Cinematic lighting. NO text, NO watermarks, NO logos, NO captions overlayed.',
+          ].filter(Boolean).join(' ');
           send('step', { id: 'image-plan', emoji: '🎨', label: `Strategy: ${strategy === 'real_photo' ? 'finding real photo' : 'generating with AI'} — "${query.slice(0, 60)}"`, status: 'active' });
           let raw: string | null = null;
           let credit = '';
@@ -637,11 +644,11 @@ Deno.serve(async (req) => {
             if (tryUnsplash && imageKey) { const r = await findUnsplashImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; send('tool', { kind: 'image', name: 'unsplash', detail: query }); } }
             if (!raw && tryPexels && imageKey) { const r = await findPexelsImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; send('tool', { kind: 'image', name: 'pexels', detail: query }); } }
             if (!raw) {
-              raw = await generateAIImage(aiProvider, aiKey, query);
+              raw = await generateAIImage(aiProvider, aiKey, richAIPrompt);
               if (raw) send('tool', { kind: 'image', name: aiName, detail: query });
             }
           } else {
-            raw = await generateAIImage(aiProvider, aiKey, query);
+            raw = await generateAIImage(aiProvider, aiKey, richAIPrompt);
             if (raw) send('tool', { kind: 'image', name: aiName, detail: query });
           }
 
