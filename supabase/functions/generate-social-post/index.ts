@@ -418,9 +418,11 @@ Return via the plan tool. Do NOT refuse — planning is always possible.`;
 
 function replanPrompt(originalGoal: string, sources: Source[]) {
   const summarised = sources.map((s, i) => `[${i + 1}] ${s.title} — ${hostnameOf(s.url)}\n   ${s.snippet || ''}`).join('\n\n');
-  return `Original goal: "${originalGoal}"
+  return `${nowContext()}
 
-Current research collected:
+Original goal: "${originalGoal}"
+
+Current research collected (real, just now):
 ${summarised}
 
 Decide: do we have enough specific, factual material to write an excellent, NON-generic post? Or do we need ONE more focused search to fill a gap?
