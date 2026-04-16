@@ -138,6 +138,40 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   }
 }
 
+// --- Platform Accounts ---
+export async function getPlatformAccounts(): Promise<PlatformAccount[]> {
+  const { data, error } = await supabase
+    .from('platform_accounts')
+    .select('*')
+    .order('created_at', { ascending: true });
+  if (error || !data) return [];
+  return data as unknown as PlatformAccount[];
+}
+
+export async function savePlatformAccount(account: Partial<PlatformAccount> & { platform: string }): Promise<PlatformAccount> {
+  if (account.id) {
+    const { id, ...rest } = account;
+    const { data, error } = await supabase.from('platform_accounts').update(rest as any).eq('id', id).select().single();
+    if (error || !data) throw new Error(error?.message || 'Failed to update account');
+    return data as unknown as PlatformAccount;
+  } else {
+    const { data, error } = await supabase.from('platform_accounts').insert(account as any).select().single();
+    if (error || !data) throw new Error(error?.message || 'Failed to create account');
+    return data as unknown as PlatformAccount;
+  }
+}
+
+export async function deletePlatformAccount(id: string): Promise<void> {
+  const { error } = await supabase.from('platform_accounts').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+export async function setDefaultAccount(id: string, platform: string): Promise<void> {
+  // Unset all defaults for platform, then set the chosen one
+  await supabase.from('platform_accounts').update({ is_default: false } as any).eq('platform', platform);
+  await supabase.from('platform_accounts').update({ is_default: true } as any).eq('id', id);
+}
+
 // --- Video file upload to storage ---
 export async function uploadVideoFile(file: File): Promise<string> {
   const ext = file.name.split('.').pop() || 'mp4';
