@@ -1,34 +1,86 @@
 
 
-## Plan: Fix Instagram Caption Not Persisting After Share
+## Plan: Multi-Account Support Per Platform
 
-### Problem
-The caption text visually appears in the Instagram caption field during upload, but disappears from the published post. This indicates the text is rendered in the DOM but **not properly registered in Instagram's internal DraftJS/React state**. When "Share" is clicked, Instagram reads from its internal state (which is empty) and publishes without caption.
+### What Changes
 
-### Root Cause Analysis
-Instagram's caption field is a **DraftJS contenteditable** editor. DraftJS maintains its own internal `EditorState` that is separate from the DOM. Methods like `element.textContent = ...` or even `ClipboardEvent` dispatch can update the visible DOM without updating DraftJS's internal model. When Share is clicked, Instagram serializes from its internal state, not the DOM.
+Currently each platform (YouTube, TikTok, Instagram) supports exactly one account stored in the `app_settings` table. This plan adds support for multiple accounts per platform, with account selection during upload/scheduling.
 
-The current code tries multiple strategies but likely hits false-positive verification: it checks if `textContent` or `value` has content, but that only proves the DOM was updated — not that DraftJS accepted the input.
+### Database Changes
 
-### Fix Strategy
+**New table: `platform_accounts`**
 
-**File: `server/uploaders/instagram.js` (Phase 5 caption filling)**
+| Column | Type | Notes |
+|--------|------|-------|
+| id | uuid (PK) | Auto-generated |
+| platform | text | `youtube`, `tiktok`, `instagram` |
+| label | text | User-friendly name (e.g. "Main Channel", "Gaming") |
+| email | text | Login email |
+| password | text | Login password |
+| enabled | boolean | Default true |
+| is_default | boolean | Default false — one default per platform |
+| created_at | timestamptz | |
 
-1. **Use Playwright's clipboard API for reliable paste** — Instead of manually constructing a `ClipboardEvent` (which DraftJS may ignore because `clipboardData` is read-only in some browsers), use Playwright's built-in clipboard:
-   - Focus the caption field
-   - Use `page.evaluate(() => navigator.clipboard.writeText(text))` to set clipboard
-   - Then use `page.keyboard.press('Control+v')` to trigger a real paste that DraftJS processes natively
+RLS: public read/insert/update/delete (matches existing app_settings pattern).
 
-2. **Add a post-fill settle + re-verify step** — After filling, wait 1.5s, then click somewhere neutral in the dialog (e.g. the video preview area), then click back on the caption field and check its content. This forces DraftJS to flush any pending state updates and reveals whether the text was actually persisted in internal state.
+**Modify `upload_jobs`**: Add `account_id uuid` nullable column — links job to specific account.
 
-3. **Improve keyboard.type fallback** — Increase the per-character delay from 20ms to 35ms, and add intermediate verification every ~500 chars to ensure DraftJS is keeping up. If text stops appearing, re-focus and continue.
+**Modify `scheduled_uploads`**: Add `account_id uuid` nullable column.
 
-4. **Add a final caption verification before Share** — Right before clicking Share, read the caption field content one more time. If it's empty despite earlier success, retry the fill with keyboard.type as a last resort.
+The existing `app_settings` platform columns (youtube_email, etc.) will remain for backward compatibility but the system will prefer `platform_accounts` when present.
 
-### Technical Details
+### Migration of Existing Data
 
-- The primary change targets lines ~1686-1760 (ClipboardEvent paste strategy) and adds a pre-Share verification around line ~1855
-- The `page.keyboard.press('Control+v')` approach generates real browser-level keyboard events that DraftJS handles through its native paste handler, unlike synthetic `ClipboardEvent` which can be rejected
-- No changes to any other uploader (YouTube, TikTok) or to the upload flow phases (login, create, crop, share)
-- Caption length limit (2200 chars) remains unchanged
+An SQL migration will copy any existing non-empty credentials from `app_settings` into `platform_accounts` as the default account for each platform, so nothing is lost.
+
+### Settings Page (`src/pages/SettingsPage.tsx`)
+
+Replace the single email/password card per platform with a multi-account card:
+- Each platform card shows a list of saved accounts (label, email, default badge)
+- "Add Account" button opens inline fields for label, email, password
+- Each account row has edit/delete actions and a "Set Default" toggle
+- The enabled/disabled toggle moves to the account level
+- Clean, compact design — accounts shown as a list with minimal chrome
+
+### Dashboard (`src/pages/Dashboard.tsx`)
+
+- When a selected platform has multiple enabled accounts, show an account picker dropdown below the platform buttons
+- Default account is pre-selected
+- Single account = no picker shown (seamless, no UI clutter)
+- Account selection stored per-platform in state, passed to `createUploadJob`
+
+### Campaign Scheduler (`src/components/CampaignScheduler.tsx`)
+
+- Same account picker pattern as Dashboard when multiple accounts exist
+
+### Storage Layer (`src/lib/storage.ts`)
+
+- New CRUD functions: `getPlatformAccounts()`, `savePlatformAccount()`, `deletePlatformAccount()`
+- `createUploadJob` and `createScheduledUpload` accept optional `accountId` parameter
+- `AppSettings` interface extended but kept backward-compatible
+- `getPlatformStatuses` updated to check `platform_accounts` table
+
+### Server (`server/index.js`)
+
+- `getSettings()` updated to also fetch `platform_accounts`
+- `processJob()` reads `account_id` from the job row, looks up the matching account credentials
+- Falls back to `app_settings` credentials if no `account_id` (backward compat)
+- Uploaders receive the resolved credentials as before — no changes to youtube.js, tiktok.js, instagram.js
+
+### Files Modified
+
+1. **Migration SQL** — Create `platform_accounts` table, add `account_id` to `upload_jobs` and `scheduled_uploads`, migrate existing data
+2. **`src/lib/storage.ts`** — New account CRUD, updated job creation
+3. **`src/pages/SettingsPage.tsx`** — Multi-account UI per platform
+4. **`src/pages/Dashboard.tsx`** — Account picker when multiple accounts
+5. **`src/components/CampaignScheduler.tsx`** — Account picker
+6. **`server/index.js`** — Read account_id from jobs, resolve credentials
+
+### What Does NOT Change
+
+- Upload logic in youtube.js, tiktok.js, instagram.js — unchanged
+- Telegram notifications — unchanged
+- Schedule configs — unchanged
+- Folder watcher — unchanged
+- All existing single-account setups continue working without any user action
 
