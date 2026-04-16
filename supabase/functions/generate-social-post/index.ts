@@ -152,16 +152,20 @@ Return JSON with exactly: { "description": string, "hashtags": string[] (no # sy
     }
 
     const textData = await textResp.json();
-    const toolCall = textData?.choices?.[0]?.message?.tool_calls?.[0];
     let parsed: { description: string; hashtags: string[]; sources?: any[] } = {
       description: '', hashtags: [], sources: [],
     };
-    if (toolCall?.function?.arguments) {
-      try { parsed = JSON.parse(toolCall.function.arguments); } catch {}
+    if (googleMode) {
+      const gText = textData?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') || '';
+      try { parsed = JSON.parse(gText); } catch { parsed.description = gText; }
     } else {
-      // Fallback: use plain content
-      const content = textData?.choices?.[0]?.message?.content || '';
-      parsed.description = content;
+      const toolCall = textData?.choices?.[0]?.message?.tool_calls?.[0];
+      if (toolCall?.function?.arguments) {
+        try { parsed = JSON.parse(toolCall.function.arguments); } catch {}
+      } else {
+        const content = textData?.choices?.[0]?.message?.content || '';
+        try { parsed = JSON.parse(content); } catch { parsed.description = content; }
+      }
     }
 
     let imageUrl: string | null = null;
