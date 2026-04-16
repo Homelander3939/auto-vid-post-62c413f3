@@ -151,6 +151,22 @@ async function processJob(jobId, options = {}) {
     }
 
     const settings = await getSettings();
+
+    // === RESOLVE ACCOUNT CREDENTIALS ===
+    // If job has account_id, look up platform_accounts for credentials
+    let accountCredentials = null;
+    if (job.account_id) {
+      const { data: account } = await supabase
+        .from('platform_accounts')
+        .select('*')
+        .eq('id', job.account_id)
+        .single();
+      if (account) {
+        accountCredentials = account;
+        console.log(`[Worker] Using account "${account.label}" (${account.platform}) for job ${jobId}`);
+      }
+    }
+
     const folderPathOverride = normalizeFolderPath(options.folderPath);
     const results = job.platform_results || [];
 

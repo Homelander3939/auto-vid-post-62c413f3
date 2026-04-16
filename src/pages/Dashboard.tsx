@@ -6,11 +6,14 @@ import {
   parseTextContent,
   uploadVideoFile,
   getSettings,
+  getPlatformAccounts,
   type VideoMetadata,
   type AppSettings,
+  type PlatformAccount,
 } from '@/lib/storage';
 import { cleanVideoTitle, matchVideoTextFiles, sortFilesBySeriesNumber, INTENSITY_OPTIONS } from '@/lib/titleUtils';
 import { supabase } from '@/integrations/supabase/client';
+import AccountPicker, { useAccountsForPlatforms } from '@/components/AccountPicker';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
