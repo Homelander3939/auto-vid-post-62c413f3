@@ -14,8 +14,8 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import SocialAccountCard from '@/components/SocialAccountCard';
-import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings } from '@/lib/socialPosts';
-import { Search as SearchIcon, Image as ImageIcon, Bot } from 'lucide-react';
+import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, testAgentConnection, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings } from '@/lib/socialPosts';
+import { Search as SearchIcon, Image as ImageIcon, Bot, Loader2, CheckCircle2, XCircle, ExternalLink } from 'lucide-react';
 
 function PasswordInput({
   value,
@@ -402,6 +402,43 @@ export default function SettingsPage() {
     researchDepth: 'standard', localAgentUrl: 'http://localhost:3001',
   });
   const [savingAgent, setSavingAgent] = useState(false);
+  const [testingResearch, setTestingResearch] = useState(false);
+  const [researchTest, setResearchTest] = useState<ConnectionTestResult | null>(null);
+  const [testingImage, setTestingImage] = useState(false);
+  const [imageTest, setImageTest] = useState<ConnectionTestResult | null>(null);
+
+  const handleTestResearch = async () => {
+    setTestingResearch(true); setResearchTest(null);
+    try {
+      // For 'auto', if a key is set assume Brave (best free tier); else local
+      const provider = agentSettings.researchProvider === 'auto'
+        ? (agentSettings.researchApiKey ? 'brave' : 'local')
+        : agentSettings.researchProvider;
+      const r = await testAgentConnection('research', provider, agentSettings.researchApiKey, agentSettings.localAgentUrl);
+      setResearchTest(r);
+      if (r.ok) toast({ title: '✅ Research provider connected', description: `${provider} · ${r.latency}ms${r.sample ? ` · ${r.sample.slice(0, 60)}` : ''}` });
+      else toast({ title: 'Research test failed', description: r.error, variant: 'destructive' });
+    } catch (e: any) {
+      setResearchTest({ ok: false, error: e.message });
+      toast({ title: 'Test failed', description: e.message, variant: 'destructive' });
+    } finally { setTestingResearch(false); }
+  };
+
+  const handleTestImage = async () => {
+    setTestingImage(true); setImageTest(null);
+    try {
+      const provider = agentSettings.imageProvider === 'auto'
+        ? (agentSettings.imageApiKey ? 'unsplash' : 'lovable')
+        : agentSettings.imageProvider;
+      const r = await testAgentConnection('image', provider, agentSettings.imageApiKey);
+      setImageTest(r);
+      if (r.ok) toast({ title: '✅ Image provider connected', description: `${provider} · ${r.latency}ms${r.sample ? ` · ${r.sample.slice(0, 60)}` : ''}` });
+      else toast({ title: 'Image test failed', description: r.error, variant: 'destructive' });
+    } catch (e: any) {
+      setImageTest({ ok: false, error: e.message });
+      toast({ title: 'Test failed', description: e.message, variant: 'destructive' });
+    } finally { setTestingImage(false); }
+  };
 
   const loadModels = async (provider: string, apiKey: string) => {
     setLoadingModels(true);
