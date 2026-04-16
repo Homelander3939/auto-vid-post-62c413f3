@@ -574,10 +574,47 @@ Deno.serve(async (req) => {
 
   const wantsStream = body.stream !== false;
 
+  // Persist a generation_jobs row so the UI can resume after navigating away and the
+  // Job Queue can show live progress without holding the browser SSE stream open.
+  const { data: jobRow } = await supabase.from('generation_jobs').insert({
+    prompt: body.prompt,
+    platforms: body.platforms,
+    include_image: !!body.includeImage,
+    status: 'running',
+    events: [],
+  }).select('id').single();
+  const jobId: string | null = jobRow?.id || null;
+
+  // Buffered DB writer — flushes events to generation_jobs.events at most every 500ms
+  // to avoid hammering the DB. Stream still emits in real time over SSE.
+  const eventBuffer: any[] = [];
+  let pendingFlush = false;
+  const flushEvents = async () => {
+    if (!jobId || eventBuffer.length === 0) return;
+    const toWrite = eventBuffer.splice(0, eventBuffer.length);
+    try {
+      // Append-only: read current then update (RLS allows; small payload)
+      const { data: cur } = await supabase.from('generation_jobs').select('events').eq('id', jobId).single();
+      const merged = [...((cur?.events as any[]) || []), ...toWrite];
+      await supabase.from('generation_jobs').update({ events: merged }).eq('id', jobId);
+    } catch (e) { console.error('flushEvents failed', e); }
+  };
+  const scheduleFlush = () => {
+    if (pendingFlush) return;
+    pendingFlush = true;
+    setTimeout(async () => { pendingFlush = false; await flushEvents(); }, 500);
+  };
+
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (event: string, data: any) => { try { controller.enqueue(sseEvent(event, data)); } catch {} };
+      const send = (event: string, data: any) => {
+        try { controller.enqueue(sseEvent(event, data)); } catch {}
+        if (jobId) { eventBuffer.push({ type: event, ...data, _ts: Date.now() }); scheduleFlush(); }
+      };
       const heartbeat = setInterval(() => { try { controller.enqueue(new TextEncoder().encode(`: ping\n\n`)); } catch {} }, 1500);
+
+      // Send the jobId first so the client can persist it and resume on reload.
+      if (jobId) send('job', { id: jobId });
 
       try {
         // ── 1. Connect ──
