@@ -441,6 +441,62 @@ app.get('/', (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
 
+// --- Research search endpoint (DuckDuckGo HTML → Google scrape fallback) ---
+// Used by the cloud AI agent when no research API key is configured.
+app.post('/api/research/search', async (req, res) => {
+  const { query, count = 6 } = req.body || {};
+  if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query required' });
+
+  const decode = (s) => String(s || '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
+
+  // 1) DuckDuckGo HTML
+  try {
+    const r = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LovableAgent/1.0)' },
+    });
+    if (r.ok) {
+      const html = await r.text();
+      const results = [];
+      const blockRe = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+      let m;
+      while ((m = blockRe.exec(html)) && results.length < count) {
+        let url = m[1];
+        const uddg = url.match(/uddg=([^&]+)/);
+        if (uddg) url = decodeURIComponent(uddg[1]);
+        const title = decode(m[2].replace(/<[^>]+>/g, '').trim());
+        const snippet = decode(m[3].replace(/<[^>]+>/g, '').trim());
+        if (url && title) results.push({ title, url, snippet });
+      }
+      if (results.length) return res.json({ provider: 'duckduckgo', results });
+    }
+  } catch (e) { console.warn('[Research] DuckDuckGo failed:', e.message); }
+
+  // 2) Google scrape via Playwright (last resort)
+  try {
+    const { chromium } = require('playwright');
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' });
+    await page.goto(`https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en&num=${count}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    const results = await page.evaluate((max) => {
+      const out = [];
+      document.querySelectorAll('div.g, div.MjjYud').forEach((el) => {
+        if (out.length >= max) return;
+        const a = el.querySelector('a[href^="http"]');
+        const h3 = el.querySelector('h3');
+        const sn = el.querySelector('div[data-sncf], .VwiC3b, .yXK7lf');
+        if (a && h3) out.push({ title: h3.textContent || '', url: a.href, snippet: sn ? (sn.textContent || '') : '' });
+      });
+      return out;
+    }, count);
+    await browser.close();
+    if (results.length) return res.json({ provider: 'google-scrape', results });
+  } catch (e) { console.warn('[Research] Google scrape failed:', e.message); }
+
+  return res.json({ provider: 'none', results: [] });
+});
+
 app.post('/api/process/:id', async (req, res) => {
   processJob(req.params.id).catch(e => console.error('[Worker] Job error:', e.message));
   res.json({ started: true });

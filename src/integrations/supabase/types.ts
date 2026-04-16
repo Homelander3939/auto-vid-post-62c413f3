@@ -22,9 +22,16 @@ export type Database = {
           created_at: string
           folder_path: string
           id: number
+          image_api_key: string
+          image_provider: string
+          image_secondary_key: string
           instagram_email: string
           instagram_enabled: boolean
           instagram_password: string
+          local_agent_url: string
+          research_api_key: string
+          research_depth: string
+          research_provider: string
           telegram_bot_token: string
           telegram_chat_id: string
           telegram_enabled: boolean
@@ -44,9 +51,16 @@ export type Database = {
           created_at?: string
           folder_path?: string
           id?: number
+          image_api_key?: string
+          image_provider?: string
+          image_secondary_key?: string
           instagram_email?: string
           instagram_enabled?: boolean
           instagram_password?: string
+          local_agent_url?: string
+          research_api_key?: string
+          research_depth?: string
+          research_provider?: string
           telegram_bot_token?: string
           telegram_chat_id?: string
           telegram_enabled?: boolean
@@ -66,9 +80,16 @@ export type Database = {
           created_at?: string
           folder_path?: string
           id?: number
+          image_api_key?: string
+          image_provider?: string
+          image_secondary_key?: string
           instagram_email?: string
           instagram_enabled?: boolean
           instagram_password?: string
+          local_agent_url?: string
+          research_api_key?: string
+          research_depth?: string
+          research_provider?: string
           telegram_bot_token?: string
           telegram_chat_id?: string
           telegram_enabled?: boolean

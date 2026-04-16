@@ -47,6 +47,15 @@ export interface AISettings {
   model: string;
 }
 
+export interface AgentSettings {
+  researchProvider: string; // auto | brave | tavily | serper | firecrawl | local
+  researchApiKey: string;
+  imageProvider: string;    // auto | unsplash | pexels | openai | lovable
+  imageApiKey: string;
+  researchDepth: string;    // light | standard | deep
+  localAgentUrl: string;
+}
+
 // --- AI settings (extended app_settings columns) ---
 export async function getAISettings(): Promise<AISettings> {
   const { data } = await supabase.from('app_settings').select('*').eq('id', 1).single();
@@ -63,6 +72,31 @@ export async function saveAISettings(s: AISettings): Promise<void> {
     .from('app_settings')
     .update({ ai_provider: s.provider, ai_api_key: s.apiKey, ai_model: s.model } as any)
     .eq('id', 1);
+  if (error) throw new Error(error.message);
+}
+
+export async function getAgentSettings(): Promise<AgentSettings> {
+  const { data } = await supabase.from('app_settings').select('*').eq('id', 1).single();
+  const r = (data || {}) as any;
+  return {
+    researchProvider: r.research_provider || 'auto',
+    researchApiKey: r.research_api_key || '',
+    imageProvider: r.image_provider || 'auto',
+    imageApiKey: r.image_api_key || '',
+    researchDepth: r.research_depth || 'standard',
+    localAgentUrl: r.local_agent_url || 'http://localhost:3001',
+  };
+}
+
+export async function saveAgentSettings(s: AgentSettings): Promise<void> {
+  const { error } = await supabase.from('app_settings').update({
+    research_provider: s.researchProvider,
+    research_api_key: s.researchApiKey,
+    image_provider: s.imageProvider,
+    image_api_key: s.imageApiKey,
+    research_depth: s.researchDepth,
+    local_agent_url: s.localAgentUrl,
+  } as any).eq('id', 1);
   if (error) throw new Error(error.message);
 }
 
@@ -197,12 +231,20 @@ export interface AIGenerateOutput {
   model?: string;
 }
 
+export interface AgentSource extends AISource {
+  snippet?: string;
+  favicon?: string;
+  publishedAt?: string;
+}
+
 export type AIStreamEvent =
   | { type: 'step'; id: string; emoji: string; label: string; status: 'active' | 'done' | 'error' }
+  | { type: 'plan'; queries: string[]; imageStrategy: string; angle: string }
+  | { type: 'source'; title: string; url: string; snippet?: string; favicon?: string; publishedAt?: string; note?: string }
   | { type: 'variant'; platform: string; description: string; hashtags: string[] }
-  | { type: 'sources'; sources: AISource[] }
-  | { type: 'image'; imageUrl: string; imagePath: string }
-  | { type: 'done'; variants: Record<string, PlatformVariant>; sources: AISource[]; imageUrl: string | null; imagePath: string | null; provider?: string; model?: string }
+  | { type: 'sources'; sources: AgentSource[] }
+  | { type: 'image'; imageUrl: string; imagePath: string; credit?: string }
+  | { type: 'done'; variants: Record<string, PlatformVariant>; sources: AgentSource[]; imageUrl: string | null; imagePath: string | null; provider?: string; model?: string }
   | { type: 'error'; error: string };
 
 // Streaming generation via SSE — calls the edge function and emits parsed events as they arrive.
