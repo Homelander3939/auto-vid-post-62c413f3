@@ -177,7 +177,32 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
           </div>
         )}
 
-        {/* Live agent timeline */}
+        {/* Tools used (live) */}
+        {tools.length > 0 && (
+          <div className="rounded-lg border bg-card/60 backdrop-blur p-3 space-y-2 animate-in fade-in slide-in-from-top-1 duration-300">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
+              <Wrench className="w-3 h-3" /> Tools the agent is using ({tools.length})
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {tools.map((t, i) => {
+                const Icon = t.kind === 'research' ? Search : t.kind === 'scrape' ? Globe : t.kind === 'image' ? ImageIcon : Cpu;
+                const isLocal = t.name === 'local' || t.name === 'duckduckgo' || t.name === 'google-local';
+                return (
+                  <Badge key={i} variant="outline" className="text-[11px] gap-1 font-normal animate-in fade-in zoom-in-95 duration-300">
+                    <Icon className="w-3 h-3 text-primary" />
+                    <span className="font-medium">{t.kind}</span>
+                    <span className="text-muted-foreground">·</span>
+                    <span>{t.name}</span>
+                    {isLocal && <Monitor className="w-3 h-3 ml-0.5 text-amber-500" />}
+                    {t.detail && <span className="text-muted-foreground truncate max-w-[160px]">— {t.detail}</span>}
+                  </Badge>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+
         {(loading || steps.length > 0) && (
           <div className="rounded-xl border bg-gradient-to-br from-card to-card/40 backdrop-blur p-4 animate-in fade-in slide-in-from-top-2 duration-500">
             <div className="flex items-center gap-2 mb-3">
