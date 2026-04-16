@@ -964,7 +964,23 @@ export default function SettingsPage() {
               {agentSettings.imageProvider !== 'lovable' && (
                 <PasswordInput
                   value={agentSettings.imageApiKey}
-                  onChange={(v) => { setAgentSettings((s) => ({ ...s, imageApiKey: v })); setImageTest(null); setImageModels([]); }}
+                  onChange={(v) => {
+                    setAgentSettings((s) => {
+                      const next = { ...s, imageApiKey: v, imageModel: '' };
+                      // Auto-detect image provider from key prefix when on Auto.
+                      if (s.imageProvider === 'auto' && v) {
+                        const det = detectProviderFromKey(v);
+                        if (det.image) {
+                          next.imageProvider = det.image;
+                          setAutoDetectedHint(`Auto-detected image provider: ${det.image}`);
+                          setTimeout(() => setAutoDetectedHint(''), 4000);
+                        }
+                      }
+                      return next;
+                    });
+                    setImageTest(null);
+                    setImageModels([]);
+                  }}
                   placeholder={
                     agentSettings.imageProvider === 'auto' ? 'Optional: Unsplash/Pexels/OpenAI/Google key' :
                     agentSettings.imageProvider === 'unsplash' ? 'Unsplash Access Key' :
@@ -1068,6 +1084,7 @@ export default function SettingsPage() {
             </Badge>
             <Badge variant="outline" className="text-[11px] font-mono gap-1">
               <ImageIcon className="w-3 h-3" /> {savedAgent?.imageProvider || 'auto'}
+              {savedAgent?.imageModel && <span className="text-muted-foreground">· {savedAgent.imageModel.split('/').pop()}</span>}
             </Badge>
             <Badge variant="outline" className="text-[11px] font-mono">depth: {savedAgent?.researchDepth || 'standard'}</Badge>
           </div>
