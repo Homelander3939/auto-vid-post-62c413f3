@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Cloud, Pencil, Save, X, ChevronDown, ChevronUp, StopCircle, CalendarClock, Repeat, Eye } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import AITasksPanel from '@/components/AITasksPanel';
 
 const statusColors: Record<string, string> = {
   pending: 'bg-amber-100 text-amber-700',
@@ -475,6 +476,9 @@ export default function UploadQueue() {
           </AlertDialog>
         )}
       </div>
+
+      {/* Top section: AI agent tasks (post generations, research, image-search) */}
+      <AITasksPanel />
 
       {hasPending && (
         <div className={`flex items-start gap-3 rounded-lg border p-4 text-sm ${
