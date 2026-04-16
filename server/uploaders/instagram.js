@@ -4,6 +4,7 @@ const fs = require('fs');
 const { execSync } = require('child_process');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } = require('./smart-agent');
+const { getSharedBrowserProfileDir } = require('../browserProfiles');
 
 /**
  * Pre-process video to 9:16 (1080x1920) with black padding using ffmpeg.
@@ -73,7 +74,8 @@ function prepareVerticalVideo(videoPath) {
 
 const DEFAULT_USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
 
-function resolveUserDataDir(accountId) {
+function resolveUserDataDir(browserProfileId, accountId) {
+  if (browserProfileId) return getSharedBrowserProfileDir(browserProfileId);
   if (!accountId) return DEFAULT_USER_DATA_DIR;
   return path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram', accountId);
 }
@@ -1027,14 +1029,14 @@ async function assessInstagramCompletion(page) {
 
 async function uploadToInstagram(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
-  const userDataDir = resolveUserDataDir(credentials?.accountId);
+  const userDataDir = resolveUserDataDir(credentials?.browserProfileId, credentials?.accountId);
   fs.mkdirSync(userDataDir, { recursive: true });
 
   // Pre-process video to 9:16 with black padding for Instagram Reels
   const { processedPath, needsCleanup } = prepareVerticalVideo(videoPath);
   const actualVideoPath = processedPath;
 
-  console.log(`[Instagram] Starting upload... (profile: ${credentials?.accountId || 'default'})`);
+  console.log(`[Instagram] Starting upload... (profile: ${credentials?.browserProfileId || credentials?.accountId || 'default'})`);
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],

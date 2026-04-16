@@ -3,12 +3,14 @@ const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 const { smartClick, smartFill, waitForStateChange, analyzePage } = require('./smart-agent');
+const { getSharedBrowserProfileDir } = require('../browserProfiles');
 
 const DEFAULT_USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube');
 const YT_STUDIO_URL = 'https://studio.youtube.com';
 const YT_UPLOAD_URL = 'https://studio.youtube.com/upload';
 
-function resolveUserDataDir(accountId) {
+function resolveUserDataDir(browserProfileId, accountId) {
+  if (browserProfileId) return getSharedBrowserProfileDir(browserProfileId);
   if (!accountId) return DEFAULT_USER_DATA_DIR;
   return path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube', accountId);
 }
@@ -859,10 +861,10 @@ async function requestHumanObstacleHelp(page, credentials, reason) {
 
 async function uploadToYouTube(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
-  const userDataDir = resolveUserDataDir(credentials?.accountId);
+  const userDataDir = resolveUserDataDir(credentials?.browserProfileId, credentials?.accountId);
   fs.mkdirSync(userDataDir, { recursive: true });
 
-  console.log(`[YouTube] Starting upload... (profile: ${credentials?.accountId || 'default'})`);
+  console.log(`[YouTube] Starting upload... (profile: ${credentials?.browserProfileId || credentials?.accountId || 'default'})`);
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
