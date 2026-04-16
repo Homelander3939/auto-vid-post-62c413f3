@@ -342,25 +342,29 @@ export async function createUploadJob(
   videoFileName: string,
   videoStoragePath: string | null,
   metadata: VideoMetadata,
-  platforms: string[]
+  platforms: string[],
+  accountId?: string
 ): Promise<UploadJob> {
   const platformResults: PlatformResult[] = platforms.map((name) => ({
     name,
     status: 'pending' as const,
   }));
 
+  const insertPayload: any = {
+    video_file_name: videoFileName,
+    video_storage_path: videoStoragePath,
+    title: metadata.title,
+    description: metadata.description,
+    tags: metadata.tags,
+    target_platforms: platforms,
+    status: 'pending',
+    platform_results: platformResults as any,
+  };
+  if (accountId) insertPayload.account_id = accountId;
+
   const { data, error } = await supabase
     .from('upload_jobs')
-    .insert({
-      video_file_name: videoFileName,
-      video_storage_path: videoStoragePath,
-      title: metadata.title,
-      description: metadata.description,
-      tags: metadata.tags,
-      target_platforms: platforms,
-      status: 'pending',
-      platform_results: platformResults as any,
-    })
+    .insert(insertPayload)
     .select()
     .single();
 
