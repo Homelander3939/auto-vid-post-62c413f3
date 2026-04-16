@@ -935,6 +935,7 @@ export default function SettingsPage() {
                   <SelectItem value="auto">⚡ Auto — agent picks photo vs generated</SelectItem>
                   <SelectItem value="unsplash">📷 Unsplash (real photos, free)</SelectItem>
                   <SelectItem value="pexels">🎞️ Pexels (real photos, free)</SelectItem>
+                  <SelectItem value="google">🍌 Google Gemini (Nano Banana)</SelectItem>
                   <SelectItem value="openai">🎨 OpenAI DALL-E / gpt-image</SelectItem>
                   <SelectItem value="lovable">✨ Lovable AI (Nano Banana, included)</SelectItem>
                 </SelectContent>
@@ -942,16 +943,37 @@ export default function SettingsPage() {
               {agentSettings.imageProvider !== 'lovable' && (
                 <PasswordInput
                   value={agentSettings.imageApiKey}
-                  onChange={(v) => { setAgentSettings((s) => ({ ...s, imageApiKey: v })); setImageTest(null); }}
+                  onChange={(v) => { setAgentSettings((s) => ({ ...s, imageApiKey: v })); setImageTest(null); setImageModels([]); }}
                   placeholder={
-                    agentSettings.imageProvider === 'auto' ? 'Optional: Unsplash/Pexels/OpenAI key' :
+                    agentSettings.imageProvider === 'auto' ? 'Optional: Unsplash/Pexels/OpenAI/Google key' :
                     agentSettings.imageProvider === 'unsplash' ? 'Unsplash Access Key' :
                     agentSettings.imageProvider === 'pexels' ? 'Pexels API Key' :
+                    agentSettings.imageProvider === 'google' ? 'Google AI Studio API key (AIza…)' :
                     'sk-...'
                   }
                 />
               )}
             </div>
+
+            {/* Image model selector — appears after "Show models" succeeds */}
+            {imageModels.length > 0 && (agentSettings.imageProvider === 'google' || agentSettings.imageProvider === 'openai' || agentSettings.imageProvider === 'lovable') && (
+              <div className="space-y-2">
+                <Label className="text-xs flex items-center gap-1.5">
+                  <ImageIcon className="w-3.5 h-3.5" /> Image model
+                </Label>
+                <Select value={imageModel} onValueChange={setImageModel}>
+                  <SelectTrigger><SelectValue placeholder="Pick a model" /></SelectTrigger>
+                  <SelectContent>
+                    {imageModels.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.recommended ? '⭐ ' : ''}{m.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             <div className="flex items-center gap-2 flex-wrap">
               <Button
                 type="button" size="sm" variant="outline"
@@ -960,6 +982,15 @@ export default function SettingsPage() {
                 className="gap-1.5 h-8"
               >
                 {testingImage ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : '🔌'} Test connection
+              </Button>
+              <Button
+                type="button" size="sm" variant="outline"
+                onClick={handleLoadImageModels}
+                disabled={loadingImageModels || (agentSettings.imageProvider !== 'lovable' && !agentSettings.imageApiKey)}
+                className="gap-1.5 h-8"
+              >
+                {loadingImageModels ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5" />}
+                Show models
               </Button>
               {imageTest?.ok && imageTest.sample && (
                 <span className="text-[11px] text-muted-foreground italic truncate max-w-[280px]">
@@ -970,6 +1001,7 @@ export default function SettingsPage() {
                 <a href={
                   agentSettings.imageProvider === 'unsplash' ? 'https://unsplash.com/oauth/applications' :
                   agentSettings.imageProvider === 'pexels' ? 'https://www.pexels.com/api/' :
+                  agentSettings.imageProvider === 'google' ? 'https://aistudio.google.com/app/apikey' :
                   'https://platform.openai.com/api-keys'
                 } target="_blank" rel="noreferrer" className="text-[11px] text-primary hover:underline inline-flex items-center gap-1 ml-auto">
                   Get key <ExternalLink className="w-3 h-3" />
@@ -977,7 +1009,7 @@ export default function SettingsPage() {
               )}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              In Auto mode the agent picks real photos for news/events and generated images for abstract/conceptual prompts. Without any key it falls back to Lovable AI image generation (Nano Banana).
+              In Auto mode the agent picks real photos for news/events and generated images for abstract/conceptual prompts. Use <strong>Google</strong> with your AI Studio key for direct Nano Banana access, or <strong>Lovable AI</strong> for built-in Nano Banana (no key required).
             </p>
           </div>
 
