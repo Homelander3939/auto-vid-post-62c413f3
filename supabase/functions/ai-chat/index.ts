@@ -7,28 +7,25 @@ const corsHeaders = {
 };
 
 const AI_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
+const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 
-/* ── Tool definitions ─────────────────────────────────── */
+/* ── Tool definitions (full agentic surface) ─────────── */
 
 const tools = [
   {
     type: 'function',
     function: {
       name: 'create_upload_job',
-      description: 'Create a new video upload job in the queue. Use when user wants to upload a video to platforms.',
+      description: 'Queue a video for immediate upload to one or more social platforms.',
       parameters: {
         type: 'object',
         properties: {
-          video_file_name: { type: 'string', description: 'Name of the video file' },
-          title: { type: 'string', description: 'Video title for platforms' },
-          description: { type: 'string', description: 'Video description' },
-          tags: { type: 'array', items: { type: 'string' }, description: 'Tags/hashtags for the video' },
-          target_platforms: {
-            type: 'array',
-            items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] },
-            description: 'Platforms to upload to',
-          },
-          video_storage_path: { type: 'string', description: 'Storage path if video was already uploaded' },
+          video_file_name: { type: 'string', description: 'Name of the video file (already uploaded to storage)' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+          video_storage_path: { type: 'string' },
         },
         required: ['video_file_name', 'title', 'target_platforms'],
       },
@@ -38,21 +35,17 @@ const tools = [
     type: 'function',
     function: {
       name: 'schedule_upload',
-      description: 'Schedule a video upload for a specific date/time.',
+      description: 'Schedule a video upload for a specific date/time (ISO 8601, Tbilisi GET timezone).',
       parameters: {
         type: 'object',
         properties: {
-          video_file_name: { type: 'string', description: 'Name of the video file' },
-          title: { type: 'string', description: 'Video title' },
-          description: { type: 'string', description: 'Video description' },
-          tags: { type: 'array', items: { type: 'string' }, description: 'Tags/hashtags' },
-          target_platforms: {
-            type: 'array',
-            items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] },
-            description: 'Platforms to upload to',
-          },
-          scheduled_at: { type: 'string', description: 'ISO 8601 datetime for when to upload' },
-          video_storage_path: { type: 'string', description: 'Storage path if video was already uploaded' },
+          video_file_name: { type: 'string' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+          scheduled_at: { type: 'string' },
+          video_storage_path: { type: 'string' },
         },
         required: ['video_file_name', 'title', 'target_platforms', 'scheduled_at'],
       },
@@ -61,18 +54,83 @@ const tools = [
   {
     type: 'function',
     function: {
-      name: 'update_cron_schedule',
-      description: 'Update the automatic upload cron schedule settings.',
+      name: 'edit_upload_job',
+      description: 'Edit a queued upload job (title, description, tags, platforms).',
       parameters: {
         type: 'object',
         properties: {
-          enabled: { type: 'boolean', description: 'Enable or disable the cron schedule' },
-          cron_expression: { type: 'string', description: 'Cron expression (e.g. "0 9 * * *" for daily at 9am)' },
-          platforms: {
-            type: 'array',
-            items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] },
-            description: 'Platforms for scheduled uploads',
-          },
+          job_id: { type: 'string' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+        },
+        required: ['job_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_upload_job',
+      description: 'Delete an upload job by ID.',
+      parameters: { type: 'object', properties: { job_id: { type: 'string' } }, required: ['job_id'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'retry_failed_job',
+      description: 'Retry a failed upload job.',
+      parameters: { type: 'object', properties: { job_id: { type: 'string' } }, required: ['job_id'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'clear_jobs_by_status',
+      description: 'Bulk delete upload jobs with a given status ("failed", "completed", "pending") or "all".',
+      parameters: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_scheduled_upload',
+      description: 'Cancel a scheduled upload by ID.',
+      parameters: { type: 'object', properties: { scheduled_id: { type: 'string' } }, required: ['scheduled_id'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_scheduled_upload',
+      description: 'Edit a scheduled upload (title, description, tags, platforms, scheduled_at).',
+      parameters: {
+        type: 'object',
+        properties: {
+          scheduled_id: { type: 'string' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+          scheduled_at: { type: 'string' },
+        },
+        required: ['scheduled_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_cron_schedule',
+      description: 'Update primary recurring upload cron (id=1).',
+      parameters: {
+        type: 'object',
+        properties: {
+          enabled: { type: 'boolean' },
+          cron_expression: { type: 'string' },
+          platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
         },
         required: [],
       },
@@ -81,28 +139,80 @@ const tools = [
   {
     type: 'function',
     function: {
-      name: 'delete_upload_job',
-      description: 'Delete/cancel an upload job by its ID.',
+      name: 'manage_recurring_schedule',
+      description: 'Create, update, or delete a recurring upload schedule.',
       parameters: {
         type: 'object',
         properties: {
-          job_id: { type: 'string', description: 'The UUID of the upload job to delete' },
+          action: { type: 'string', enum: ['create', 'update', 'delete'] },
+          schedule_id: { type: 'number' },
+          name: { type: 'string' },
+          enabled: { type: 'boolean' },
+          cron_expression: { type: 'string' },
+          platforms: { type: 'array', items: { type: 'string', enum: ['youtube', 'tiktok', 'instagram'] } },
+          folder_path: { type: 'string' },
+          end_at: { type: 'string' },
         },
-        required: ['job_id'],
+        required: ['action'],
       },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'retry_failed_job',
-      description: 'Retry a failed upload job by resetting its status to pending.',
+      name: 'generate_social_post',
+      description: 'Use the Deep Research Agent to generate an AI social media post (with web research, sources, and platform-tailored variants). Optionally schedule it.',
       parameters: {
         type: 'object',
         properties: {
-          job_id: { type: 'string', description: 'The UUID of the failed job to retry' },
+          prompt: { type: 'string', description: 'Topic or instructions for the post' },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['x', 'facebook', 'instagram', 'tiktok'] } },
+          include_image: { type: 'boolean' },
+          scheduled_at: { type: 'string', description: 'Optional ISO datetime to schedule (omit to post immediately)' },
         },
-        required: ['job_id'],
+        required: ['prompt', 'target_platforms'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'research_web',
+      description: 'Run a deep web research task (multi-source) and return findings + source URLs. Uses configured research provider or local Playwright fallback.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          depth: { type: 'string', enum: ['light', 'standard', 'deep'] },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_platform_stats',
+      description: 'Queue an engagement-stats scrape (views/likes/comments) on the local browser for YouTube, TikTok, Instagram, or all.',
+      parameters: {
+        type: 'object',
+        properties: { platform: { type: 'string', enum: ['youtube', 'tiktok', 'instagram', 'all'] } },
+        required: ['platform'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'open_browser',
+      description: 'Queue an arbitrary browser task on the user\'s local PC (e.g. "open my YouTube Studio analytics").',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: { type: 'string' },
+          url: { type: 'string' },
+        },
+        required: ['task'],
       },
     },
   },
@@ -110,7 +220,7 @@ const tools = [
 
 /* ── Tool executor ────────────────────────────────────── */
 
-async function executeTool(supabase: any, name: string, args: any): Promise<string> {
+async function executeTool(supabase: any, name: string, args: any, supabaseUrl: string, serviceKey: string): Promise<string> {
   switch (name) {
     case 'create_upload_job': {
       const platforms = args.target_platforms || [];
@@ -125,8 +235,8 @@ async function executeTool(supabase: any, name: string, args: any): Promise<stri
         video_storage_path: args.video_storage_path || null,
         platform_results: platformResults,
       }).select().single();
-      if (error) return `❌ Failed to create job: ${error.message}`;
-      return `✅ Upload job created!\nID: ${data.id}\nTitle: "${data.title}"\nFile: ${data.video_file_name}\nPlatforms: ${data.target_platforms.join(', ')}\nStatus: pending`;
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Queued "${data.title}" → ${data.target_platforms.join(', ')} (id ${data.id.slice(0, 8)})`;
     }
     case 'schedule_upload': {
       const { data, error } = await supabase.from('scheduled_uploads').insert({
@@ -139,96 +249,291 @@ async function executeTool(supabase: any, name: string, args: any): Promise<stri
         status: 'scheduled',
         video_storage_path: args.video_storage_path || null,
       }).select().single();
-      if (error) return `❌ Failed to schedule: ${error.message}`;
-      return `✅ Upload scheduled!\nID: ${data.id}\nTitle: "${data.title}"\nFile: ${data.video_file_name}\nPlatforms: ${data.target_platforms.join(', ')}\nScheduled: ${new Date(data.scheduled_at).toLocaleString()}`;
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Scheduled "${data.title}" for ${new Date(data.scheduled_at).toLocaleString()} → ${data.target_platforms.join(', ')}`;
+    }
+    case 'edit_upload_job': {
+      const updates: any = {};
+      if (args.title !== undefined) updates.title = args.title;
+      if (args.description !== undefined) updates.description = args.description;
+      if (args.tags !== undefined) updates.tags = args.tags;
+      if (args.target_platforms !== undefined) updates.target_platforms = args.target_platforms;
+      const { data, error } = await supabase.from('upload_jobs').update(updates).eq('id', args.job_id).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Updated "${data.title}".`;
+    }
+    case 'delete_upload_job': {
+      const { error } = await supabase.from('upload_jobs').delete().eq('id', args.job_id);
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Job ${args.job_id.slice(0, 8)} deleted.`;
+    }
+    case 'retry_failed_job': {
+      const { data, error } = await supabase.from('upload_jobs')
+        .update({ status: 'pending', completed_at: null, platform_results: [] })
+        .eq('id', args.job_id).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ "${data.title || data.video_file_name}" reset to pending.`;
+    }
+    case 'clear_jobs_by_status': {
+      let query = supabase.from('upload_jobs').delete();
+      if (args.status !== 'all') query = query.eq('status', args.status);
+      else query = query.neq('id', '00000000-0000-0000-0000-000000000000');
+      const { error } = await query;
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Cleared ${args.status} jobs.`;
+    }
+    case 'delete_scheduled_upload': {
+      const { error } = await supabase.from('scheduled_uploads').delete().eq('id', args.scheduled_id);
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Scheduled upload deleted.`;
+    }
+    case 'edit_scheduled_upload': {
+      const updates: any = {};
+      if (args.title !== undefined) updates.title = args.title;
+      if (args.description !== undefined) updates.description = args.description;
+      if (args.tags !== undefined) updates.tags = args.tags;
+      if (args.target_platforms !== undefined) updates.target_platforms = args.target_platforms;
+      if (args.scheduled_at !== undefined) updates.scheduled_at = args.scheduled_at;
+      const { data, error } = await supabase.from('scheduled_uploads').update(updates).eq('id', args.scheduled_id).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Updated scheduled "${data.title}".`;
     }
     case 'update_cron_schedule': {
       const update: any = {};
       if (args.enabled !== undefined) update.enabled = args.enabled;
       if (args.cron_expression) update.cron_expression = args.cron_expression;
       if (args.platforms) update.platforms = args.platforms;
-      const { data, error } = await supabase.from('schedule_config')
-        .update(update).eq('id', 1).select().single();
-      if (error) return `❌ Failed to update cron: ${error.message}`;
-      return `✅ Cron schedule updated!\nEnabled: ${data.enabled}\nExpression: ${data.cron_expression}\nPlatforms: ${data.platforms.join(', ')}`;
+      const { data, error } = await supabase.from('schedule_config').update(update).eq('id', 1).select().single();
+      if (error) return `❌ Failed: ${error.message}`;
+      return `✅ Cron: ${data.enabled ? 'ON' : 'OFF'} | ${data.cron_expression} | ${data.platforms.join(', ')}`;
     }
-    case 'delete_upload_job': {
-      const { error } = await supabase.from('upload_jobs').delete().eq('id', args.job_id);
-      if (error) return `❌ Failed to delete job: ${error.message}`;
-      return `✅ Job ${args.job_id} deleted.`;
+    case 'manage_recurring_schedule': {
+      if (args.action === 'delete') {
+        if (!args.schedule_id) return '❌ Need schedule_id.';
+        const { error } = await supabase.from('schedule_config').delete().eq('id', args.schedule_id);
+        if (error) return `❌ Failed: ${error.message}`;
+        return `✅ Recurring schedule #${args.schedule_id} deleted.`;
+      }
+      if (args.action === 'create') {
+        const payload = {
+          name: args.name || 'Schedule',
+          enabled: args.enabled ?? false,
+          cron_expression: args.cron_expression || '0 9 * * *',
+          platforms: args.platforms || ['youtube'],
+          folder_path: args.folder_path || '',
+          end_at: args.end_at || null,
+        };
+        const { data, error } = await supabase.from('schedule_config').insert(payload).select().single();
+        if (error) return `❌ Failed: ${error.message}`;
+        return `✅ Created "${data.name}" (#${data.id}).`;
+      }
+      if (args.action === 'update') {
+        if (!args.schedule_id) return '❌ Need schedule_id.';
+        const updates: any = {};
+        for (const k of ['name', 'enabled', 'cron_expression', 'platforms', 'folder_path', 'end_at']) {
+          if (args[k] !== undefined) updates[k] = args[k];
+        }
+        const { data, error } = await supabase.from('schedule_config').update(updates).eq('id', args.schedule_id).select().single();
+        if (error) return `❌ Failed: ${error.message}`;
+        return `✅ Updated "${data.name}".`;
+      }
+      return '❌ Unknown action.';
     }
-    case 'retry_failed_job': {
-      const { data, error } = await supabase.from('upload_jobs')
-        .update({ status: 'pending', completed_at: null, platform_results: [] })
-        .eq('id', args.job_id)
-        .select().single();
-      if (error) return `❌ Failed to retry job: ${error.message}`;
-      return `✅ Job "${data.title || data.video_file_name}" reset to pending.`;
+    case 'generate_social_post': {
+      // Insert a row and let process-uploads / scheduler handle it, OR call the deep agent inline.
+      const { data, error } = await supabase.from('social_posts').insert({
+        ai_prompt: args.prompt,
+        target_platforms: args.target_platforms || ['x'],
+        scheduled_at: args.scheduled_at || null,
+        status: args.scheduled_at ? 'scheduled' : 'pending',
+      }).select().single();
+      if (error) return `❌ Failed to queue post: ${error.message}`;
+      // Kick the generator (fire-and-forget)
+      try {
+        await fetch(`${supabaseUrl}/functions/v1/generate-social-post`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ post_id: data.id, prompt: args.prompt, target_platforms: args.target_platforms, include_image: args.include_image }),
+        });
+      } catch (e) {
+        console.warn('generate-social-post kick failed:', e);
+      }
+      return `✅ Deep-research social post queued (id ${data.id.slice(0, 8)}). ${args.scheduled_at ? `Will publish ${new Date(args.scheduled_at).toLocaleString()}.` : 'Generating now — check the Social Posts page for live progress.'}`;
+    }
+    case 'research_web': {
+      const { error } = await supabase.from('pending_commands').insert({
+        command: 'research',
+        args: { query: args.query, depth: args.depth || 'standard' },
+        status: 'pending',
+      });
+      if (error) return `❌ Failed to queue research: ${error.message}`;
+      return `🔍 Deep research queued for "${args.query}". Findings + sources will arrive via Telegram in 1-3 minutes.`;
+    }
+    case 'check_platform_stats': {
+      const { error } = await supabase.from('pending_commands').insert({
+        command: 'check_stats',
+        args: { platform: args.platform || 'all' },
+        status: 'pending',
+      });
+      if (error) return `❌ ${error.message}`;
+      return `📊 Stats scrape queued for ${args.platform}. Results in Telegram within ~60s.`;
+    }
+    case 'open_browser': {
+      const { error } = await supabase.from('pending_commands').insert({
+        command: 'open_browser',
+        args: { task: args.task, url: args.url || null },
+        status: 'pending',
+      });
+      if (error) return `❌ ${error.message}`;
+      return `🌐 Browser task queued: "${args.task}". Updates via Telegram.`;
     }
     default:
       return `Unknown tool: ${name}`;
   }
 }
 
-/* ── Lightweight context (fast) ───────────────────────── */
+/* ── Lightweight context ──────────────────────────────── */
 
 async function getAppContextFast(supabase: any): Promise<string> {
   const [
     { data: jobs },
     { data: scheduled },
     { data: settings },
-    { data: scheduleConfig },
+    { data: scheduleConfigs },
+    { data: socialPosts },
   ] = await Promise.all([
     supabase.from('upload_jobs').select('id,title,video_file_name,status,target_platforms').order('created_at', { ascending: false }).limit(10),
     supabase.from('scheduled_uploads').select('id,title,video_file_name,status,target_platforms,scheduled_at').eq('status', 'scheduled').order('scheduled_at', { ascending: true }).limit(5),
-    supabase.from('app_settings').select('youtube_enabled,tiktok_enabled,instagram_enabled,telegram_enabled,folder_path').eq('id', 1).single(),
-    supabase.from('schedule_config').select('enabled,cron_expression,platforms').eq('id', 1).single(),
+    supabase.from('app_settings').select('youtube_enabled,tiktok_enabled,instagram_enabled,telegram_enabled,folder_path,research_provider,image_provider,ai_provider,ai_model').eq('id', 1).single(),
+    supabase.from('schedule_config').select('id,name,enabled,cron_expression,platforms').order('id', { ascending: true }),
+    supabase.from('social_posts').select('id,status,target_platforms,ai_prompt').order('created_at', { ascending: false }).limit(5),
   ]);
 
-  const pending = (jobs || []).filter((j: any) => j.status === 'pending').length;
-  const processing = (jobs || []).filter((j: any) => j.status === 'processing').length;
-  const failed = (jobs || []).filter((j: any) => j.status === 'failed').length;
-  const done = (jobs || []).filter((j: any) => j.status === 'completed').length;
-  const upcoming = scheduled || [];
+  const j = jobs || [];
+  const counts = {
+    pending: j.filter((x: any) => x.status === 'pending').length,
+    processing: j.filter((x: any) => x.status === 'processing').length,
+    failed: j.filter((x: any) => x.status === 'failed').length,
+    done: j.filter((x: any) => x.status === 'completed').length,
+  };
 
-  const platforms = [];
+  const platforms: string[] = [];
   if (settings?.youtube_enabled) platforms.push('YouTube');
   if (settings?.tiktok_enabled) platforms.push('TikTok');
   if (settings?.instagram_enabled) platforms.push('Instagram');
 
-  const cronInfo = scheduleConfig;
+  let ctx = `=== LIVE APP STATE (Tbilisi GET timezone) ===\n`;
+  ctx += `Video platforms enabled: ${platforms.join(', ') || 'None'}\n`;
+  ctx += `Upload queue: ${counts.pending} pending, ${counts.processing} processing, ${counts.done} done, ${counts.failed} failed\n`;
+  ctx += `AI model: ${settings?.ai_provider || 'lovable'} / ${settings?.ai_model || 'auto'} | Research: ${settings?.research_provider || 'auto'} | Images: ${settings?.image_provider || 'auto'}\n`;
 
-  let ctx = `=== APP STATE ===\nPlatforms: ${platforms.join(', ') || 'None'}\nQueue: ${pending} pending, ${processing} processing, ${done} done, ${failed} failed`;
-
-  if (failed > 0) {
-    const failedJobs = (jobs || []).filter((j: any) => j.status === 'failed');
-    ctx += `\nFailed: ${failedJobs.map((j: any) => `[${j.id.slice(0,8)}] "${j.title || j.video_file_name}"`).join(', ')}`;
+  if (counts.failed > 0) {
+    ctx += `Failed jobs: ${j.filter((x: any) => x.status === 'failed').map((x: any) => `[${x.id.slice(0, 8)}] "${x.title || x.video_file_name}"`).join(', ')}\n`;
   }
-  if (pending > 0) {
-    const pendingJobs = (jobs || []).filter((j: any) => j.status === 'pending');
-    ctx += `\nPending: ${pendingJobs.map((j: any) => `[${j.id.slice(0,8)}] "${j.title || j.video_file_name}"`).join(', ')}`;
+  if (counts.pending > 0) {
+    ctx += `Pending: ${j.filter((x: any) => x.status === 'pending').map((x: any) => `[${x.id.slice(0, 8)}] "${x.title || x.video_file_name}"`).join(', ')}\n`;
   }
-  if (upcoming.length > 0) {
-    ctx += `\nScheduled: ${upcoming.map((s: any) => `"${s.title || s.video_file_name}" at ${new Date(s.scheduled_at).toLocaleString()}`).join('; ')}`;
+  if ((scheduled || []).length > 0) {
+    ctx += `Scheduled video uploads: ${(scheduled || []).map((s: any) => `"${s.title || s.video_file_name}" at ${new Date(s.scheduled_at).toLocaleString()}`).join('; ')}\n`;
   }
-  ctx += `\nCron: ${cronInfo?.enabled ? 'ON' : 'OFF'} ${cronInfo?.cron_expression || ''} ${(cronInfo?.platforms || []).join(',')}`;
-  ctx += '\n===';
+  if ((scheduleConfigs || []).length > 0) {
+    ctx += `Recurring schedules:\n${(scheduleConfigs || []).map((c: any) => `  #${c.id} "${c.name}" ${c.enabled ? 'ON' : 'OFF'} | ${c.cron_expression} | ${(c.platforms || []).join(',')}`).join('\n')}\n`;
+  }
+  if ((socialPosts || []).length > 0) {
+    ctx += `Recent social posts: ${(socialPosts || []).map((p: any) => `[${p.status}] ${(p.ai_prompt || '').slice(0, 40)}`).join(' | ')}\n`;
+  }
+  ctx += '===';
   return ctx;
 }
 
 /* ── System prompt ────────────────────────────────────── */
 
-function buildSystemPrompt(appContext: string): string {
-  return `You are a helpful AI assistant for a Video Uploader app. You have access to live app data and can perform actions.
+function buildSystemPrompt(appContext: string, isTelegram = false): string {
+  const fmt = isTelegram
+    ? 'Plain text only — NO markdown asterisks/backticks. Use line breaks and emoji for structure. Be concise.'
+    : 'Use markdown for rich formatting.';
+  return `You are the autonomous AI agent for an Uploadphy — a multi-platform video & social-post automation app.
 
 ${appContext}
 
-You can: create_upload_job, schedule_upload, update_cron_schedule, delete_upload_job, retry_failed_job.
-When asked to perform actions, use tool calls. When asked questions, answer from the live data above.
-Use markdown. Be concise but helpful.`;
+## Your capabilities (call tools, do not just describe)
+- **Video uploads**: create_upload_job, schedule_upload, edit_upload_job, delete_upload_job, retry_failed_job, clear_jobs_by_status
+- **Scheduling**: schedule_upload, edit_scheduled_upload, delete_scheduled_upload, update_cron_schedule, manage_recurring_schedule
+- **Social posts (deep research agent)**: generate_social_post — multi-step plan → search → scrape → write → image, with sources
+- **Web research**: research_web — autonomous web research with configured provider or local browser fallback
+- **Stats scraping**: check_platform_stats — queues Playwright scrape on user's local PC, results via Telegram
+- **Generic browser tasks**: open_browser — runs any natural-language browser task locally
+
+## Behavior rules
+- Be PROACTIVE. If the user says "post about X to Twitter at 9pm tomorrow" → call generate_social_post with scheduled_at.
+- If user asks for stats/views/engagement → ALWAYS call check_platform_stats (do not hallucinate numbers).
+- If user asks to research something → call research_web (do not answer from memory if it's news/recent).
+- If user asks "what's pending / what's scheduled" → answer from the LIVE APP STATE above.
+- All times are Tbilisi GET (UTC+4). Convert relative times like "tomorrow 9am" to ISO 8601.
+- ${fmt}`;
 }
 
-/* ── Streaming approach: try stream, detect tool calls ── */
+/* ── Helper: send to Telegram ─────────────────────────── */
+
+async function sendTelegram(chatId: string | number, text: string, lovableKey: string, telegramKey: string) {
+  try {
+    await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${lovableKey}`,
+        'X-Connection-Api-Key': telegramKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 4000) }),
+    });
+  } catch (e) {
+    console.error('Telegram send failed:', e);
+  }
+}
+
+/* ── Non-streaming agent loop (used for Telegram mode) ─ */
+
+async function runAgentNonStreaming(
+  supabase: any,
+  fullMessages: any[],
+  model: string,
+  lovableKey: string,
+  supabaseUrl: string,
+  serviceKey: string,
+  maxSteps = 4,
+): Promise<string> {
+  for (let step = 0; step < maxSteps; step++) {
+    const r = await fetch(AI_GATEWAY, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${lovableKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages: fullMessages, tools, tool_choice: 'auto' }),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`AI gateway ${r.status}: ${t.slice(0, 300)}`);
+    }
+    const data = await r.json();
+    const choice = data.choices?.[0];
+    const msg = choice?.message;
+    if (!msg) return 'No response.';
+    fullMessages.push(msg);
+
+    if (msg.tool_calls && msg.tool_calls.length > 0) {
+      for (const tc of msg.tool_calls) {
+        let args: any = {};
+        try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* ignore */ }
+        const result = await executeTool(supabase, tc.function.name, args, supabaseUrl, serviceKey);
+        fullMessages.push({ role: 'tool', tool_call_id: tc.id, content: result });
+      }
+      continue;
+    }
+
+    return msg.content || '✅ Done.';
+  }
+  return '⚠️ Agent reached max iterations.';
+}
+
+/* ── Main handler ─────────────────────────────────────── */
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -240,29 +545,84 @@ serve(async (req) => {
     if (!LOVABLE_API_KEY) throw new Error('LOVABLE_API_KEY is not configured');
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, serviceKey);
 
-    const { messages } = await req.json();
-    if (!messages || !Array.isArray(messages)) {
-      return new Response(
-        JSON.stringify({ error: 'messages array is required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+    const body = await req.json();
+    const { messages, telegram_chat_id, telegram_user_text } = body;
+
+    /* ── TELEGRAM MODE: single user text → reply directly to chat ── */
+    if (telegram_chat_id && typeof telegram_user_text === 'string') {
+      const TELEGRAM_API_KEY = Deno.env.get('TELEGRAM_API_KEY');
+      if (!TELEGRAM_API_KEY) {
+        return new Response(JSON.stringify({ error: 'TELEGRAM_API_KEY not configured' }), {
+          status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Pull recent telegram chat history for context
+      const { data: history } = await supabase
+        .from('telegram_messages')
+        .select('text,is_bot,created_at')
+        .eq('chat_id', telegram_chat_id)
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      const ctx = await getAppContextFast(supabase);
+      const sys = buildSystemPrompt(ctx, true);
+      const historyMsgs = ((history || []) as any[])
+        .reverse()
+        .filter((m) => m.text)
+        .map((m) => ({ role: m.is_bot ? 'assistant' : 'user', content: m.text }));
+
+      const fullMessages = [
+        { role: 'system', content: sys },
+        ...historyMsgs,
+        { role: 'user', content: telegram_user_text },
+      ];
+
+      try {
+        const reply = await runAgentNonStreaming(
+          supabase, fullMessages, 'google/gemini-2.5-flash', LOVABLE_API_KEY, supabaseUrl, serviceKey,
+        );
+        await sendTelegram(telegram_chat_id, reply, LOVABLE_API_KEY, TELEGRAM_API_KEY);
+
+        // Mirror bot reply to telegram_messages so UI sees it
+        await supabase.from('telegram_messages').insert({
+          update_id: -Math.floor(Date.now()),
+          chat_id: telegram_chat_id,
+          text: reply.slice(0, 3000),
+          is_bot: true,
+          raw_update: { source: 'ai-chat-edge' },
+        });
+
+        return new Response(JSON.stringify({ ok: true, reply }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (e) {
+        const msg = `⚠️ AI processing failed: ${e instanceof Error ? e.message : 'unknown error'}`;
+        await sendTelegram(telegram_chat_id, msg, LOVABLE_API_KEY, TELEGRAM_API_KEY);
+        return new Response(JSON.stringify({ error: msg }), {
+          status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
     }
 
-    // Get context in parallel with message transformation
+    /* ── WEB MODE: streaming with tool support ── */
+    if (!messages || !Array.isArray(messages)) {
+      return new Response(JSON.stringify({ error: 'messages array is required' }), {
+        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     const appContextPromise = getAppContextFast(supabase);
 
-    // Transform messages for multimodal support
     const transformedMessages = messages.map((msg: any) => {
       if (msg.role === 'system') return msg;
       if (msg.images && msg.images.length > 0) {
         const content: any[] = [];
         if (msg.content) content.push({ type: 'text', text: msg.content });
-        for (const img of msg.images) {
-          content.push({ type: 'image_url', image_url: { url: img.url } });
-        }
+        for (const img of msg.images) content.push({ type: 'image_url', image_url: { url: img.url } });
         return { role: msg.role, content };
       }
       if (msg.files && msg.files.length > 0) {
@@ -277,7 +637,7 @@ serve(async (req) => {
     });
 
     const appContext = await appContextPromise;
-    const systemPrompt = buildSystemPrompt(appContext);
+    const systemPrompt = buildSystemPrompt(appContext, false);
     const hasImages = messages.some((m: any) => m.images && m.images.length > 0);
     const model = hasImages ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
 
@@ -286,68 +646,43 @@ serve(async (req) => {
       ...transformedMessages,
     ];
 
-    // First attempt: streaming with tools
     const aiResp = await fetch(AI_GATEWAY, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        messages: fullMessages,
-        tools,
-        tool_choice: 'auto',
-        stream: true,
-      }),
+      headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages: fullMessages, tools, tool_choice: 'auto', stream: true }),
     });
 
     if (!aiResp.ok) {
-      const status = aiResp.status;
-      if (status === 429) {
-        return new Response(JSON.stringify({ error: 'Rate limit exceeded. Please wait a moment.' }), {
+      if (aiResp.status === 429) {
+        return new Response(JSON.stringify({ error: 'Rate limit exceeded.' }), {
           status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
-      if (status === 402) {
-        return new Response(JSON.stringify({ error: 'AI credits exhausted.' }), {
+      if (aiResp.status === 402) {
+        return new Response(JSON.stringify({ error: 'AI credits exhausted. Add funds in Workspace Settings → Usage.' }), {
           status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
       const t = await aiResp.text();
-      console.error('AI error:', status, t);
+      console.error('AI error:', aiResp.status, t);
       return new Response(JSON.stringify({ error: 'AI service error' }), {
         status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    // Parse the streaming response - if we detect tool_calls, buffer and handle them
-    // If pure text, pipe through immediately
     const reader = aiResp.body!.getReader();
     const decoder = new TextDecoder();
-    let sseBuffer = '';
-    let toolCalls: any[] = [];
-    let contentChunks: string[] = [];
-    let finishReason = '';
-    let hasToolCalls = false;
-
-    // Read the first few chunks to detect if this is a tool call response
-    // We'll buffer initially, then decide to stream or handle tools
     const encoder = new TextEncoder();
-
-    // Strategy: pipe through as a TransformStream.
-    // If we encounter tool_calls in the SSE, we buffer everything,
-    // execute tools, call AI again non-streaming, then send that result.
-    // If it's pure content, each chunk flows through immediately.
+    let sseBuffer = '';
+    const toolCalls: any[] = [];
+    const contentChunks: string[] = [];
 
     const { readable, writable } = new TransformStream();
     const writer = writable.getWriter();
 
-    // Process in background
     (async () => {
       try {
         let isToolCall = false;
-
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -367,25 +702,19 @@ serve(async (req) => {
               const parsed = JSON.parse(jsonStr);
               const choice = parsed.choices?.[0];
               if (!choice) continue;
-
               const delta = choice.delta || {};
-              if (choice.finish_reason) finishReason = choice.finish_reason;
 
-              // Check for tool calls
               if (delta.tool_calls) {
                 isToolCall = true;
                 for (const tc of delta.tool_calls) {
-                  const idx = tc.index ?? toolCalls.length;
-                  if (!toolCalls[idx]) {
-                    toolCalls[idx] = { id: tc.id || '', function: { name: '', arguments: '' } };
-                  }
-                  if (tc.id) toolCalls[idx].id = tc.id;
-                  if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
-                  if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+                  const i = tc.index ?? toolCalls.length;
+                  if (!toolCalls[i]) toolCalls[i] = { id: tc.id || '', function: { name: '', arguments: '' } };
+                  if (tc.id) toolCalls[i].id = tc.id;
+                  if (tc.function?.name) toolCalls[i].function.name += tc.function.name;
+                  if (tc.function?.arguments) toolCalls[i].function.arguments += tc.function.arguments;
                 }
               }
 
-              // Regular content - stream through if no tool calls detected
               if (delta.content && !isToolCall) {
                 contentChunks.push(delta.content);
                 const chunk = JSON.stringify({ choices: [{ delta: { content: delta.content } }] });
@@ -394,17 +723,18 @@ serve(async (req) => {
                 contentChunks.push(delta.content);
               }
             } catch {
-              // Partial JSON, put back
               sseBuffer = line + '\n' + sseBuffer;
               break;
             }
           }
         }
 
-        // If tool calls were made, execute them and get final response
         if (isToolCall && toolCalls.length > 0) {
-          // Execute all tool calls
-          const toolMessage = {
+          // Stream a small status indicator
+          const statusChunk = JSON.stringify({ choices: [{ delta: { content: `\n\n🛠️ Running ${toolCalls.length} tool${toolCalls.length > 1 ? 's' : ''}...\n\n` } }] });
+          await writer.write(encoder.encode(`data: ${statusChunk}\n\n`));
+
+          fullMessages.push({
             role: 'assistant',
             content: contentChunks.join('') || null,
             tool_calls: toolCalls.map((tc, i) => ({
@@ -412,28 +742,19 @@ serve(async (req) => {
               type: 'function',
               function: tc.function,
             })),
-          };
-          fullMessages.push(toolMessage);
+          });
 
           for (const tc of toolCalls) {
-            let args: any;
-            try { args = JSON.parse(tc.function.arguments); } catch { args = {}; }
-            console.log(`Executing tool: ${tc.function.name}`, args);
-            const result = await executeTool(supabase, tc.function.name, args);
-            fullMessages.push({
-              role: 'tool',
-              tool_call_id: tc.id || `call_0`,
-              content: result,
-            });
+            let args: any = {};
+            try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* */ }
+            console.log(`Tool: ${tc.function.name}`, args);
+            const result = await executeTool(supabase, tc.function.name, args, supabaseUrl, serviceKey);
+            fullMessages.push({ role: 'tool', tool_call_id: tc.id || 'call_0', content: result });
           }
 
-          // Second AI call - stream the final response
           const resp2 = await fetch(AI_GATEWAY, {
             method: 'POST',
-            headers: {
-              Authorization: `Bearer ${LOVABLE_API_KEY}`,
-              'Content-Type': 'application/json',
-            },
+            headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ model, messages: fullMessages, stream: true }),
           });
 
@@ -460,21 +781,20 @@ serve(async (req) => {
                     const chunk = JSON.stringify({ choices: [{ delta: { content: c2 } }] });
                     await writer.write(encoder.encode(`data: ${chunk}\n\n`));
                   }
-                } catch {}
+                } catch { /* */ }
               }
             }
           } else {
-            // Fallback: send tool results as plain text
             const toolResults = fullMessages.filter((m: any) => m.role === 'tool').map((m: any) => m.content).join('\n');
-            const chunk = JSON.stringify({ choices: [{ delta: { content: toolResults || 'Actions completed.' } }] });
+            const chunk = JSON.stringify({ choices: [{ delta: { content: toolResults || '✅ Actions completed.' } }] });
             await writer.write(encoder.encode(`data: ${chunk}\n\n`));
           }
         }
 
         await writer.write(encoder.encode('data: [DONE]\n\n'));
       } catch (e) {
-        console.error('Stream processing error:', e);
-        const errChunk = JSON.stringify({ choices: [{ delta: { content: 'An error occurred processing your request.' } }] });
+        console.error('Stream error:', e);
+        const errChunk = JSON.stringify({ choices: [{ delta: { content: '\n\n⚠️ Error processing your request.' } }] });
         await writer.write(encoder.encode(`data: ${errChunk}\n\n`));
         await writer.write(encoder.encode('data: [DONE]\n\n'));
       } finally {
