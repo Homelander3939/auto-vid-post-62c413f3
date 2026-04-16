@@ -12,6 +12,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   generatePostStream,
   getAISettings,
+  getAgentSettings,
   type AIGenerateOutput,
   type AgentSource,
   type AgentTool,
@@ -52,6 +53,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
   const [meta, setMeta] = useState<{ provider?: string; model?: string }>({});
 
   const { data: aiSettings } = useQuery({ queryKey: ['ai_settings'], queryFn: getAISettings });
+  const { data: agentSettings } = useQuery({ queryKey: ['agent_settings'], queryFn: getAgentSettings });
 
   useEffect(() => {
     if (platforms.length && !platforms.includes(activeTab)) setActiveTab(platforms[0]);
@@ -132,10 +134,21 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
               Real research agent: plans → searches the web → reads sources → finds/generates an image → writes platform-tailored posts.
             </CardDescription>
           </div>
-          <Badge variant="outline" className="gap-1.5 text-[11px] font-mono">
-            <Cpu className="w-3 h-3 text-primary" />
-            {currentProvider} · {currentAi.split('/').pop()}
-          </Badge>
+          <div className="flex flex-wrap gap-1.5 justify-end">
+            <Badge variant="outline" className="gap-1.5 text-[11px] font-mono" title="LLM (writes the post)">
+              <Cpu className="w-3 h-3 text-primary" />
+              {currentProvider} · {currentAi.split('/').pop()}
+            </Badge>
+            <Badge variant="outline" className="gap-1.5 text-[11px] font-mono" title="Research provider (finds sources)">
+              <Search className="w-3 h-3 text-primary" />
+              {agentSettings?.researchProvider || 'auto'}
+            </Badge>
+            <Badge variant="outline" className="gap-1.5 text-[11px] font-mono" title="Image provider/model (visual)">
+              <ImageIcon className="w-3 h-3 text-primary" />
+              {agentSettings?.imageProvider || 'auto'}
+              {agentSettings?.imageModel && <span className="text-muted-foreground">· {agentSettings.imageModel.split('/').pop()}</span>}
+            </Badge>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
