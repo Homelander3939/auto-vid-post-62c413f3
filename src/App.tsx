@@ -11,6 +11,7 @@ import SettingsPage from "@/pages/SettingsPage";
 import SetupGuide from "@/pages/SetupGuide";
 import AIChat from "@/pages/AIChat";
 import BrowserSessions from "@/pages/BrowserSessions";
+import SocialPosts from "@/pages/SocialPosts";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -28,6 +29,7 @@ const App = () => (
             <Route path="/schedule" element={<Schedule />} />
             <Route path="/chat" element={<AIChat />} />
             <Route path="/browser" element={<BrowserSessions />} />
+            <Route path="/social" element={<SocialPosts />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/setup" element={<SetupGuide />} />
           </Route>
