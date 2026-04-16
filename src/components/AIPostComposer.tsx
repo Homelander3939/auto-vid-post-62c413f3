@@ -42,6 +42,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
   const [steps, setSteps] = useState<Step[]>([]);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [liveSources, setLiveSources] = useState<AgentSource[]>([]);
+  const [tools, setTools] = useState<AgentTool[]>([]);
   const [variants, setVariants] = useState<Record<string, PlatformVariant>>({});
   const [sources, setSources] = useState<AgentSource[]>([]);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -69,7 +70,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
     if (platforms.length === 0) { toast({ title: 'Select at least one platform', variant: 'destructive' }); return; }
 
     setLoading(true);
-    setSteps([]); setPlan(null); setLiveSources([]); setVariants({}); setSources([]);
+    setSteps([]); setPlan(null); setLiveSources([]); setTools([]); setVariants({}); setSources([]);
     setImageUrl(null); setImagePath(null); setImageCredit(''); setMeta({});
 
     try {
@@ -79,6 +80,11 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
         else if (e.type === 'source') setLiveSources((s) => {
           if (s.find((x) => x.url === (e as any).url)) return s;
           return [...s, { title: (e as any).title, url: (e as any).url, snippet: (e as any).snippet, favicon: (e as any).favicon, publishedAt: (e as any).publishedAt }];
+        });
+        else if (e.type === 'tool') setTools((t) => {
+          const key = `${e.kind}:${e.name}:${e.detail || ''}`;
+          if (t.find((x) => `${x.kind}:${x.name}:${x.detail || ''}` === key)) return t;
+          return [...t, { kind: e.kind, name: e.name, detail: e.detail }];
         });
         else if (e.type === 'variant') setVariants((v) => ({ ...v, [e.platform]: { description: e.description, hashtags: e.hashtags } }));
         else if (e.type === 'sources') setSources(e.sources);
