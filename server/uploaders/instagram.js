@@ -1027,14 +1027,15 @@ async function assessInstagramCompletion(page) {
 
 async function uploadToInstagram(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
-  fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+  const userDataDir = resolveUserDataDir(credentials?.accountId);
+  fs.mkdirSync(userDataDir, { recursive: true });
 
   // Pre-process video to 9:16 with black padding for Instagram Reels
   const { processedPath, needsCleanup } = prepareVerticalVideo(videoPath);
   const actualVideoPath = processedPath;
 
-  console.log('[Instagram] Starting upload...');
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+  console.log(`[Instagram] Starting upload... (profile: ${credentials?.accountId || 'default'})`);
+  const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
     viewport: { width: 1280, height: 900 },
