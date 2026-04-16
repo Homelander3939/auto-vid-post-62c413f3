@@ -29,7 +29,10 @@ import CampaignScheduler from '@/components/CampaignScheduler';
 
 type PlatformStatus = { ready: boolean; reason: string };
 
-function getPlatformStatuses(settings: AppSettings | undefined): Record<string, PlatformStatus> {
+function getPlatformStatuses(
+  settings: AppSettings | undefined,
+  accountsByPlatform: Record<string, PlatformAccount[]>
+): Record<string, PlatformStatus> {
   if (!settings) return {
     youtube: { ready: false, reason: 'Loading settings…' },
     tiktok: { ready: false, reason: 'Loading settings…' },
@@ -37,6 +40,12 @@ function getPlatformStatuses(settings: AppSettings | undefined): Record<string, 
   };
 
   const check = (p: 'youtube' | 'tiktok' | 'instagram'): PlatformStatus => {
+    const accs = accountsByPlatform[p] || [];
+    // If we have platform_accounts, use those
+    if (accs.length > 0) {
+      return { ready: true, reason: '' };
+    }
+    // Fallback to app_settings
     const s = settings[p];
     if (!s.enabled) return { ready: false, reason: `${p} is disabled in Settings` };
     if (!s.email || !s.password) return { ready: false, reason: `${p} credentials missing in Settings` };
