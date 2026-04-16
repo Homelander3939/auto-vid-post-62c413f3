@@ -1,0 +1,1 @@
+ALTER TABLE public.app_settings ADD COLUMN IF NOT EXISTS image_keys jsonb NOT NULL DEFAULT '[]'::jsonb;

@@ -47,12 +47,22 @@ export interface AISettings {
   model: string;
 }
 
+export interface ImageKeyEntry {
+  id: string;          // local uuid for list keys
+  provider: string;    // unsplash | pexels | openai | google | nvidia | xai | lovable
+  apiKey: string;      // empty for lovable
+  model: string;       // model id for that provider
+  label?: string;      // optional human label e.g. "Personal Google", "Work OpenAI"
+  enabled: boolean;
+}
+
 export interface AgentSettings {
   researchProvider: string; // auto | brave | tavily | serper | firecrawl | local
   researchApiKey: string;
-  imageProvider: string;    // auto | unsplash | pexels | openai | google | lovable
+  imageProvider: string;    // legacy primary — auto | unsplash | pexels | openai | google | nvidia | xai | lovable
   imageApiKey: string;
-  imageModel: string;       // model id for the chosen image provider (e.g. "gemini-3-pro-image-preview")
+  imageModel: string;       // legacy primary model id
+  imageKeys: ImageKeyEntry[]; // up to 10 fallback keys, tried in order
   researchDepth: string;    // light | standard | deep
   localAgentUrl: string;
 }
@@ -68,8 +78,12 @@ export function detectProviderFromKey(key: string): { research?: string; image?:
   if (/^tvly-[A-Za-z0-9]{10,}$/i.test(k)) return { research: 'tavily' };
   // Firecrawl: fc- prefix
   if (/^fc-[A-Za-z0-9]{10,}$/i.test(k)) return { research: 'firecrawl' };
+  // xAI: xai- prefix
+  if (/^xai-[A-Za-z0-9_-]{20,}$/i.test(k)) return { image: 'xai' };
+  // NVIDIA: nvapi- prefix
+  if (/^nvapi-[A-Za-z0-9_-]{20,}$/i.test(k)) return { image: 'nvidia' };
   // Google AI Studio: AIza prefix (39 chars total typical)
-  if (/^AIza[A-Za-z0-9_-]{20,}$/.test(k)) return { image: 'google' }; // also valid for Gemini text — image is more useful
+  if (/^AIza[A-Za-z0-9_-]{20,}$/.test(k)) return { image: 'google' };
   // OpenAI: sk- (legacy) or sk-proj-
   if (/^sk-(proj-)?[A-Za-z0-9_-]{20,}$/.test(k)) return { image: 'openai' };
   // Anthropic: sk-ant-
@@ -105,24 +119,39 @@ export async function saveAISettings(s: AISettings): Promise<void> {
 export async function getAgentSettings(): Promise<AgentSettings> {
   const { data } = await supabase.from('app_settings').select('*').eq('id', 1).single();
   const r = (data || {}) as any;
+  const rawKeys = Array.isArray(r.image_keys) ? r.image_keys : [];
+  const imageKeys: ImageKeyEntry[] = rawKeys.map((k: any) => ({
+    id: k.id || crypto.randomUUID(),
+    provider: k.provider || 'lovable',
+    apiKey: k.apiKey || '',
+    model: k.model || '',
+    label: k.label || '',
+    enabled: k.enabled !== false,
+  }));
   return {
     researchProvider: r.research_provider || 'auto',
     researchApiKey: r.research_api_key || '',
     imageProvider: r.image_provider || 'auto',
     imageApiKey: r.image_api_key || '',
     imageModel: r.image_model || '',
+    imageKeys,
     researchDepth: r.research_depth || 'standard',
     localAgentUrl: r.local_agent_url || 'http://localhost:3001',
   };
 }
 
 export async function saveAgentSettings(s: AgentSettings): Promise<void> {
+  const cleanKeys = (s.imageKeys || []).slice(0, 10).map((k) => ({
+    id: k.id, provider: k.provider, apiKey: k.apiKey,
+    model: k.model || '', label: k.label || '', enabled: k.enabled !== false,
+  }));
   const { error } = await supabase.from('app_settings').update({
     research_provider: s.researchProvider,
     research_api_key: s.researchApiKey,
     image_provider: s.imageProvider,
     image_api_key: s.imageApiKey,
     image_model: s.imageModel || '',
+    image_keys: cleanKeys as any,
     research_depth: s.researchDepth,
     local_agent_url: s.localAgentUrl,
   } as any).eq('id', 1);

@@ -14,7 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import SocialAccountCard from '@/components/SocialAccountCard';
-import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, testAgentConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, detectProviderFromKey, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption } from '@/lib/socialPosts';
+import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, testAgentConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, detectProviderFromKey, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption, type ImageKeyEntry } from '@/lib/socialPosts';
 import { Search as SearchIcon, Image as ImageIcon, Bot, Loader2, CheckCircle2, XCircle, ExternalLink } from 'lucide-react';
 
 function PasswordInput({
@@ -399,6 +399,7 @@ export default function SettingsPage() {
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>({
     researchProvider: 'auto', researchApiKey: '', imageProvider: 'auto', imageApiKey: '', imageModel: '',
+    imageKeys: [],
     researchDepth: 'standard', localAgentUrl: 'http://localhost:3001',
   });
   const [savingAgent, setSavingAgent] = useState(false);
@@ -958,6 +959,8 @@ export default function SettingsPage() {
                   <SelectItem value="pexels">🎞️ Pexels (real photos, free)</SelectItem>
                   <SelectItem value="google">🍌 Google Gemini (Nano Banana)</SelectItem>
                   <SelectItem value="openai">🎨 OpenAI DALL-E / gpt-image</SelectItem>
+                  <SelectItem value="nvidia">🟢 NVIDIA NIM (FLUX, SDXL, SD3)</SelectItem>
+                  <SelectItem value="xai">⚡ xAI Grok (Grok 2 Image)</SelectItem>
                   <SelectItem value="lovable">✨ Lovable AI (Nano Banana, included)</SelectItem>
                 </SelectContent>
               </Select>
@@ -982,10 +985,12 @@ export default function SettingsPage() {
                     setImageModels([]);
                   }}
                   placeholder={
-                    agentSettings.imageProvider === 'auto' ? 'Optional: Unsplash/Pexels/OpenAI/Google key' :
+                    agentSettings.imageProvider === 'auto' ? 'Optional: paste any key — provider auto-detected' :
                     agentSettings.imageProvider === 'unsplash' ? 'Unsplash Access Key' :
                     agentSettings.imageProvider === 'pexels' ? 'Pexels API Key' :
                     agentSettings.imageProvider === 'google' ? 'Google AI Studio API key (AIza…)' :
+                    agentSettings.imageProvider === 'nvidia' ? 'NVIDIA API key (nvapi-…)' :
+                    agentSettings.imageProvider === 'xai' ? 'xAI API key (xai-…)' :
                     'sk-...'
                   }
                 />
@@ -993,7 +998,7 @@ export default function SettingsPage() {
             </div>
 
             {/* Image model selector — appears after "Show models" succeeds */}
-            {imageModels.length > 0 && (agentSettings.imageProvider === 'google' || agentSettings.imageProvider === 'openai' || agentSettings.imageProvider === 'lovable') && (
+            {imageModels.length > 0 && ['google', 'openai', 'lovable', 'nvidia', 'xai'].includes(agentSettings.imageProvider) && (
               <div className="space-y-2">
                 <Label className="text-xs flex items-center gap-1.5">
                   <ImageIcon className="w-3.5 h-3.5" /> Image model
@@ -1039,6 +1044,8 @@ export default function SettingsPage() {
                   agentSettings.imageProvider === 'unsplash' ? 'https://unsplash.com/oauth/applications' :
                   agentSettings.imageProvider === 'pexels' ? 'https://www.pexels.com/api/' :
                   agentSettings.imageProvider === 'google' ? 'https://aistudio.google.com/app/apikey' :
+                  agentSettings.imageProvider === 'nvidia' ? 'https://build.nvidia.com/explore/discover' :
+                  agentSettings.imageProvider === 'xai' ? 'https://console.x.ai/' :
                   'https://platform.openai.com/api-keys'
                 } target="_blank" rel="noreferrer" className="text-[11px] text-primary hover:underline inline-flex items-center gap-1 ml-auto">
                   Get key <ExternalLink className="w-3 h-3" />
@@ -1046,8 +1053,123 @@ export default function SettingsPage() {
               )}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              In Auto mode the agent picks real photos for news/events and generated images for abstract/conceptual prompts. Use <strong>Google</strong> with your AI Studio key for direct Nano Banana access, or <strong>Lovable AI</strong> for built-in Nano Banana (no key required).
+              In Auto mode the agent picks real photos for news/events and generated images for abstract/conceptual prompts. Use <strong>Google</strong>, <strong>NVIDIA</strong>, or <strong>xAI</strong> with your key, or <strong>Lovable AI</strong> for built-in Nano Banana (no key required).
             </p>
+          </div>
+
+          {/* Multi-key fallback chain editor */}
+          <div className="space-y-2 border-t pt-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <ImageIcon className="w-3.5 h-3.5" /> Image generation fallback chain
+              </Label>
+              <Badge variant="secondary" className="text-[10px]">{agentSettings.imageKeys.length}/10 keys</Badge>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Add up to 10 image-gen API keys (any mix of providers/models). When the agent generates an image, it tries them <strong>in order</strong> — if one is rate-limited or out of quota, it automatically falls back to the next. Lovable AI is always tried last as a safety net.
+            </p>
+            <div className="space-y-2">
+              {agentSettings.imageKeys.map((k, idx) => (
+                <div key={k.id} className="rounded-lg border bg-card p-2.5 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-[10px] font-mono shrink-0">#{idx + 1}</Badge>
+                    <Input
+                      value={k.label || ''}
+                      onChange={(e) => setAgentSettings((s) => ({
+                        ...s,
+                        imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, label: e.target.value } : x),
+                      }))}
+                      placeholder="Label (e.g. Personal Google, Work OpenAI)"
+                      className="h-8 text-xs flex-1"
+                    />
+                    <Switch
+                      checked={k.enabled !== false}
+                      onCheckedChange={(v) => setAgentSettings((s) => ({
+                        ...s,
+                        imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, enabled: v } : x),
+                      }))}
+                    />
+                    <Button
+                      type="button" variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive"
+                      onClick={() => setAgentSettings((s) => ({
+                        ...s,
+                        imageKeys: s.imageKeys.filter((_, i) => i !== idx),
+                      }))}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <Select value={k.provider} onValueChange={(v) => setAgentSettings((s) => ({
+                      ...s,
+                      imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, provider: v, model: '' } : x),
+                    }))}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="lovable">✨ Lovable AI</SelectItem>
+                        <SelectItem value="google">🍌 Google Gemini</SelectItem>
+                        <SelectItem value="openai">🎨 OpenAI</SelectItem>
+                        <SelectItem value="nvidia">🟢 NVIDIA NIM</SelectItem>
+                        <SelectItem value="xai">⚡ xAI Grok</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      value={k.model || ''}
+                      onChange={(e) => setAgentSettings((s) => ({
+                        ...s,
+                        imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, model: e.target.value } : x),
+                      }))}
+                      placeholder={
+                        k.provider === 'google' ? 'gemini-3.1-flash-image-preview' :
+                        k.provider === 'openai' ? 'gpt-image-1' :
+                        k.provider === 'nvidia' ? 'black-forest-labs/flux.1-schnell' :
+                        k.provider === 'xai' ? 'grok-2-image-1212' :
+                        'google/gemini-2.5-flash-image'
+                      }
+                      className="h-8 text-xs font-mono"
+                    />
+                  </div>
+                  {k.provider !== 'lovable' && (
+                    <PasswordInput
+                      value={k.apiKey}
+                      onChange={(v) => setAgentSettings((s) => {
+                        const nextKeys = s.imageKeys.map((x, i) => {
+                          if (i !== idx) return x;
+                          // Auto-detect provider from key prefix
+                          const det = detectProviderFromKey(v);
+                          return { ...x, apiKey: v, provider: det.image || x.provider };
+                        });
+                        return { ...s, imageKeys: nextKeys };
+                      })}
+                      placeholder={
+                        k.provider === 'google' ? 'AIza…' :
+                        k.provider === 'nvidia' ? 'nvapi-…' :
+                        k.provider === 'xai' ? 'xai-…' :
+                        'sk-…'
+                      }
+                    />
+                  )}
+                </div>
+              ))}
+              {agentSettings.imageKeys.length < 10 && (
+                <Button
+                  type="button" variant="outline" size="sm" className="w-full gap-1.5"
+                  onClick={() => setAgentSettings((s) => ({
+                    ...s,
+                    imageKeys: [...s.imageKeys, {
+                      id: crypto.randomUUID(),
+                      provider: 'lovable',
+                      apiKey: '',
+                      model: '',
+                      label: '',
+                      enabled: true,
+                    }],
+                  }))}
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add fallback key ({agentSettings.imageKeys.length}/10)
+                </Button>
+              )}
+            </div>
           </div>
 
           {/* Depth + local URL */}
@@ -1087,6 +1209,9 @@ export default function SettingsPage() {
               {savedAgent?.imageModel && <span className="text-muted-foreground">· {savedAgent.imageModel.split('/').pop()}</span>}
             </Badge>
             <Badge variant="outline" className="text-[11px] font-mono">depth: {savedAgent?.researchDepth || 'standard'}</Badge>
+            {(savedAgent?.imageKeys?.length || 0) > 0 && (
+              <Badge variant="outline" className="text-[11px] font-mono">↪️ {savedAgent.imageKeys.length} fallback{savedAgent.imageKeys.length === 1 ? '' : 's'}</Badge>
+            )}
           </div>
         </CardContent>
       </Card>

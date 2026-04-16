@@ -137,11 +137,43 @@ async function probeImage(provider: string, apiKey: string, model?: string): Pro
       const sample = imageModels.find((mm: any) => /gemini.*image|nano.*banana/i.test(mm.name))?.name?.replace('models/', '');
       return { ok: true, latency: Date.now() - t0, sample: sample ? `${sample} available` : `${imageModels.length} models`, model: sample };
     }
+    if (provider === 'nvidia') {
+      // NVIDIA NIM — chat completions with image modality on FLUX/SD models.
+      const m = model || 'black-forest-labs/flux.1-schnell';
+      const r = await fetch('https://integrate.api.nvidia.com/v1/images/generations', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ model: m, prompt: TINY_IMG_PROMPT, n: 1 }),
+      });
+      const j = await r.json().catch(() => ({} as any));
+      if (!r.ok) {
+        const msg = j?.detail || j?.message || JSON.stringify(j).slice(0, 200);
+        return { ok: false, latency: Date.now() - t0, error: `NVIDIA ${m}: ${r.status} ${msg.slice(0, 180)}`, model: m };
+      }
+      const img = j?.data?.[0]?.b64_json || j?.data?.[0]?.url || j?.artifacts?.[0]?.base64;
+      if (!img) return { ok: false, latency: Date.now() - t0, error: `NVIDIA ${m}: 200 but no image returned`, model: m };
+      return { ok: true, latency: Date.now() - t0, sample: `${m} returned a real image`, model: m };
+    }
+    if (provider === 'xai') {
+      const m = model || 'grok-2-image-1212';
+      const r = await fetch('https://api.x.ai/v1/images/generations', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: m, prompt: TINY_IMG_PROMPT, n: 1, response_format: 'b64_json' }),
+      });
+      const j = await r.json().catch(() => ({} as any));
+      if (!r.ok) {
+        const msg = j?.error?.message || JSON.stringify(j).slice(0, 200);
+        return { ok: false, latency: Date.now() - t0, error: `xAI ${m}: ${r.status} ${msg.slice(0, 180)}`, model: m };
+      }
+      const img = j?.data?.[0]?.b64_json || j?.data?.[0]?.url;
+      if (!img) return { ok: false, latency: Date.now() - t0, error: `xAI ${m}: 200 but no image returned`, model: m };
+      return { ok: true, latency: Date.now() - t0, sample: `${m} returned a real image`, model: m };
+    }
     if (provider === 'lovable') {
       const key = Deno.env.get('LOVABLE_API_KEY');
       if (!key) return { ok: false, latency: Date.now() - t0, error: 'LOVABLE_API_KEY not configured' };
       const m = model || 'google/gemini-2.5-flash-image';
-      // Real generation call — confirm the chosen Nano Banana variant works.
       const r = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
         method: 'POST',
         headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
