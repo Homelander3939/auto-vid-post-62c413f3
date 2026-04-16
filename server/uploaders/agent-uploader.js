@@ -71,8 +71,8 @@ function buildGoal(platform, meta) {
       return (
         `On Instagram (instagram.com), complete the new-post flow: ` +
         `click through the crop / trim screens by clicking Next, ` +
-        `then fill in the caption with: "${title}` +
-        (description ? ` ${description.substring(0, 150)}` : '') +
+        `then fill in the caption with: "` +
+        (description ? `${description.substring(0, 150)}` : title) +
         `". ` +
         `Finally click Share and wait until the success message appears.`
       );
