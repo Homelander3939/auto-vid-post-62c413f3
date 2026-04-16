@@ -8,10 +8,13 @@ import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { useState, useEffect } from 'react';
-import { FolderOpen, Eye, EyeOff, Send, Info, Cloud, Monitor, Plus, Trash2, Star, Pencil, X, Check } from 'lucide-react';
+import { FolderOpen, Eye, EyeOff, Send, Info, Cloud, Monitor, Plus, Trash2, Star, Pencil, X, Check, Wand2 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import SocialAccountCard from '@/components/SocialAccountCard';
+import { getSocialAccounts, getAISettings, saveAISettings, SOCIAL_PLATFORMS, type AISettings } from '@/lib/socialPosts';
 
 function PasswordInput({
   value,
@@ -369,15 +372,35 @@ export default function SettingsPage() {
     queryFn: getPlatformAccounts,
   });
 
+  const { data: socialAccounts = [] } = useQuery({
+    queryKey: ['social_accounts'],
+    queryFn: getSocialAccounts,
+  });
+
+  const { data: savedAi } = useQuery({
+    queryKey: ['ai_settings'],
+    queryFn: getAISettings,
+  });
+
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [saving, setSaving] = useState(false);
+  const [aiSettings, setAiSettings] = useState<AISettings>({ provider: 'lovable', apiKey: '', model: 'google/gemini-3-flash-preview' });
+  const [savingAI, setSavingAI] = useState(false);
 
   useEffect(() => {
     if (savedSettings) setSettings(savedSettings);
   }, [savedSettings]);
 
+  useEffect(() => {
+    if (savedAi) setAiSettings(savedAi);
+  }, [savedAi]);
+
   const refreshAccounts = () => {
     queryClient.invalidateQueries({ queryKey: ['platform_accounts'] });
+  };
+
+  const refreshSocialAccounts = () => {
+    queryClient.invalidateQueries({ queryKey: ['social_accounts'] });
   };
 
   const handleSave = async () => {
@@ -390,6 +413,19 @@ export default function SettingsPage() {
       toast({ title: 'Error saving', description: err.message, variant: 'destructive' });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveAI = async () => {
+    setSavingAI(true);
+    try {
+      await saveAISettings(aiSettings);
+      queryClient.invalidateQueries({ queryKey: ['ai_settings'] });
+      toast({ title: 'AI settings saved' });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    } finally {
+      setSavingAI(false);
     }
   };
 
@@ -505,6 +541,79 @@ export default function SettingsPage() {
           localMode={!isCloud}
         />
       ))}
+
+      {/* Social Post Accounts */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 pt-2">
+          <Wand2 className="w-4 h-4 text-primary" />
+          <h2 className="text-lg font-semibold">Social Post Accounts</h2>
+          <Badge variant="secondary" className="text-[10px]">For text/image posts</Badge>
+        </div>
+        <p className="text-sm text-muted-foreground -mt-2">
+          Configure X, TikTok, and Facebook accounts for the AI-powered post manager. Each account uses its own saved Chrome profile.
+        </p>
+        {SOCIAL_PLATFORMS.map((p) => (
+          <SocialAccountCard
+            key={p}
+            platform={p}
+            accounts={socialAccounts}
+            onRefresh={refreshSocialAccounts}
+            localMode={!isCloud}
+          />
+        ))}
+      </div>
+
+      {/* AI Provider */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Wand2 className="w-4 h-4 text-primary" />
+            AI Post Generator
+          </CardTitle>
+          <CardDescription>
+            Powers the AI Post Generator. Default uses Lovable AI Gateway (no key needed). Add your own provider key to override.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label className="text-xs">Provider</Label>
+              <Select value={aiSettings.provider} onValueChange={(v) => setAiSettings((s) => ({ ...s, provider: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="lovable">Lovable AI (default)</SelectItem>
+                  <SelectItem value="openai">OpenAI</SelectItem>
+                  <SelectItem value="openrouter">OpenRouter</SelectItem>
+                  <SelectItem value="anthropic">Anthropic</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Model</Label>
+              <Input
+                value={aiSettings.model}
+                onChange={(e) => setAiSettings((s) => ({ ...s, model: e.target.value }))}
+                placeholder="google/gemini-3-flash-preview"
+              />
+            </div>
+          </div>
+          {aiSettings.provider !== 'lovable' && (
+            <div className="space-y-2">
+              <Label className="text-xs">API Key</Label>
+              <PasswordInput
+                value={aiSettings.apiKey}
+                onChange={(v) => setAiSettings((s) => ({ ...s, apiKey: v }))}
+                placeholder="sk-..."
+              />
+            </div>
+          )}
+          <Button size="sm" onClick={handleSaveAI} disabled={savingAI} className="gap-1.5">
+            <Check className="w-3.5 h-3.5" />
+            {savingAI ? 'Saving…' : 'Save AI Settings'}
+          </Button>
+        </CardContent>
+      </Card>
+
 
       {/* Telegram */}
       <Card>

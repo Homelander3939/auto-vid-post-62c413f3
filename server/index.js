@@ -1080,10 +1080,12 @@ async function processPendingCommands() {
 let cronJob = null;
 let commandPollInterval = null;
 let uploadPollInterval = null;
+let socialPollInterval = null;
 function setupCron() {
   if (cronJob) { cronJob.stop(); cronJob = null; }
   if (commandPollInterval) { clearInterval(commandPollInterval); commandPollInterval = null; }
   if (uploadPollInterval) { clearInterval(uploadPollInterval); uploadPollInterval = null; }
+  if (socialPollInterval) { clearInterval(socialPollInterval); socialPollInterval = null; }
 
   // Fast poll: check pending uploads every 5 seconds for near-immediate browser start.
   uploadPollInterval = setInterval(async () => {
@@ -1098,6 +1100,16 @@ function setupCron() {
   // Kick once immediately on startup/reload so new jobs don't wait for first interval tick.
   triggerPendingUploadProcessing(5).catch((e) => console.error('[Uploads] Initial trigger failed:', e.message));
 
+  // Fast poll: due social posts every 10s
+  socialPollInterval = setInterval(async () => {
+    try {
+      await pollDueSocialPosts(supabase, async (msg) => {
+        const settings = await getSettings().catch(() => null);
+        if (settings) await notifyTelegram(settings, msg);
+      });
+    } catch (e) { console.error('[SocialPosts] Poll error:', e.message); }
+  }, 10000);
+
   cronJob = cron.schedule('* * * * *', async () => {
     try {
       await fixStaleJobs();
@@ -1107,7 +1119,7 @@ function setupCron() {
       console.error('[Cron] Error:', e.message);
     }
   });
-  console.log('[Cron] Active: uploads every 5s, schedules every minute, commands every 15s');
+  console.log('[Cron] Active: uploads every 5s, social posts every 10s, schedules every minute, commands every 15s');
 }
 
 app.post('/api/refresh-cron', (req, res) => {
