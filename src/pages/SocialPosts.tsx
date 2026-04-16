@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { Send, Calendar, Trash2, RefreshCw, Image as ImageIcon, X, Clock, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { Send, Calendar, Trash2, RefreshCw, Image as ImageIcon, X, Clock, CheckCircle2, AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import {
   getSocialAccounts,
   listSocialPosts,
