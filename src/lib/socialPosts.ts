@@ -1,8 +1,8 @@
 // Social Posts storage layer — multi-account, AI-powered post manager.
 import { supabase } from '@/integrations/supabase/client';
 
-export type SocialPlatform = 'x' | 'tiktok' | 'facebook';
-export const SOCIAL_PLATFORMS: SocialPlatform[] = ['x', 'tiktok', 'facebook'];
+export type SocialPlatform = 'x' | 'linkedin' | 'facebook';
+export const SOCIAL_PLATFORMS: SocialPlatform[] = ['x', 'linkedin', 'facebook'];
 
 export interface SocialAccount {
   id: string;
