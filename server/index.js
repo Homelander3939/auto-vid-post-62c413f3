@@ -182,6 +182,22 @@ async function getAllPlatformAccounts() {
   return data || [];
 }
 
+async function getReadyPlatformsForSelections(settings, requestedPlatforms = [], selections = {}) {
+  const selectedAccounts = await getAccountsByIds(Object.values(selections || {}));
+  const selectedAccountsById = new Map(selectedAccounts.map((account) => [account.id, account]));
+
+  return (Array.isArray(requestedPlatforms) ? requestedPlatforms : []).filter((platform) => {
+    const selectedAccountId = selections?.[platform];
+    const selectedAccount = selectedAccountId ? selectedAccountsById.get(selectedAccountId) : null;
+    if (selectedAccount) {
+      return Boolean(selectedAccount.enabled && selectedAccount.email && selectedAccount.password);
+    }
+
+    const config = settings?.[platform];
+    return Boolean(config?.enabled && config?.email && config?.password);
+  });
+}
+
 async function loadJobAccountContext(job) {
   const selections = getJobAccountSelections(job.id);
   const accountIds = new Set(Object.values(selections || {}).filter(Boolean));
@@ -695,7 +711,9 @@ async function processScheduledUploads() {
       }
 
       const requestedPlatforms = Array.isArray(item.target_platforms) ? item.target_platforms : [];
-      const readyPlatforms = getReadyPlatforms(settings, requestedPlatforms);
+      const scheduledSelections = getScheduledAccountSelections(item.id);
+      const readyPlatforms = await getReadyPlatformsForSelections(settings, requestedPlatforms, scheduledSelections);
+      const primaryAccountId = readyPlatforms.map((platform) => scheduledSelections[platform]).find(Boolean) || item.account_id || null;
 
       if (readyPlatforms.length === 0) {
         console.log('[Scheduler] No enabled platforms with credentials for scheduled upload');
@@ -714,6 +732,7 @@ async function processScheduledUploads() {
           description: itemDescription || '',
           tags: itemTags || [],
           target_platforms: readyPlatforms,
+          account_id: primaryAccountId,
           status: 'pending',
           platform_results: platformResults,
         })
