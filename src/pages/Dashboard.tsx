@@ -9,7 +9,7 @@ import {
   type VideoMetadata,
   type AppSettings,
 } from '@/lib/storage';
-import { cleanVideoTitle, matchVideoTextFiles, INTENSITY_OPTIONS } from '@/lib/titleUtils';
+import { cleanVideoTitle, matchVideoTextFiles, sortFilesBySeriesNumber, INTENSITY_OPTIONS } from '@/lib/titleUtils';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -103,9 +103,10 @@ export default function Dashboard() {
       }
       toast({ title: `Video selected: ${file.name}` });
     } else {
-      // Multi-file mode: create batch entries, wait for text files
+      // Multi-file mode: sort by series number (lowest first), create batch entries
       setVideoFile(null);
-      const entries: BatchEntry[] = files.map(f => ({
+      const sorted = sortFilesBySeriesNumber(files);
+      const entries: BatchEntry[] = sorted.map(f => ({
         videoFile: f,
         title: cleanVideoTitle(f.name),
         description: '',
