@@ -83,6 +83,9 @@ export default function Dashboard() {
   const [batchEntries, setBatchEntries] = useState<BatchEntry[]>([]);
   const [intensityMinutes, setIntensityMinutes] = useState(60);
 
+  // Account selection per platform
+  const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({});
+
   const isMultiFile = batchEntries.length > 1;
 
   const { data: settings } = useQuery({
@@ -90,7 +93,9 @@ export default function Dashboard() {
     queryFn: getSettings,
   });
 
-  const platformStatuses = getPlatformStatuses(settings);
+  const { accountsByPlatform, getDefaultAccountId, needsPicker } = useAccountsForPlatforms(['youtube', 'tiktok', 'instagram']);
+
+  const platformStatuses = getPlatformStatuses(settings, accountsByPlatform);
 
   useEffect(() => {
     if (!settings) return;
