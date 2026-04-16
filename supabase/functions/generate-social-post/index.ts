@@ -81,43 +81,59 @@ Always research the topic mentally and write in human, conversational language â
 Integrate hashtags naturally into the description if appropriate, AND also return them in the dedicated hashtags array.
 Return JSON with exactly: { "description": string, "hashtags": string[] (no # symbol), "sources": [{title?, url?}] }.`;
 
-    const textResp = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: textModel,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: body.prompt },
-        ],
-        tools: [{
-          type: 'function',
-          function: {
-            name: 'compose_post',
-            description: 'Return the composed post.',
-            parameters: {
-              type: 'object',
-              properties: {
-                description: { type: 'string' },
-                hashtags: { type: 'array', items: { type: 'string' } },
-                sources: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: { title: { type: 'string' }, url: { type: 'string' } },
+    let textResp: Response;
+    if (googleMode) {
+      // Google Generative Language native API
+      const modelName = textModel.replace(/^models\//, '');
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      textResp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: 'user', parts: [{ text: body.prompt }] }],
+          generationConfig: { responseMimeType: 'application/json' },
+        }),
+      });
+    } else {
+      textResp = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: textModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: body.prompt },
+          ],
+          tools: [{
+            type: 'function',
+            function: {
+              name: 'compose_post',
+              description: 'Return the composed post.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  description: { type: 'string' },
+                  hashtags: { type: 'array', items: { type: 'string' } },
+                  sources: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: { title: { type: 'string' }, url: { type: 'string' } },
+                    },
                   },
                 },
+                required: ['description', 'hashtags'],
               },
-              required: ['description', 'hashtags'],
             },
-          },
-        }],
-        tool_choice: { type: 'function', function: { name: 'compose_post' } },
-      }),
-    });
+          }],
+          tool_choice: { type: 'function', function: { name: 'compose_post' } },
+        }),
+      });
+    }
 
     if (!textResp.ok) {
       const t = await textResp.text();
