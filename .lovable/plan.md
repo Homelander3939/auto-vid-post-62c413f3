@@ -1,86 +1,104 @@
 
 
-## Plan: Multi-Account Support Per Platform
+## Plan: AI-Powered Social Media Post Manager
 
-### What Changes
+Adds a new feature alongside the existing video upload system: scheduling and publishing image/text posts to **X (Twitter)**, **TikTok**, and **Facebook**, with optional AI generation of the post content (description + media research).
 
-Currently each platform (YouTube, TikTok, Instagram) supports exactly one account stored in the `app_settings` table. This plan adds support for multiple accounts per platform, with account selection during upload/scheduling.
+### 1. New Settings Section: Social Post Accounts
 
-### Database Changes
+Mirrors the existing multi-account pattern in `SettingsPage.tsx`:
+- New card group: "Social Post Accounts" with three sub-cards (X, TikTok, Facebook)
+- Each platform supports multiple accounts (label, email, password, default, enabled)
+- Each account has the same **"Prepare Profile"** button — opens a persistent local Chrome profile so the user logs in once and the saved session is reused
+- New AI section: "Post Generator AI" — input for **LLM provider** (OpenAI / OpenRouter / Anthropic / Lovable AI default) and an **API key** field stored in `app_settings`
 
-**New table: `platform_accounts`**
+### 2. Database Changes
 
-| Column | Type | Notes |
-|--------|------|-------|
-| id | uuid (PK) | Auto-generated |
-| platform | text | `youtube`, `tiktok`, `instagram` |
-| label | text | User-friendly name (e.g. "Main Channel", "Gaming") |
-| email | text | Login email |
-| password | text | Login password |
-| enabled | boolean | Default true |
-| is_default | boolean | Default false — one default per platform |
-| created_at | timestamptz | |
+| Table | Purpose |
+|-------|---------|
+| `social_post_accounts` | Same shape as `platform_accounts` but `platform` ∈ `x`, `tiktok`, `facebook` |
+| `social_posts` | Manual/AI posts: `id, description, image_path, hashtags[], target_platforms[], status, scheduled_at, account_selections jsonb, ai_prompt, created_at, completed_at, platform_results jsonb` |
+| `social_post_schedules` | Recurring schedules (folder/AI-driven), same shape as `schedule_config` but for posts |
+| `app_settings` | Add `ai_provider text`, `ai_api_key text`, `ai_model text` |
 
-RLS: public read/insert/update/delete (matches existing app_settings pattern).
+Storage bucket `social-media` (public) for uploaded/AI-generated images.
 
-**Modify `upload_jobs`**: Add `account_id uuid` nullable column — links job to specific account.
+### 3. New UI Pages / Components
 
-**Modify `scheduled_uploads`**: Add `account_id uuid` nullable column.
+- **`src/pages/SocialPosts.tsx`** — new nav entry "Social Posts" with two tabs:
+  - **Compose**: description textarea, image upload, hashtag input, platform/account picker (reuses `AccountPicker`), "Schedule" or "Post Now" buttons, plus an **"AI Generate"** panel
+  - **Queue**: list of pending/completed posts (mirrors `UploadQueue`)
+- **`src/components/AIPostComposer.tsx`** — prompt box, "Generate" button, preview of returned description + suggested image, "Use this" / "Regenerate" actions
+- **`src/components/SocialPostScheduler.tsx`** — recurring schedule (interval/cron) for AI-driven daily posts
+- Reuse existing `AccountPicker`, `localBrowserProfiles.ts` helpers
 
-The existing `app_settings` platform columns (youtube_email, etc.) will remain for backward compatibility but the system will prefer `platform_accounts` when present.
+### 4. AI Generation Edge Function
 
-### Migration of Existing Data
+`supabase/functions/generate-social-post/index.ts`:
+- Input: `{ prompt, platforms[], accountSelections, includeImage }`
+- Uses configured LLM (defaults to **Lovable AI Gateway** with `google/gemini-3-flash-preview` if no custom key)
+- Steps:
+  1. Web research via existing **Firecrawl** connector OR Lovable AI web-search-style prompt
+  2. Generate platform-tuned description + integrated hashtags (X ≤ 280 chars, TT/FB longer)
+  3. If `includeImage`: call `google/gemini-3.1-flash-image-preview` to generate an image, upload to `social-media` bucket, return public URL
+- Returns `{ description, hashtags, imageUrl, sources[] }`
+- If user provided their own LLM API key in settings, route to that provider instead
 
-An SQL migration will copy any existing non-empty credentials from `app_settings` into `platform_accounts` as the default account for each platform, so nothing is lost.
+### 5. Local Worker — Posting Uploaders
 
-### Settings Page (`src/pages/SettingsPage.tsx`)
+New files in `server/uploaders/`:
+- `x.js` — opens persistent Chrome profile, navigates to x.com compose, attaches image, types description, clicks Post
+- `tiktok-post.js` — TikTok photo post flow (Studio "Upload" → Photo mode)
+- `facebook.js` — facebook.com new post flow with image attachment
 
-Replace the single email/password card per platform with a multi-account card:
-- Each platform card shows a list of saved accounts (label, email, default badge)
-- "Add Account" button opens inline fields for label, email, password
-- Each account row has edit/delete actions and a "Set Default" toggle
-- The enabled/disabled toggle moves to the account level
-- Clean, compact design — accounts shown as a list with minimal chrome
+All three:
+- Use `resolveUserDataDir(accountId, browserProfileId)` from existing browser-profile module — exact same shared-profile logic as YouTube/TikTok video uploaders
+- Read credentials via `loadJobAccountContext()` so the per-platform account picker works identically
+- Telegram notifications follow the existing strategy (only obstacles + final summary)
 
-### Dashboard (`src/pages/Dashboard.tsx`)
+New `server/socialPostProcessor.js`:
+- Polls `social_posts` table for `pending` + due `scheduled_at`
+- Downloads image from Supabase Storage to `/tmp`
+- Dispatches to the right uploader per platform
+- Updates `platform_results` with URL or error
 
-- When a selected platform has multiple enabled accounts, show an account picker dropdown below the platform buttons
-- Default account is pre-selected
-- Single account = no picker shown (seamless, no UI clutter)
-- Account selection stored per-platform in state, passed to `createUploadJob`
+New endpoints in `server/index.js`:
+- `POST /api/social-posts/process/:id` — immediate trigger (5s polling like video jobs)
+- Reuses existing `/api/browser-profiles/open` for "Prepare Profile" on social accounts (just pass platform `x` / `facebook` / `tiktok-post`)
 
-### Campaign Scheduler (`src/components/CampaignScheduler.tsx`)
+### 6. Storage Layer (`src/lib/storage.ts`)
 
-- Same account picker pattern as Dashboard when multiple accounts exist
+New functions:
+- `getSocialAccounts() / saveSocialAccount() / deleteSocialAccount()`
+- `createSocialPost({ description, imageFile, hashtags, platforms, accountSelections, scheduledAt? })`
+- `listSocialPosts() / deleteSocialPost()`
+- `generatePostWithAI(prompt, options)` — invokes the edge function
 
-### Storage Layer (`src/lib/storage.ts`)
+Image upload helper: uploads to `social-media` bucket, stores public path on the post row.
 
-- New CRUD functions: `getPlatformAccounts()`, `savePlatformAccount()`, `deletePlatformAccount()`
-- `createUploadJob` and `createScheduledUpload` accept optional `accountId` parameter
-- `AppSettings` interface extended but kept backward-compatible
-- `getPlatformStatuses` updated to check `platform_accounts` table
+### 7. Files Modified / Created
 
-### Server (`server/index.js`)
+**Created**
+- Migration SQL (tables + bucket + RLS)
+- `src/pages/SocialPosts.tsx`
+- `src/components/AIPostComposer.tsx`
+- `src/components/SocialPostScheduler.tsx`
+- `src/components/SocialAccountCard.tsx` (reuses pattern from `PlatformAccountCard`)
+- `supabase/functions/generate-social-post/index.ts`
+- `server/uploaders/x.js`, `server/uploaders/tiktok-post.js`, `server/uploaders/facebook.js`
+- `server/socialPostProcessor.js`
 
-- `getSettings()` updated to also fetch `platform_accounts`
-- `processJob()` reads `account_id` from the job row, looks up the matching account credentials
-- Falls back to `app_settings` credentials if no `account_id` (backward compat)
-- Uploaders receive the resolved credentials as before — no changes to youtube.js, tiktok.js, instagram.js
-
-### Files Modified
-
-1. **Migration SQL** — Create `platform_accounts` table, add `account_id` to `upload_jobs` and `scheduled_uploads`, migrate existing data
-2. **`src/lib/storage.ts`** — New account CRUD, updated job creation
-3. **`src/pages/SettingsPage.tsx`** — Multi-account UI per platform
-4. **`src/pages/Dashboard.tsx`** — Account picker when multiple accounts
-5. **`src/components/CampaignScheduler.tsx`** — Account picker
-6. **`server/index.js`** — Read account_id from jobs, resolve credentials
+**Modified**
+- `src/pages/SettingsPage.tsx` — add Social Post Accounts section + AI provider config
+- `src/lib/storage.ts` — new CRUD + AI invoke
+- `src/components/AppLayout.tsx` — add "Social Posts" nav link
+- `src/App.tsx` — register new route
+- `server/index.js` — register social-post processor + endpoints, extend browser-profile open to support new platforms
 
 ### What Does NOT Change
 
-- Upload logic in youtube.js, tiktok.js, instagram.js — unchanged
-- Telegram notifications — unchanged
-- Schedule configs — unchanged
-- Folder watcher — unchanged
-- All existing single-account setups continue working without any user action
+- Video upload flow, YouTube/TikTok/Instagram video uploaders — untouched
+- Existing browser profile system — extended, not replaced (same shared-profile sessions)
+- Telegram notification rules — same (errors + final summary only)
+- Scheduling timezone (Tbilisi GET) — same
 
