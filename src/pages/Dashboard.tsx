@@ -103,8 +103,16 @@ export default function Dashboard() {
       .filter(([, s]) => s.ready)
       .map(([name]) => name);
     setSelectedPlatforms(ready);
+    // Initialize default account selections
+    const defaults: Record<string, string> = {};
+    for (const p of ready) {
+      const defId = getDefaultAccountId(p);
+      if (defId) defaults[p] = defId;
+    }
+    setSelectedAccounts((prev) => ({ ...defaults, ...prev }));
   }, [settings?.youtube.enabled, settings?.tiktok.enabled, settings?.instagram.enabled,
-      settings?.youtube.email, settings?.tiktok.email, settings?.instagram.email]);
+      settings?.youtube.email, settings?.tiktok.email, settings?.instagram.email,
+      JSON.stringify(accountsByPlatform)]);
 
   const handleVideoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
