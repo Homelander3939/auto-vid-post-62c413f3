@@ -224,26 +224,45 @@ async function findPexelsImage(key: string, query: string): Promise<{ url: strin
   } catch { return null; }
 }
 
-async function generateAIImage(provider: string, key: string, prompt: string): Promise<string | null> {
+async function generateAIImage(provider: string, key: string, prompt: string, model?: string): Promise<string | null> {
   // Returns a data URL or null
   try {
     if (provider === 'openai' && key) {
       const r = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gpt-image-1', prompt, size: '1024x1024', n: 1 }),
+        body: JSON.stringify({ model: model || 'gpt-image-1', prompt, size: '1024x1024', n: 1 }),
       });
       if (!r.ok) return null;
       const d = await r.json();
       const b64 = d?.data?.[0]?.b64_json;
       return b64 ? `data:image/png;base64,${b64}` : (d?.data?.[0]?.url || null);
     }
-    // Default: Lovable AI Gateway (Gemini image)
+    if (provider === 'google' && key) {
+      // Google Generative Language API — Gemini image (Nano Banana family)
+      const m = (model || 'gemini-2.5-flash-image').replace(/^models\//, '');
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(key)}`;
+      const r = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: `Vibrant, modern, photographic, no text overlays. Square 1:1. ${prompt.slice(0, 500)}` }] }],
+          generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+        }),
+      });
+      if (!r.ok) return null;
+      const d = await r.json();
+      const parts = d?.candidates?.[0]?.content?.parts || [];
+      const inline = parts.find((p: any) => p?.inlineData?.data || p?.inline_data?.data);
+      const data = inline?.inlineData?.data || inline?.inline_data?.data;
+      const mime = inline?.inlineData?.mimeType || inline?.inline_data?.mime_type || 'image/png';
+      return data ? `data:${mime};base64,${data}` : null;
+    }
+    // Default: Lovable AI Gateway (Gemini image — Nano Banana, included)
     const lk = Deno.env.get('LOVABLE_API_KEY');
     if (!lk) return null;
     const r = await fetch(LOVABLE_GATEWAY, {
       method: 'POST', headers: { Authorization: `Bearer ${lk}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'google/gemini-2.5-flash-image',
+        model: model || 'google/gemini-2.5-flash-image',
         messages: [{ role: 'user', content: `Vibrant, modern, photographic, no text overlays. Square 1:1. ${prompt.slice(0, 500)}` }],
         modalities: ['image', 'text'],
       }),
