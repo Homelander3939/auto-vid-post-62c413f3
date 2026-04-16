@@ -433,9 +433,10 @@ export default function SettingsPage() {
       const provider = agentSettings.imageProvider === 'auto'
         ? (agentSettings.imageApiKey ? 'unsplash' : 'lovable')
         : agentSettings.imageProvider;
-      const r = await testAgentConnection('image', provider, agentSettings.imageApiKey);
+      // Pass the chosen image model so the backend really invokes it (not a generic probe).
+      const r = await testAgentConnection('image', provider, agentSettings.imageApiKey, undefined, agentSettings.imageModel);
       setImageTest(r);
-      if (r.ok) toast({ title: '✅ Image provider connected', description: `${provider} · ${r.latency}ms${r.sample ? ` · ${r.sample.slice(0, 60)}` : ''}` });
+      if (r.ok) toast({ title: '✅ Image provider connected', description: `${provider}${r.model ? ` · ${r.model.split('/').pop()}` : ''} · ${r.latency}ms${r.sample ? ` · ${r.sample.slice(0, 80)}` : ''}` });
       else toast({ title: 'Image test failed', description: r.error, variant: 'destructive' });
     } catch (e: any) {
       setImageTest({ ok: false, error: e.message });
@@ -454,7 +455,9 @@ export default function SettingsPage() {
       } else {
         setImageModels(models);
         const recommended = models.find((m) => m.recommended) || models[0];
-        if (recommended && !imageModel) setImageModel(recommended.id);
+        if (recommended && !agentSettings.imageModel) {
+          setAgentSettings((s) => ({ ...s, imageModel: recommended.id }));
+        }
         toast({ title: '✅ Models loaded', description: `${models.length} image model${models.length === 1 ? '' : 's'} available` });
       }
     } catch (e: any) {
@@ -961,7 +964,7 @@ export default function SettingsPage() {
                 <Label className="text-xs flex items-center gap-1.5">
                   <ImageIcon className="w-3.5 h-3.5" /> Image model
                 </Label>
-                <Select value={imageModel} onValueChange={setImageModel}>
+                <Select value={agentSettings.imageModel} onValueChange={(v) => { setAgentSettings((s) => ({ ...s, imageModel: v })); setImageTest(null); }}>
                   <SelectTrigger><SelectValue placeholder="Pick a model" /></SelectTrigger>
                   <SelectContent>
                     {imageModels.map((m) => (
