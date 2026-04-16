@@ -522,7 +522,7 @@ Deno.serve(async (req) => {
           const stepId = `search-${i}`;
           send('step', { id: stepId, emoji: '🔎', label: `Searching: "${q}"`, status: 'active' });
           try {
-            const { sources, usedProvider } = await runSearch({ provider: researchProvider, key: researchKey, localUrl, query: q, count: 5 });
+            const { sources, usedProvider } = await runSearch({ provider: researchProvider, key: researchKey, supabase, query: q, count: 5 });
             send('tool', { kind: 'research', name: usedProvider, detail: q });
             const fresh = sources.filter((src) => { if (!src.url || seen.has(src.url)) return false; seen.add(src.url); return true; });
             allSources.push(...fresh);
@@ -573,7 +573,7 @@ Deno.serve(async (req) => {
               const stepId = `search-followup`;
               send('step', { id: stepId, emoji: '🔎', label: `Follow-up search: "${decision.followUpQuery}"`, status: 'active' });
               try {
-                const { sources, usedProvider } = await runSearch({ provider: researchProvider, key: researchKey, localUrl, query: decision.followUpQuery, count: 4 });
+                const { sources, usedProvider } = await runSearch({ provider: researchProvider, key: researchKey, supabase, query: decision.followUpQuery, count: 4 });
                 send('tool', { kind: 'research', name: usedProvider, detail: decision.followUpQuery });
                 const fresh = sources.filter((src) => { if (!src.url || seen.has(src.url)) return false; seen.add(src.url); return true; });
                 enrichedSources.push(...fresh);
@@ -600,20 +600,26 @@ Deno.serve(async (req) => {
           let credit = '';
 
           // Decide actual source based on strategy + provider config
+          const aiProvider = imageProvider === 'openai' ? 'openai'
+            : imageProvider === 'google' ? 'google'
+            : 'lovable';
+          const aiName = aiProvider === 'openai' ? 'openai-dalle'
+            : aiProvider === 'google' ? 'google-nano-banana'
+            : 'lovable-ai';
+          const aiKey = (aiProvider === 'openai' || aiProvider === 'google') ? imageKey : '';
+
           if (strategy === 'real_photo') {
             const tryUnsplash = imageProvider === 'unsplash' || (imageProvider === 'auto' && imageKey);
             const tryPexels = imageProvider === 'pexels';
             if (tryUnsplash && imageKey) { const r = await findUnsplashImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; send('tool', { kind: 'image', name: 'unsplash', detail: query }); } }
             if (!raw && tryPexels && imageKey) { const r = await findPexelsImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; send('tool', { kind: 'image', name: 'pexels', detail: query }); } }
             if (!raw) {
-              const useOpenAI = imageProvider === 'openai';
-              raw = await generateAIImage(useOpenAI ? 'openai' : 'lovable', useOpenAI ? imageKey : '', query);
-              if (raw) send('tool', { kind: 'image', name: useOpenAI ? 'openai-dalle' : 'lovable-ai', detail: query });
+              raw = await generateAIImage(aiProvider, aiKey, query);
+              if (raw) send('tool', { kind: 'image', name: aiName, detail: query });
             }
           } else {
-            const useOpenAI = imageProvider === 'openai';
-            raw = await generateAIImage(useOpenAI ? 'openai' : 'lovable', useOpenAI ? imageKey : '', query);
-            if (raw) send('tool', { kind: 'image', name: useOpenAI ? 'openai-dalle' : 'lovable-ai', detail: query });
+            raw = await generateAIImage(aiProvider, aiKey, query);
+            if (raw) send('tool', { kind: 'image', name: aiName, detail: query });
           }
 
           if (!raw) { send('step', { id: 'image-plan', emoji: '⚠️', label: 'No image found/generated', status: 'error' }); return { url: null, path: null, strategy }; }
