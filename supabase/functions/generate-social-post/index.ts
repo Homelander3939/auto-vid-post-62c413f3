@@ -1,5 +1,5 @@
-// Generate AI-powered social media post content with per-platform variants.
-// Streams progress steps via SSE so the UI can show what the AI is doing in real time.
+// AI agent that researches a topic, finds/generates an image, and writes per-platform posts.
+// Streams every reasoning + tool step via SSE so the UI can show a true agentic timeline.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.0';
 
 const corsHeaders = {
@@ -22,89 +22,252 @@ const PLATFORM_RULES: Record<string, string> = {
   tiktok: 'TikTok photo post: 80-180 chars. Casual, Gen-Z friendly, hook in first line. 4-8 hashtags integrated naturally including 1-2 niche + 1-2 broad trending tags.',
 };
 
-function platformGuide(platforms: string[]): string {
-  return platforms.map((p) => `- ${PLATFORM_RULES[p] || p}`).join('\n');
-}
-
-function buildSystemPrompt(platforms: string[]): string {
-  return `You are a senior social-media manager who writes posts that real humans actually engage with.
-
-You will write a SEPARATE, fully-tailored post variant for EACH platform listed below. Do not just copy/paste — each variant must respect that platform's culture, length, tone, and hashtag norms.
-
-PER-PLATFORM RULES:
-${platformGuide(platforms)}
-
-GLOBAL RULES:
-- Sound like a real person, not a brand bot. No "in today's fast-paced world", no "unlock the power of", no "game-changer".
-- Lead with a hook — curiosity, contrast, a question, a bold claim, or a stat.
-- Use specific details over vague claims. Numbers, names, concrete examples > buzzwords.
-- Active voice. Short sentences mixed with longer ones. Cut filler.
-- Hashtags must be lowercased single words or short phrases (no spaces, no #).
-- For each platform, return BOTH a "description" (the post text) AND a "hashtags" array.
-- ALSO research the topic from your knowledge and return up to 6 plausible web sources you'd cite if asked (real publications/orgs/sites — title + url). These help the user fact-check; they will NOT be included in the post.
-
-Return your answer by calling the compose_post tool exactly once.`;
-}
-
-function toolSchema(platforms: string[]) {
-  const variantProps: Record<string, any> = {};
-  for (const p of platforms) {
-    variantProps[p] = {
-      type: 'object',
-      properties: {
-        description: { type: 'string', description: `Tailored ${p} post text` },
-        hashtags: { type: 'array', items: { type: 'string' }, description: 'Hashtags without # symbol' },
-      },
-      required: ['description', 'hashtags'],
-    };
-  }
-  return {
-    type: 'object',
-    properties: {
-      variants: {
-        type: 'object',
-        properties: variantProps,
-        required: platforms,
-        description: 'One tailored post variant per platform',
-      },
-      sources: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            title: { type: 'string' },
-            url: { type: 'string' },
-            note: { type: 'string', description: 'Why this source is relevant (1 short sentence)' },
-          },
-          required: ['title', 'url'],
-        },
-      },
-    },
-    required: ['variants', 'sources'],
-  };
-}
-
 type Variant = { description: string; hashtags: string[] };
 type Variants = Record<string, Variant>;
-type Source = { title: string; url: string; note?: string };
+type Source = { title: string; url: string; note?: string; snippet?: string; favicon?: string; publishedAt?: string };
 
-async function callTextAI(opts: {
-  endpoint: string;
-  apiKey: string;
-  model: string;
-  systemPrompt: string;
-  userPrompt: string;
-  schema: any;
-  googleMode: boolean;
-}): Promise<{ variants: Variants; sources: Source[] }> {
-  const { endpoint, apiKey, model, systemPrompt, userPrompt, schema, googleMode } = opts;
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
 
+function sseEvent(event: string, data: any): Uint8Array {
+  return new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+function faviconFor(url: string): string {
+  try {
+    const u = new URL(url);
+    return `https://www.google.com/s2/favicons?sz=32&domain=${u.hostname}`;
+  } catch { return ''; }
+}
+
+function hostnameOf(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+}
+
+function trimSnippet(s: string, n = 280): string {
+  if (!s) return '';
+  const t = s.replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n) + '…' : t;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Web search providers
+// ─────────────────────────────────────────────────────────────
+
+async function searchBrave(apiKey: string, query: string, count = 6): Promise<Source[]> {
+  const r = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}&freshness=pw`, {
+    headers: { 'X-Subscription-Token': apiKey, Accept: 'application/json' },
+  });
+  if (!r.ok) throw new Error(`Brave ${r.status}: ${await r.text()}`);
+  const data = await r.json();
+  const results = data?.web?.results || [];
+  return results.slice(0, count).map((x: any) => ({
+    title: x.title, url: x.url, snippet: trimSnippet(x.description || ''),
+    favicon: faviconFor(x.url), publishedAt: x.age || x.page_age,
+  }));
+}
+
+async function searchTavily(apiKey: string, query: string, count = 6): Promise<Source[]> {
+  const r = await fetch('https://api.tavily.com/search', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey, query, max_results: count, search_depth: 'advanced', include_answer: false, days: 7 }),
+  });
+  if (!r.ok) throw new Error(`Tavily ${r.status}: ${await r.text()}`);
+  const data = await r.json();
+  return (data?.results || []).slice(0, count).map((x: any) => ({
+    title: x.title, url: x.url, snippet: trimSnippet(x.content || ''),
+    favicon: faviconFor(x.url), publishedAt: x.published_date,
+  }));
+}
+
+async function searchSerper(apiKey: string, query: string, count = 6): Promise<Source[]> {
+  const r = await fetch('https://google.serper.dev/search', {
+    method: 'POST', headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q: query, num: count, tbs: 'qdr:w' }),
+  });
+  if (!r.ok) throw new Error(`Serper ${r.status}: ${await r.text()}`);
+  const data = await r.json();
+  return (data?.organic || []).slice(0, count).map((x: any) => ({
+    title: x.title, url: x.link, snippet: trimSnippet(x.snippet || ''),
+    favicon: faviconFor(x.link), publishedAt: x.date,
+  }));
+}
+
+async function searchFirecrawl(apiKey: string, query: string, count = 6): Promise<Source[]> {
+  const r = await fetch('https://api.firecrawl.dev/v2/search', {
+    method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, limit: count, tbs: 'qdr:w' }),
+  });
+  if (!r.ok) throw new Error(`Firecrawl ${r.status}: ${await r.text()}`);
+  const data = await r.json();
+  const list = data?.data || data?.web || [];
+  return list.slice(0, count).map((x: any) => ({
+    title: x.title, url: x.url, snippet: trimSnippet(x.description || x.markdown || ''),
+    favicon: faviconFor(x.url),
+  }));
+}
+
+// Local browser fallback (DuckDuckGo HTML → Google scrape) via the user's local server
+async function searchLocal(localUrl: string, query: string, count = 6): Promise<Source[]> {
+  const r = await fetch(`${localUrl.replace(/\/$/, '')}/api/research/search`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, count }),
+  });
+  if (!r.ok) throw new Error(`Local search ${r.status}: ${await r.text()}`);
+  const data = await r.json();
+  return (data?.results || []).slice(0, count).map((x: any) => ({
+    title: x.title, url: x.url, snippet: trimSnippet(x.snippet || ''),
+    favicon: faviconFor(x.url),
+  }));
+}
+
+async function runSearch(opts: {
+  provider: string; key: string; localUrl: string; query: string; count?: number;
+}): Promise<{ sources: Source[]; usedProvider: string }> {
+  const { provider, key, localUrl, query, count = 6 } = opts;
+  const order: string[] = [];
+  if (provider && provider !== 'auto' && provider !== 'local') order.push(provider);
+  // Always try local fallback last
+  order.push('local');
+
+  let lastErr: any = null;
+  for (const p of order) {
+    try {
+      let sources: Source[] = [];
+      if (p === 'brave' && key) sources = await searchBrave(key, query, count);
+      else if (p === 'tavily' && key) sources = await searchTavily(key, query, count);
+      else if (p === 'serper' && key) sources = await searchSerper(key, query, count);
+      else if (p === 'firecrawl' && key) sources = await searchFirecrawl(key, query, count);
+      else if (p === 'local') sources = await searchLocal(localUrl, query, count);
+      else continue;
+      if (sources.length) return { sources, usedProvider: p };
+    } catch (e) { lastErr = e; }
+  }
+  if (lastErr) throw lastErr;
+  return { sources: [], usedProvider: 'none' };
+}
+
+// Fetch & extract main text (cheap, no rendering)
+async function scrapeUrl(url: string): Promise<string> {
+  try {
+    const r = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; LovableAgent/1.0)',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return '';
+    const html = await r.text();
+    // Strip scripts/styles and tags
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return text.slice(0, 4000);
+  } catch { return ''; }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Image providers
+// ─────────────────────────────────────────────────────────────
+
+async function findUnsplashImage(key: string, query: string): Promise<{ url: string; credit: string } | null> {
+  try {
+    const r = await fetch(`https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=1&orientation=squarish`, {
+      headers: { Authorization: `Client-ID ${key}` },
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    const img = d?.results?.[0];
+    if (!img) return null;
+    return { url: img.urls?.regular || img.urls?.full, credit: `Photo by ${img.user?.name || 'Unsplash'}` };
+  } catch { return null; }
+}
+
+async function findPexelsImage(key: string, query: string): Promise<{ url: string; credit: string } | null> {
+  try {
+    const r = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=1&orientation=square`, {
+      headers: { Authorization: key },
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    const img = d?.photos?.[0];
+    if (!img) return null;
+    return { url: img.src?.large || img.src?.original, credit: `Photo by ${img.photographer || 'Pexels'}` };
+  } catch { return null; }
+}
+
+async function generateAIImage(provider: string, key: string, prompt: string): Promise<string | null> {
+  // Returns a data URL or null
+  try {
+    if (provider === 'openai' && key) {
+      const r = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-image-1', prompt, size: '1024x1024', n: 1 }),
+      });
+      if (!r.ok) return null;
+      const d = await r.json();
+      const b64 = d?.data?.[0]?.b64_json;
+      return b64 ? `data:image/png;base64,${b64}` : (d?.data?.[0]?.url || null);
+    }
+    // Default: Lovable AI Gateway (Gemini image)
+    const lk = Deno.env.get('LOVABLE_API_KEY');
+    if (!lk) return null;
+    const r = await fetch(LOVABLE_GATEWAY, {
+      method: 'POST', headers: { Authorization: `Bearer ${lk}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'google/gemini-2.5-flash-image',
+        messages: [{ role: 'user', content: `Vibrant, modern, photographic, no text overlays. Square 1:1. ${prompt.slice(0, 500)}` }],
+        modalities: ['image', 'text'],
+      }),
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d?.choices?.[0]?.message?.images?.[0]?.image_url?.url || null;
+  } catch { return null; }
+}
+
+async function uploadImageToBucket(supabase: any, urlOrDataUrl: string): Promise<{ url: string; path: string } | null> {
+  try {
+    let bytes: Uint8Array, mime = 'image/jpeg', ext = 'jpg';
+    if (urlOrDataUrl.startsWith('data:image/')) {
+      const [meta, b64] = urlOrDataUrl.split(',');
+      mime = meta.match(/data:(image\/\w+)/)?.[1] || 'image/png';
+      ext = mime.split('/')[1] || 'png';
+      bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    } else {
+      const r = await fetch(urlOrDataUrl);
+      if (!r.ok) return null;
+      mime = r.headers.get('content-type') || 'image/jpeg';
+      ext = mime.split('/')[1]?.split(';')[0] || 'jpg';
+      bytes = new Uint8Array(await r.arrayBuffer());
+    }
+    const storagePath = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const { error } = await supabase.storage.from('social-media').upload(storagePath, bytes, { contentType: mime, upsert: false });
+    if (error) return null;
+    const { data: pub } = supabase.storage.from('social-media').getPublicUrl(storagePath);
+    return { url: pub.publicUrl, path: storagePath };
+  } catch { return null; }
+}
+
+// ─────────────────────────────────────────────────────────────
+// LLM helpers
+// ─────────────────────────────────────────────────────────────
+
+interface LLMOpts { endpoint: string; apiKey: string; model: string; googleMode: boolean }
+
+async function callLLMJson(opts: LLMOpts & { systemPrompt: string; userPrompt: string; schema: any; toolName: string }): Promise<any> {
+  const { endpoint, apiKey, model, systemPrompt, userPrompt, schema, googleMode, toolName } = opts;
   if (googleMode) {
     const modelName = model.replace(/^models\//, '');
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
     const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
@@ -116,21 +279,14 @@ async function callTextAI(opts: {
     const txt = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') || '{}';
     return JSON.parse(txt);
   }
-
   const resp = await fetch(endpoint, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      tools: [{
-        type: 'function',
-        function: { name: 'compose_post', description: 'Return the per-platform composed posts.', parameters: schema },
-      }],
-      tool_choice: { type: 'function', function: { name: 'compose_post' } },
+      messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+      tools: [{ type: 'function', function: { name: toolName, description: 'Return structured output', parameters: schema } }],
+      tool_choice: { type: 'function', function: { name: toolName } },
     }),
   });
   if (!resp.ok) {
@@ -142,84 +298,136 @@ async function callTextAI(opts: {
   const data = await resp.json();
   const args = data?.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
   if (args) return JSON.parse(args);
-  const content = data?.choices?.[0]?.message?.content || '{}';
-  return JSON.parse(content);
+  return JSON.parse(data?.choices?.[0]?.message?.content || '{}');
 }
 
-async function generateImage(supabase: any, descriptionForImage: string): Promise<{ url: string | null; path: string | null }> {
-  try {
-    const imgResp = await fetch(LOVABLE_GATEWAY, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${Deno.env.get('LOVABLE_API_KEY')}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash-image',
-        messages: [{
-          role: 'user',
-          content: `Create a vibrant, modern, scroll-stopping social media image (square 1:1) for this post. Photographic, high quality, no text overlays. Post: ${descriptionForImage.slice(0, 500)}`,
-        }],
-        modalities: ['image', 'text'],
-      }),
-    });
-    if (!imgResp.ok) {
-      console.error('Image gen failed:', imgResp.status, await imgResp.text());
-      return { url: null, path: null };
-    }
-    const imgData = await imgResp.json();
-    const dataUrl = imgData?.choices?.[0]?.message?.images?.[0]?.image_url?.url || '';
-    if (!dataUrl.startsWith('data:image/')) return { url: null, path: null };
-    const [meta, base64] = dataUrl.split(',');
-    const mime = meta.match(/data:(image\/\w+)/)?.[1] || 'image/png';
-    const ext = mime.split('/')[1] || 'png';
-    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-    const storagePath = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-    const { error: upErr } = await supabase.storage.from('social-media').upload(storagePath, bytes, { contentType: mime, upsert: false });
-    if (upErr) return { url: null, path: null };
-    const { data: pub } = supabase.storage.from('social-media').getPublicUrl(storagePath);
-    return { url: pub.publicUrl, path: storagePath };
-  } catch (e) {
-    console.error('Image generation exception:', e);
-    return { url: null, path: null };
+// ─────────────────────────────────────────────────────────────
+// Prompts & schemas for the agent stages
+// ─────────────────────────────────────────────────────────────
+
+const PLAN_SCHEMA = {
+  type: 'object',
+  properties: {
+    intent: { type: 'string', description: 'One sentence: what the post should accomplish' },
+    needsResearch: { type: 'boolean' },
+    queries: { type: 'array', items: { type: 'string' }, description: '2-4 focused web search queries' },
+    imageStrategy: { type: 'string', enum: ['real_photo', 'generated', 'none'] },
+    imageQuery: { type: 'string', description: 'For real_photo: stock photo search query. For generated: image prompt. Empty for none.' },
+    angle: { type: 'string', description: 'The angle/hook the post should take' },
+  },
+  required: ['intent', 'needsResearch', 'queries', 'imageStrategy', 'imageQuery', 'angle'],
+};
+
+const REPLAN_SCHEMA = {
+  type: 'object',
+  properties: {
+    haveEnough: { type: 'boolean', description: 'True if current sources are sufficient to write a great post' },
+    followUpQuery: { type: 'string', description: 'If not enough, ONE more focused search query to fill gaps. Empty if haveEnough.' },
+    keyFacts: { type: 'array', items: { type: 'string' }, description: '3-6 specific facts/quotes/numbers extracted from sources to use in the post' },
+  },
+  required: ['haveEnough', 'followUpQuery', 'keyFacts'],
+};
+
+function writeSchema(platforms: string[]) {
+  const variantProps: Record<string, any> = {};
+  for (const p of platforms) {
+    variantProps[p] = {
+      type: 'object',
+      properties: {
+        description: { type: 'string' },
+        hashtags: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['description', 'hashtags'],
+    };
   }
+  return {
+    type: 'object',
+    properties: { variants: { type: 'object', properties: variantProps, required: platforms } },
+    required: ['variants'],
+  };
 }
 
-function sseEvent(event: string, data: any): Uint8Array {
-  return new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+function planPrompt() {
+  return `You are an autonomous research+social-media agent. Given a user goal, plan how to fulfill it:
+- Decide if web research is needed (almost always YES if the topic is news, trends, products, current events).
+- Generate 2-4 SHARP, SPECIFIC search queries (not vague). Use date qualifiers like "2025", "this week", "latest" when freshness matters.
+- Decide image strategy:
+  • "real_photo" — for news, real events, products, places, real people. Use 2-5 word stock photo query.
+  • "generated" — for abstract concepts, illustrations, "imagine if" posts. Provide a vivid AI image prompt.
+  • "none" — if no image is needed.
+- Identify the angle/hook the post should take.
+
+Return via the plan tool.`;
 }
+
+function replanPrompt(originalGoal: string, sources: Source[]) {
+  const summarised = sources.map((s, i) => `[${i + 1}] ${s.title} — ${hostnameOf(s.url)}\n   ${s.snippet || ''}`).join('\n\n');
+  return `Original goal: "${originalGoal}"
+
+Current research collected:
+${summarised}
+
+Decide: do we have enough specific, factual material to write an excellent, NON-generic post? Or do we need ONE more focused search to fill a gap?
+Also extract 3-6 KEY FACTS (specific quotes, numbers, names, dates, links) we should weave into the post.`;
+}
+
+function writePromptSystem(platforms: string[]) {
+  const rules = platforms.map((p) => `- ${PLATFORM_RULES[p] || p}`).join('\n');
+  return `You are a senior social-media manager writing posts based on REAL researched facts (not your training data).
+
+PER-PLATFORM RULES:
+${rules}
+
+GLOBAL RULES:
+- Sound like a real person, not a brand bot. No "in today's fast-paced world", no "unlock the power of", no "game-changer".
+- Lead with a hook — curiosity, contrast, a question, a bold claim, or a stat.
+- Use the SPECIFIC FACTS provided (numbers, names, dates) — do NOT invent facts.
+- Active voice. Short sentences mixed with longer ones. Cut filler.
+- Hashtags must be lowercased single words or short phrases (no spaces, no #).
+- DO NOT include source URLs in the post text — they are for the user's reference only.
+
+Return via the compose_post tool.`;
+}
+
+function writePromptUser(goal: string, angle: string, facts: string[], sources: Source[]) {
+  return `User goal: ${goal}
+
+Editorial angle: ${angle}
+
+Key facts to use (from real research, last few days):
+${facts.map((f) => `- ${f}`).join('\n')}
+
+Sources used (DO NOT cite in post, just for your context):
+${sources.map((s, i) => `[${i + 1}] ${s.title} (${hostnameOf(s.url)})`).join('\n')}
+
+Now write a SEPARATE tailored variant for each platform.`;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Main handler
+// ─────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
   let body: Body;
-  try {
-    body = (await req.json()) as Body;
-  } catch {
-    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
-      status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  }
-
+  try { body = (await req.json()) as Body; }
+  catch { return new Response(JSON.stringify({ error: 'Invalid JSON body' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
   if (!body?.prompt || !Array.isArray(body.platforms) || body.platforms.length === 0) {
-    return new Response(JSON.stringify({ error: 'prompt and platforms are required' }), {
-      status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    return new Response(JSON.stringify({ error: 'prompt and platforms are required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-  );
-
+  const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
   const { data: settings } = await supabase.from('app_settings').select('*').eq('id', 1).single();
-  const provider = (settings as any)?.ai_provider || 'lovable';
-  const customKey = (settings as any)?.ai_api_key || '';
-  const configuredModel = (settings as any)?.ai_model || 'google/gemini-3-flash-preview';
+  const s: any = settings || {};
 
+  const provider = s.ai_provider || 'lovable';
+  const customKey = s.ai_api_key || '';
+  const configuredModel = s.ai_model || 'google/gemini-3-flash-preview';
   const useCustom = provider !== 'lovable' && customKey;
   const apiKey = useCustom ? customKey : Deno.env.get('LOVABLE_API_KEY');
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'No AI API key available. Configure one in Settings.' }), {
-      status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    return new Response(JSON.stringify({ error: 'No AI API key. Configure one in Settings.' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
   let endpoint = LOVABLE_GATEWAY;
@@ -228,151 +436,185 @@ Deno.serve(async (req) => {
   if (useCustom) {
     if (provider === 'openai') endpoint = 'https://api.openai.com/v1/chat/completions';
     else if (provider === 'openrouter') endpoint = 'https://openrouter.ai/api/v1/chat/completions';
-    else if (provider === 'anthropic') {
-      endpoint = 'https://openrouter.ai/api/v1/chat/completions';
-      if (!textModel.startsWith('anthropic/')) textModel = `anthropic/${textModel}`;
-    } else if (provider === 'nvidia') endpoint = 'https://integrate.api.nvidia.com/v1/chat/completions';
+    else if (provider === 'anthropic') { endpoint = 'https://openrouter.ai/api/v1/chat/completions'; if (!textModel.startsWith('anthropic/')) textModel = `anthropic/${textModel}`; }
+    else if (provider === 'nvidia') endpoint = 'https://integrate.api.nvidia.com/v1/chat/completions';
     else if (provider === 'google') googleMode = true;
   }
 
-  const wantsStream = body.stream !== false; // default true
+  const llm: LLMOpts = { endpoint, apiKey, model: textModel, googleMode };
+  const researchProvider = s.research_provider || 'auto';
+  const researchKey = s.research_api_key || '';
+  const imageProvider = s.image_provider || 'auto';
+  const imageKey = s.image_api_key || '';
+  const localUrl = s.local_agent_url || 'http://localhost:3001';
 
-  // ---- Non-streaming fallback (legacy path) ----
-  if (!wantsStream) {
-    try {
-      const result = await callTextAI({
-        endpoint, apiKey, model: textModel, googleMode,
-        systemPrompt: buildSystemPrompt(body.platforms),
-        userPrompt: body.prompt,
-        schema: toolSchema(body.platforms),
-      });
-      let imageUrl: string | null = null;
-      let imagePath: string | null = null;
-      if (body.includeImage) {
-        const firstVariant = result.variants[body.platforms[0]]?.description || body.prompt;
-        const img = await generateImage(supabase, firstVariant);
-        imageUrl = img.url; imagePath = img.path;
-      }
-      const primary = result.variants[body.platforms[0]] || { description: '', hashtags: [] };
-      return new Response(JSON.stringify({
-        description: primary.description,
-        hashtags: primary.hashtags,
-        variants: result.variants,
-        sources: result.sources || [],
-        imageUrl, imagePath,
-        provider, model: textModel,
-      }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    } catch (e: any) {
-      const status = e?.status || 500;
-      return new Response(JSON.stringify({ error: e?.message || 'Unknown error' }), {
-        status, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-  }
+  const wantsStream = body.stream !== false;
 
-  // ---- Streaming SSE path ----
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (event: string, data: any) => {
-        try { controller.enqueue(sseEvent(event, data)); } catch {}
-      };
-      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-      // Heartbeat keeps proxy buffers from holding events.
-      const heartbeat = setInterval(() => {
-        try { controller.enqueue(new TextEncoder().encode(`: ping\n\n`)); } catch {}
-      }, 1500);
+      const send = (event: string, data: any) => { try { controller.enqueue(sseEvent(event, data)); } catch {} };
+      const heartbeat = setInterval(() => { try { controller.enqueue(new TextEncoder().encode(`: ping\n\n`)); } catch {} }, 1500);
 
       try {
-        // 1. Connect
+        // ── 1. Connect ──
         send('step', { id: 'init', emoji: '🚀', label: `Connecting to ${provider}…`, status: 'active' });
-        await sleep(250);
         send('step', { id: 'init', emoji: '✅', label: `Connected · ${textModel}`, status: 'done' });
 
-        // 2. Plan
-        send('step', { id: 'plan', emoji: '🧠', label: 'Analysing your prompt & planning angle…', status: 'active' });
-        await sleep(450);
-        send('step', { id: 'plan', emoji: '🧠', label: `Plan ready — targeting ${body.platforms.length} platform${body.platforms.length > 1 ? 's' : ''}`, status: 'done' });
+        // ── 2. Plan ──
+        send('step', { id: 'plan', emoji: '🧠', label: 'Planning research strategy…', status: 'active' });
+        const plan = await callLLMJson({
+          ...llm, toolName: 'plan', schema: PLAN_SCHEMA,
+          systemPrompt: planPrompt(),
+          userPrompt: `User request: "${body.prompt}"\nTarget platforms: ${body.platforms.join(', ')}`,
+        });
+        send('step', { id: 'plan', emoji: '🧠', label: `Plan: ${plan.angle || plan.intent}`, status: 'done' });
+        send('plan', { queries: plan.queries || [], imageStrategy: plan.imageStrategy, angle: plan.angle });
 
-        // 3. Research (visible while AI thinks)
-        send('step', { id: 'research', emoji: '🔎', label: 'Researching topic & gathering context…', status: 'active' });
-        await sleep(300);
-        send('step', { id: 'audience', emoji: '🎯', label: 'Reading platform culture & audience tone…', status: 'active' });
-        await sleep(300);
+        // ── 3. Research loop (deep) ──
+        const allSources: Source[] = [];
+        const seen = new Set<string>();
+        const queries: string[] = (plan.needsResearch ? (plan.queries || []) : []).slice(0, 4);
 
-        // 4. Write — kick off real AI call
-        send('step', { id: 'write', emoji: '✍️', label: `Writing tailored captions for ${body.platforms.map((p) => PLATFORM_RULES[p] ? p : p).join(', ')}…`, status: 'active' });
+        for (let i = 0; i < queries.length; i++) {
+          const q = queries[i];
+          const stepId = `search-${i}`;
+          send('step', { id: stepId, emoji: '🔎', label: `Searching: "${q}"`, status: 'active' });
+          try {
+            const { sources, usedProvider } = await runSearch({ provider: researchProvider, key: researchKey, localUrl, query: q, count: 5 });
+            const fresh = sources.filter((src) => { if (!src.url || seen.has(src.url)) return false; seen.add(src.url); return true; });
+            allSources.push(...fresh);
+            send('step', { id: stepId, emoji: '🔎', label: `Found ${fresh.length} new sources via ${usedProvider}`, status: 'done' });
+            // Stream sources live as cards
+            for (const src of fresh) send('source', src);
+          } catch (e: any) {
+            send('step', { id: stepId, emoji: '⚠️', label: `Search failed: ${e.message?.slice(0, 80) || 'unknown'}`, status: 'error' });
+          }
+        }
 
-        const aiPromise = callTextAI({
-          endpoint, apiKey, model: textModel, googleMode,
-          systemPrompt: buildSystemPrompt(body.platforms),
-          userPrompt: body.prompt,
-          schema: toolSchema(body.platforms),
+        // ── 4. Scrape top 3 sources for deeper context ──
+        const toScrape = allSources.slice(0, 3);
+        const scraped: { source: Source; text: string }[] = [];
+        for (let i = 0; i < toScrape.length; i++) {
+          const src = toScrape[i];
+          const stepId = `scrape-${i}`;
+          send('step', { id: stepId, emoji: '📖', label: `Reading ${hostnameOf(src.url)}…`, status: 'active' });
+          const text = await scrapeUrl(src.url);
+          if (text) {
+            scraped.push({ source: src, text });
+            send('step', { id: stepId, emoji: '📖', label: `Read ${hostnameOf(src.url)} (${text.length} chars)`, status: 'done' });
+          } else {
+            send('step', { id: stepId, emoji: '⚠️', label: `Couldn't read ${hostnameOf(src.url)}`, status: 'error' });
+          }
+        }
+
+        // Merge scraped text into snippets so the LLM has more context
+        const enrichedSources = allSources.map((src) => {
+          const sc = scraped.find((x) => x.source.url === src.url);
+          return sc ? { ...src, snippet: trimSnippet(sc.text, 600) } : src;
         });
 
-        // Show a rotating "still working" pulse while we wait, so the UI never feels frozen.
-        const thinkingMessages = [
-          'Drafting hook variations…',
-          'Tightening sentences…',
-          'Picking hashtags that match the niche…',
-          'Removing buzzwords & corporate fluff…',
-          'Double-checking platform character limits…',
-        ];
-        let thinkingIdx = 0;
-        const thinkingTimer = setInterval(() => {
-          send('step', { id: 'thinking', emoji: '💭', label: thinkingMessages[thinkingIdx % thinkingMessages.length], status: 'active' });
-          thinkingIdx++;
-        }, 1800);
-
-        let result: { variants: Variants; sources: Source[] };
-        try {
-          result = await aiPromise;
-        } finally {
-          clearInterval(thinkingTimer);
-        }
-
-        send('step', { id: 'thinking', emoji: '💭', label: 'Thoughts organised', status: 'done' });
-        send('step', { id: 'research', emoji: '📚', label: `Found ${result.sources?.length || 0} reference source${(result.sources?.length || 0) === 1 ? '' : 's'}`, status: 'done' });
-        send('step', { id: 'audience', emoji: '🎯', label: 'Tone calibrated per platform', status: 'done' });
-        send('step', { id: 'write', emoji: '✨', label: `Wrote ${Object.keys(result.variants || {}).length} platform-tailored caption${Object.keys(result.variants || {}).length === 1 ? '' : 's'}`, status: 'done' });
-
-        // 5. Stream variants one-by-one with a small stagger so the tabs fill in visibly.
-        for (const p of body.platforms) {
-          const v = result.variants?.[p];
-          if (v) {
-            send('variant', { platform: p, description: v.description, hashtags: v.hashtags });
-            await sleep(180);
+        // ── 5. Re-plan: do we have enough? Maybe one more search ──
+        let keyFacts: string[] = [];
+        if (enrichedSources.length > 0) {
+          send('step', { id: 'reflect', emoji: '🤔', label: 'Reviewing research, extracting key facts…', status: 'active' });
+          try {
+            const decision = await callLLMJson({
+              ...llm, toolName: 'reflect', schema: REPLAN_SCHEMA,
+              systemPrompt: 'You are a research analyst deciding whether the gathered evidence is sufficient and pulling out specific facts to use.',
+              userPrompt: replanPrompt(body.prompt, enrichedSources),
+            });
+            keyFacts = decision.keyFacts || [];
+            if (!decision.haveEnough && decision.followUpQuery) {
+              send('step', { id: 'reflect', emoji: '🤔', label: `Need more on: "${decision.followUpQuery}"`, status: 'done' });
+              const stepId = `search-followup`;
+              send('step', { id: stepId, emoji: '🔎', label: `Follow-up search: "${decision.followUpQuery}"`, status: 'active' });
+              try {
+                const { sources, usedProvider } = await runSearch({ provider: researchProvider, key: researchKey, localUrl, query: decision.followUpQuery, count: 4 });
+                const fresh = sources.filter((src) => { if (!src.url || seen.has(src.url)) return false; seen.add(src.url); return true; });
+                enrichedSources.push(...fresh);
+                send('step', { id: stepId, emoji: '🔎', label: `Found ${fresh.length} more via ${usedProvider}`, status: 'done' });
+                for (const src of fresh) send('source', src);
+              } catch (e: any) {
+                send('step', { id: stepId, emoji: '⚠️', label: `Follow-up failed: ${e.message?.slice(0, 80)}`, status: 'error' });
+              }
+            } else {
+              send('step', { id: 'reflect', emoji: '✅', label: `Extracted ${keyFacts.length} key facts`, status: 'done' });
+            }
+          } catch (e: any) {
+            send('step', { id: 'reflect', emoji: '⚠️', label: `Reflection skipped: ${e.message?.slice(0, 60)}`, status: 'error' });
           }
         }
-        if (result.sources?.length) send('sources', { sources: result.sources });
 
-        // 6. Image
-        let imageUrl: string | null = null;
-        let imagePath: string | null = null;
-        if (body.includeImage) {
-          send('step', { id: 'image-plan', emoji: '🎨', label: 'Designing a custom visual…', status: 'active' });
-          await sleep(300);
-          send('step', { id: 'image-plan', emoji: '🎨', label: 'Visual concept locked', status: 'done' });
-          send('step', { id: 'image', emoji: '🖼️', label: 'Rendering image with AI…', status: 'active' });
-          const firstVariant = result.variants?.[body.platforms[0]]?.description || body.prompt;
-          const img = await generateImage(supabase, firstVariant);
-          imageUrl = img.url; imagePath = img.path;
-          if (imageUrl) {
-            send('step', { id: 'image', emoji: '🖼️', label: 'Image ready', status: 'done' });
-            send('image', { imageUrl, imagePath });
+        // ── 6. Image (parallel with writing) ──
+        const imagePromise: Promise<{ url: string | null; path: string | null; credit?: string; strategy: string }> = (async () => {
+          if (!body.includeImage || plan.imageStrategy === 'none') return { url: null, path: null, strategy: 'none' };
+          const strategy = plan.imageStrategy;
+          const query = plan.imageQuery || body.prompt;
+          send('step', { id: 'image-plan', emoji: '🎨', label: `Strategy: ${strategy === 'real_photo' ? 'finding real photo' : 'generating with AI'} — "${query.slice(0, 60)}"`, status: 'active' });
+          let raw: string | null = null;
+          let credit = '';
+
+          // Decide actual source based on strategy + provider config
+          if (strategy === 'real_photo') {
+            // image_provider: auto/unsplash/pexels/openai/lovable
+            const tryUnsplash = imageProvider === 'unsplash' || (imageProvider === 'auto' && imageKey);
+            const tryPexels = imageProvider === 'pexels';
+            if (tryUnsplash && imageKey) { const r = await findUnsplashImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; } }
+            if (!raw && tryPexels && imageKey) { const r = await findPexelsImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; } }
+            // No real-photo key? Fall back to AI generation.
+            if (!raw) raw = await generateAIImage(imageProvider === 'openai' ? 'openai' : 'lovable', imageProvider === 'openai' ? imageKey : '', query);
           } else {
-            send('step', { id: 'image', emoji: '⚠️', label: 'Image generation failed (continuing)', status: 'error' });
+            // generated
+            raw = await generateAIImage(imageProvider === 'openai' ? 'openai' : 'lovable', imageProvider === 'openai' ? imageKey : '', query);
           }
+
+          if (!raw) { send('step', { id: 'image-plan', emoji: '⚠️', label: 'No image found/generated', status: 'error' }); return { url: null, path: null, strategy }; }
+          send('step', { id: 'image-plan', emoji: '🎨', label: `Image acquired (${strategy === 'real_photo' ? 'real photo' : 'AI generated'})`, status: 'done' });
+          send('step', { id: 'image-upload', emoji: '⬆️', label: 'Uploading to media library…', status: 'active' });
+          const stored = await uploadImageToBucket(supabase, raw);
+          if (!stored) { send('step', { id: 'image-upload', emoji: '⚠️', label: 'Upload failed', status: 'error' }); return { url: null, path: null, strategy }; }
+          send('step', { id: 'image-upload', emoji: '🖼️', label: 'Image ready', status: 'done' });
+          send('image', { imageUrl: stored.url, imagePath: stored.path, credit });
+          return { url: stored.url, path: stored.path, credit, strategy };
+        })();
+
+        // ── 7. Write platform-tailored variants (with real facts) ──
+        send('step', { id: 'write', emoji: '✍️', label: `Writing ${body.platforms.length} tailored variant${body.platforms.length === 1 ? '' : 's'}…`, status: 'active' });
+        const writeResult = await callLLMJson({
+          ...llm, toolName: 'compose_post', schema: writeSchema(body.platforms),
+          systemPrompt: writePromptSystem(body.platforms),
+          userPrompt: writePromptUser(body.prompt, plan.angle || plan.intent, keyFacts, enrichedSources.slice(0, 8)),
+        });
+        const variants: Variants = writeResult.variants || {};
+        send('step', { id: 'write', emoji: '✨', label: `Wrote ${Object.keys(variants).length} platform variant${Object.keys(variants).length === 1 ? '' : 's'}`, status: 'done' });
+
+        for (const p of body.platforms) {
+          const v = variants[p];
+          if (v) send('variant', { platform: p, description: v.description, hashtags: v.hashtags });
         }
+
+        // Final sources event with snippets+favicons
+        const finalSources: Source[] = enrichedSources.slice(0, 8).map((src) => ({
+          title: src.title || hostnameOf(src.url),
+          url: src.url,
+          note: src.snippet ? trimSnippet(src.snippet, 200) : undefined,
+          snippet: src.snippet,
+          favicon: src.favicon || faviconFor(src.url),
+          publishedAt: src.publishedAt,
+        }));
+        send('sources', { sources: finalSources });
+
+        // ── 8. Wait for image and finish ──
+        const imgResult = await imagePromise;
 
         send('step', { id: 'done', emoji: '🎉', label: 'All done — review & post!', status: 'done' });
         send('done', {
-          variants: result.variants,
-          sources: result.sources || [],
-          imageUrl, imagePath,
+          variants, sources: finalSources,
+          imageUrl: imgResult.url, imagePath: imgResult.path,
           provider, model: textModel,
         });
       } catch (e: any) {
-        console.error('generate-social-post stream error', e);
+        console.error('agent error', e);
         send('error', { error: e?.message || 'Unknown error', status: e?.status || 500 });
       } finally {
         clearInterval(heartbeat);
@@ -380,6 +622,14 @@ Deno.serve(async (req) => {
       }
     },
   });
+
+  if (!wantsStream) {
+    // Non-streaming clients still get a JSON shape — we collect events into a single response.
+    // Simpler: tell them streaming is required.
+    return new Response(JSON.stringify({ error: 'Set stream:true; agent emits SSE events.' }), {
+      status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
 
   return new Response(stream, {
     headers: {
