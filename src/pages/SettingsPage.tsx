@@ -14,7 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import SocialAccountCard from '@/components/SocialAccountCard';
-import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, testAgentConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption } from '@/lib/socialPosts';
+import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, testAgentConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, detectProviderFromKey, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption } from '@/lib/socialPosts';
 import { Search as SearchIcon, Image as ImageIcon, Bot, Loader2, CheckCircle2, XCircle, ExternalLink } from 'lucide-react';
 
 function PasswordInput({
@@ -398,7 +398,7 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>({
-    researchProvider: 'auto', researchApiKey: '', imageProvider: 'auto', imageApiKey: '',
+    researchProvider: 'auto', researchApiKey: '', imageProvider: 'auto', imageApiKey: '', imageModel: '',
     researchDepth: 'standard', localAgentUrl: 'http://localhost:3001',
   });
   const [savingAgent, setSavingAgent] = useState(false);
@@ -408,7 +408,7 @@ export default function SettingsPage() {
   const [imageTest, setImageTest] = useState<ConnectionTestResult | null>(null);
   const [imageModels, setImageModels] = useState<ImageModelOption[]>([]);
   const [loadingImageModels, setLoadingImageModels] = useState(false);
-  const [imageModel, setImageModel] = useState<string>('');
+  const [autoDetectedHint, setAutoDetectedHint] = useState<string>('');
 
   const handleTestResearch = async () => {
     setTestingResearch(true); setResearchTest(null);
@@ -433,9 +433,10 @@ export default function SettingsPage() {
       const provider = agentSettings.imageProvider === 'auto'
         ? (agentSettings.imageApiKey ? 'unsplash' : 'lovable')
         : agentSettings.imageProvider;
-      const r = await testAgentConnection('image', provider, agentSettings.imageApiKey);
+      // Pass the chosen image model so the backend really invokes it (not a generic probe).
+      const r = await testAgentConnection('image', provider, agentSettings.imageApiKey, undefined, agentSettings.imageModel);
       setImageTest(r);
-      if (r.ok) toast({ title: '✅ Image provider connected', description: `${provider} · ${r.latency}ms${r.sample ? ` · ${r.sample.slice(0, 60)}` : ''}` });
+      if (r.ok) toast({ title: '✅ Image provider connected', description: `${provider}${r.model ? ` · ${r.model.split('/').pop()}` : ''} · ${r.latency}ms${r.sample ? ` · ${r.sample.slice(0, 80)}` : ''}` });
       else toast({ title: 'Image test failed', description: r.error, variant: 'destructive' });
     } catch (e: any) {
       setImageTest({ ok: false, error: e.message });
@@ -454,7 +455,9 @@ export default function SettingsPage() {
       } else {
         setImageModels(models);
         const recommended = models.find((m) => m.recommended) || models[0];
-        if (recommended && !imageModel) setImageModel(recommended.id);
+        if (recommended && !agentSettings.imageModel) {
+          setAgentSettings((s) => ({ ...s, imageModel: recommended.id }));
+        }
         toast({ title: '✅ Models loaded', description: `${models.length} image model${models.length === 1 ? '' : 's'} available` });
       }
     } catch (e: any) {
@@ -868,12 +871,27 @@ export default function SettingsPage() {
               {agentSettings.researchProvider !== 'local' && (
                 <PasswordInput
                   value={agentSettings.researchApiKey}
-                  onChange={(v) => { setAgentSettings((s) => ({ ...s, researchApiKey: v })); setResearchTest(null); }}
+                  onChange={(v) => {
+                    setAgentSettings((s) => {
+                      const next = { ...s, researchApiKey: v };
+                      // Auto-detect provider from key prefix when on Auto.
+                      if (s.researchProvider === 'auto' && v) {
+                        const det = detectProviderFromKey(v);
+                        if (det.research) {
+                          next.researchProvider = det.research;
+                          setAutoDetectedHint(`Auto-detected research provider: ${det.research}`);
+                          setTimeout(() => setAutoDetectedHint(''), 4000);
+                        }
+                      }
+                      return next;
+                    });
+                    setResearchTest(null);
+                  }}
                   placeholder={
-                    agentSettings.researchProvider === 'auto' ? 'Optional: any search API key' :
+                    agentSettings.researchProvider === 'auto' ? 'Paste any key — provider auto-detected' :
                     agentSettings.researchProvider === 'brave' ? 'BSA...' :
                     agentSettings.researchProvider === 'tavily' ? 'tvly-...' :
-                    agentSettings.researchProvider === 'serper' ? 'serper key' :
+                    agentSettings.researchProvider === 'serper' ? 'serper key (64 hex chars)' :
                     'fc-...'
                   }
                 />
@@ -927,9 +945,12 @@ export default function SettingsPage() {
                     </Badge>
                   : <Badge variant="destructive" className="gap-1"><XCircle className="w-3 h-3" /> {imageTest.error?.slice(0, 50)}</Badge>
               )}
+              {autoDetectedHint && (
+                <Badge variant="secondary" className="text-[10px]">{autoDetectedHint}</Badge>
+              )}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Select value={agentSettings.imageProvider} onValueChange={(v) => { setAgentSettings((s) => ({ ...s, imageProvider: v })); setImageTest(null); }}>
+              <Select value={agentSettings.imageProvider} onValueChange={(v) => { setAgentSettings((s) => ({ ...s, imageProvider: v, imageModel: '' })); setImageTest(null); setImageModels([]); }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="auto">⚡ Auto — agent picks photo vs generated</SelectItem>
@@ -961,7 +982,7 @@ export default function SettingsPage() {
                 <Label className="text-xs flex items-center gap-1.5">
                   <ImageIcon className="w-3.5 h-3.5" /> Image model
                 </Label>
-                <Select value={imageModel} onValueChange={setImageModel}>
+                <Select value={agentSettings.imageModel} onValueChange={(v) => { setAgentSettings((s) => ({ ...s, imageModel: v })); setImageTest(null); }}>
                   <SelectTrigger><SelectValue placeholder="Pick a model" /></SelectTrigger>
                   <SelectContent>
                     {imageModels.map((m) => (
