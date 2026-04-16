@@ -14,7 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import SocialAccountCard from '@/components/SocialAccountCard';
-import { getSocialAccounts, getAISettings, saveAISettings, SOCIAL_PLATFORMS, type AISettings } from '@/lib/socialPosts';
+import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, SOCIAL_PLATFORMS, type AISettings, type AIModel } from '@/lib/socialPosts';
 
 function PasswordInput({
   value,
@@ -386,6 +386,23 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [aiSettings, setAiSettings] = useState<AISettings>({ provider: 'lovable', apiKey: '', model: 'google/gemini-3-flash-preview' });
   const [savingAI, setSavingAI] = useState(false);
+  const [aiModels, setAiModels] = useState<AIModel[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+
+  const loadModels = async (provider: string, apiKey: string) => {
+    setLoadingModels(true);
+    setModelsError(null);
+    try {
+      const models = await listAIModels(provider, apiKey);
+      setAiModels(models);
+    } catch (e: any) {
+      setModelsError(e.message || 'Failed to load models');
+      setAiModels([]);
+    } finally {
+      setLoadingModels(false);
+    }
+  };
 
   useEffect(() => {
     if (savedSettings) setSettings(savedSettings);
@@ -394,6 +411,19 @@ export default function SettingsPage() {
   useEffect(() => {
     if (savedAi) setAiSettings(savedAi);
   }, [savedAi]);
+
+  // Auto-load models when provider changes (or API key for non-lovable providers)
+  useEffect(() => {
+    if (aiSettings.provider === 'lovable') {
+      loadModels('lovable', '');
+    } else if (aiSettings.apiKey) {
+      loadModels(aiSettings.provider, aiSettings.apiKey);
+    } else {
+      setAiModels([]);
+      setModelsError(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiSettings.provider]);
 
   const refreshAccounts = () => {
     queryClient.invalidateQueries({ queryKey: ['platform_accounts'] });
@@ -578,33 +608,87 @@ export default function SettingsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-2">
               <Label className="text-xs">Provider</Label>
-              <Select value={aiSettings.provider} onValueChange={(v) => setAiSettings((s) => ({ ...s, provider: v }))}>
+              <Select value={aiSettings.provider} onValueChange={(v) => setAiSettings((s) => ({ ...s, provider: v, model: '' }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="lovable">Lovable AI (default)</SelectItem>
                   <SelectItem value="openai">OpenAI</SelectItem>
+                  <SelectItem value="google">Google (Gemini)</SelectItem>
+                  <SelectItem value="nvidia">NVIDIA</SelectItem>
                   <SelectItem value="openrouter">OpenRouter</SelectItem>
                   <SelectItem value="anthropic">Anthropic</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
-              <Label className="text-xs">Model</Label>
-              <Input
-                value={aiSettings.model}
-                onChange={(e) => setAiSettings((s) => ({ ...s, model: e.target.value }))}
-                placeholder="google/gemini-3-flash-preview"
-              />
+              <Label className="text-xs flex items-center justify-between">
+                <span>Model</span>
+                {aiSettings.provider !== 'lovable' && aiSettings.apiKey && (
+                  <button
+                    type="button"
+                    onClick={() => loadModels(aiSettings.provider, aiSettings.apiKey)}
+                    className="text-[10px] text-primary hover:underline"
+                    disabled={loadingModels}
+                  >
+                    {loadingModels ? 'Loading…' : 'Refresh models'}
+                  </button>
+                )}
+              </Label>
+              {aiModels.length > 0 ? (
+                <Select value={aiSettings.model} onValueChange={(v) => setAiSettings((s) => ({ ...s, model: v }))}>
+                  <SelectTrigger><SelectValue placeholder="Select a model" /></SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {aiModels.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>{m.label || m.id}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  value={aiSettings.model}
+                  onChange={(e) => setAiSettings((s) => ({ ...s, model: e.target.value }))}
+                  placeholder={aiSettings.provider === 'lovable' ? 'google/gemini-3-flash-preview' : 'Enter API key to load models'}
+                  disabled={loadingModels}
+                />
+              )}
+              {modelsError && (
+                <p className="text-[11px] text-destructive">{modelsError}</p>
+              )}
             </div>
           </div>
           {aiSettings.provider !== 'lovable' && (
             <div className="space-y-2">
               <Label className="text-xs">API Key</Label>
-              <PasswordInput
-                value={aiSettings.apiKey}
-                onChange={(v) => setAiSettings((s) => ({ ...s, apiKey: v }))}
-                placeholder="sk-..."
-              />
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <PasswordInput
+                    value={aiSettings.apiKey}
+                    onChange={(v) => setAiSettings((s) => ({ ...s, apiKey: v }))}
+                    placeholder={
+                      aiSettings.provider === 'google' ? 'AIza...' :
+                      aiSettings.provider === 'nvidia' ? 'nvapi-...' :
+                      aiSettings.provider === 'anthropic' ? 'sk-ant-...' :
+                      'sk-...'
+                    }
+                  />
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => loadModels(aiSettings.provider, aiSettings.apiKey)}
+                  disabled={!aiSettings.apiKey || loadingModels}
+                >
+                  {loadingModels ? 'Checking…' : 'Load models'}
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {aiSettings.provider === 'google' && 'Get a key at aistudio.google.com/app/apikey'}
+                {aiSettings.provider === 'nvidia' && 'Get a key at build.nvidia.com (API Catalog)'}
+                {aiSettings.provider === 'openai' && 'Get a key at platform.openai.com/api-keys'}
+                {aiSettings.provider === 'anthropic' && 'Get a key at console.anthropic.com'}
+                {aiSettings.provider === 'openrouter' && 'Get a key at openrouter.ai/keys'}
+              </p>
             </div>
           )}
           <Button size="sm" onClick={handleSaveAI} disabled={savingAI} className="gap-1.5">

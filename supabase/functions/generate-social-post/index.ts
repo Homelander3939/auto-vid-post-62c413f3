@@ -56,16 +56,20 @@ Deno.serve(async (req) => {
 
     let endpoint = LOVABLE_GATEWAY;
     let textModel = configuredModel;
+    let googleMode = false;
     if (useCustom) {
       if (provider === 'openai') {
         endpoint = 'https://api.openai.com/v1/chat/completions';
-        if (!textModel.startsWith('gpt-')) textModel = 'gpt-4o-mini';
       } else if (provider === 'openrouter') {
         endpoint = 'https://openrouter.ai/api/v1/chat/completions';
       } else if (provider === 'anthropic') {
-        // Anthropic has a different shape; for simplicity we proxy through OpenAI-compat via OpenRouter style
+        // Proxy via OpenRouter for OpenAI-compat shape (tool calling supported)
         endpoint = 'https://openrouter.ai/api/v1/chat/completions';
-        if (!textModel.includes('claude')) textModel = 'anthropic/claude-3.5-sonnet';
+        if (!textModel.startsWith('anthropic/')) textModel = `anthropic/${textModel}`;
+      } else if (provider === 'nvidia') {
+        endpoint = 'https://integrate.api.nvidia.com/v1/chat/completions';
+      } else if (provider === 'google') {
+        googleMode = true;
       }
     }
 
@@ -77,43 +81,59 @@ Always research the topic mentally and write in human, conversational language â
 Integrate hashtags naturally into the description if appropriate, AND also return them in the dedicated hashtags array.
 Return JSON with exactly: { "description": string, "hashtags": string[] (no # symbol), "sources": [{title?, url?}] }.`;
 
-    const textResp = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: textModel,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: body.prompt },
-        ],
-        tools: [{
-          type: 'function',
-          function: {
-            name: 'compose_post',
-            description: 'Return the composed post.',
-            parameters: {
-              type: 'object',
-              properties: {
-                description: { type: 'string' },
-                hashtags: { type: 'array', items: { type: 'string' } },
-                sources: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: { title: { type: 'string' }, url: { type: 'string' } },
+    let textResp: Response;
+    if (googleMode) {
+      // Google Generative Language native API
+      const modelName = textModel.replace(/^models\//, '');
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      textResp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: 'user', parts: [{ text: body.prompt }] }],
+          generationConfig: { responseMimeType: 'application/json' },
+        }),
+      });
+    } else {
+      textResp = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: textModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: body.prompt },
+          ],
+          tools: [{
+            type: 'function',
+            function: {
+              name: 'compose_post',
+              description: 'Return the composed post.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  description: { type: 'string' },
+                  hashtags: { type: 'array', items: { type: 'string' } },
+                  sources: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: { title: { type: 'string' }, url: { type: 'string' } },
+                    },
                   },
                 },
+                required: ['description', 'hashtags'],
               },
-              required: ['description', 'hashtags'],
             },
-          },
-        }],
-        tool_choice: { type: 'function', function: { name: 'compose_post' } },
-      }),
-    });
+          }],
+          tool_choice: { type: 'function', function: { name: 'compose_post' } },
+        }),
+      });
+    }
 
     if (!textResp.ok) {
       const t = await textResp.text();
@@ -132,16 +152,20 @@ Return JSON with exactly: { "description": string, "hashtags": string[] (no # sy
     }
 
     const textData = await textResp.json();
-    const toolCall = textData?.choices?.[0]?.message?.tool_calls?.[0];
     let parsed: { description: string; hashtags: string[]; sources?: any[] } = {
       description: '', hashtags: [], sources: [],
     };
-    if (toolCall?.function?.arguments) {
-      try { parsed = JSON.parse(toolCall.function.arguments); } catch {}
+    if (googleMode) {
+      const gText = textData?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') || '';
+      try { parsed = JSON.parse(gText); } catch { parsed.description = gText; }
     } else {
-      // Fallback: use plain content
-      const content = textData?.choices?.[0]?.message?.content || '';
-      parsed.description = content;
+      const toolCall = textData?.choices?.[0]?.message?.tool_calls?.[0];
+      if (toolCall?.function?.arguments) {
+        try { parsed = JSON.parse(toolCall.function.arguments); } catch {}
+      } else {
+        const content = textData?.choices?.[0]?.message?.content || '';
+        try { parsed = JSON.parse(content); } catch { parsed.description = content; }
+      }
     }
 
     let imageUrl: string | null = null;
