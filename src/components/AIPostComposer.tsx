@@ -174,25 +174,60 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
           </Button>
         </div>
 
-        {/* Live step feed */}
-        {steps.length > 0 && (
-          <div className="rounded-lg border bg-card/50 p-3 space-y-1.5">
-            {steps.map((s) => (
-              <div
-                key={s.id}
-                className={`flex items-center gap-2 text-sm transition-all duration-300 ${
-                  s.status === 'done' ? 'opacity-90' :
-                  s.status === 'error' ? 'text-destructive' :
-                  'text-foreground'
-                }`}
-              >
-                <span className="text-base w-5 text-center">{s.emoji}</span>
-                <span className="flex-1">{s.label}</span>
-                {s.status === 'active' && <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />}
-                {s.status === 'done' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />}
-                {s.status === 'error' && <AlertTriangle className="w-3.5 h-3.5 text-destructive" />}
+        {/* Live agent timeline */}
+        {(loading || steps.length > 0) && (
+          <div className="rounded-xl border bg-gradient-to-br from-card to-card/40 backdrop-blur p-4 animate-in fade-in slide-in-from-top-2 duration-500">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="relative flex h-2.5 w-2.5">
+                {loading && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" />}
+                <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${loading ? 'bg-primary' : 'bg-emerald-500'}`} />
               </div>
-            ))}
+              <span className="text-xs font-semibold uppercase tracking-wider text-foreground/80">
+                {loading ? 'Agent at work' : 'Agent finished'}
+              </span>
+              <span className="ml-auto text-[11px] text-muted-foreground font-mono">
+                {steps.filter((s) => s.status === 'done').length} / {steps.length}
+              </span>
+            </div>
+            <ol className="relative space-y-2.5">
+              {/* connector line */}
+              <div className="absolute left-[15px] top-2 bottom-2 w-px bg-gradient-to-b from-primary/40 via-border to-border" aria-hidden />
+              {steps.map((s, i) => (
+                <li
+                  key={s.id + '-' + i}
+                  className="relative flex items-start gap-3 animate-in fade-in slide-in-from-left-2 duration-300"
+                >
+                  <div className={`relative z-10 flex items-center justify-center w-8 h-8 rounded-full border-2 text-base shrink-0 transition-all ${
+                    s.status === 'active' ? 'border-primary bg-primary/10 shadow-[0_0_0_4px_hsl(var(--primary)/0.12)]' :
+                    s.status === 'done' ? 'border-emerald-500/50 bg-emerald-500/10' :
+                    s.status === 'error' ? 'border-destructive/50 bg-destructive/10' :
+                    'border-border bg-card'
+                  }`}>
+                    <span className={s.status === 'active' ? 'animate-pulse' : ''}>{s.emoji}</span>
+                  </div>
+                  <div className="flex-1 min-w-0 pt-1">
+                    <div className={`text-sm leading-snug ${
+                      s.status === 'done' ? 'text-foreground/70' :
+                      s.status === 'error' ? 'text-destructive font-medium' :
+                      s.status === 'active' ? 'text-foreground font-medium' :
+                      'text-muted-foreground'
+                    }`}>
+                      {s.label}
+                    </div>
+                    {s.status === 'active' && (
+                      <div className="mt-1.5 h-0.5 w-full bg-muted rounded-full overflow-hidden">
+                        <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-primary to-transparent animate-[shimmer_1.4s_ease-in-out_infinite]" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="pt-1.5 shrink-0">
+                    {s.status === 'active' && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
+                    {s.status === 'done' && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
+                    {s.status === 'error' && <AlertTriangle className="w-4 h-4 text-destructive" />}
+                  </div>
+                </li>
+              ))}
+            </ol>
           </div>
         )}
 
