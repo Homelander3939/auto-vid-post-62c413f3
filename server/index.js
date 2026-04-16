@@ -290,11 +290,16 @@ async function processJob(jobId, options = {}) {
       try {
         console.log(`[Worker] Uploading to ${platform.name}...`);
         // Use account credentials if available for this platform, otherwise app_settings
-        const platformCreds = (accountCredentials && accountCredentials.platform === platform.name)
+        // Pass accountId so uploaders use a separate browser profile for non-default accounts
+        const isAccountMatch = accountCredentials && accountCredentials.platform === platform.name;
+        const platformCreds = isAccountMatch
           ? { email: accountCredentials.email, password: accountCredentials.password, enabled: true }
           : settings[platform.name];
+        // Only pass accountId for non-default accounts so the default profile stays untouched
+        const accountId = (isAccountMatch && !accountCredentials.is_default) ? accountCredentials.id : undefined;
         const result = await uploaders[platform.name](videoPath, metadata, {
           ...platformCreds,
+          accountId,
           telegram: settings.telegram,
           backend: settings.backend,
         });

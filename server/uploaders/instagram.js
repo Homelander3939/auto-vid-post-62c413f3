@@ -71,7 +71,13 @@ function prepareVerticalVideo(videoPath) {
   }
 }
 
-const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
+const DEFAULT_USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
+
+function resolveUserDataDir(accountId) {
+  if (!accountId) return DEFAULT_USER_DATA_DIR;
+  return path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram', accountId);
+}
+
 const MAX_CAPTION_LENGTH = 2200;
 // How long to wait for the user's reels grid to load after navigating to their profile
 const PROFILE_REELS_LOAD_WAIT_MS = 6000;
@@ -1021,14 +1027,15 @@ async function assessInstagramCompletion(page) {
 
 async function uploadToInstagram(videoPath, metadata, credentials) {
   if (!fs.existsSync(videoPath)) throw new Error(`Video file not found: ${videoPath}`);
-  fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+  const userDataDir = resolveUserDataDir(credentials?.accountId);
+  fs.mkdirSync(userDataDir, { recursive: true });
 
   // Pre-process video to 9:16 with black padding for Instagram Reels
   const { processedPath, needsCleanup } = prepareVerticalVideo(videoPath);
   const actualVideoPath = processedPath;
 
-  console.log('[Instagram] Starting upload...');
-  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+  console.log(`[Instagram] Starting upload... (profile: ${credentials?.accountId || 'default'})`);
+  const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
     viewport: { width: 1280, height: 900 },
