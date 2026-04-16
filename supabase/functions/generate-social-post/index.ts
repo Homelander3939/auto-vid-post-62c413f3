@@ -263,7 +263,7 @@ async function generateAIImage(provider: string, key: string, prompt: string, mo
       method: 'POST', headers: { Authorization: `Bearer ${lk}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: model || 'google/gemini-2.5-flash-image',
-        messages: [{ role: 'user', content: `Vibrant, modern, photographic, no text overlays. Square 1:1. ${prompt.slice(0, 500)}` }],
+        messages: [{ role: 'user', content: prompt.slice(0, 1500) }],
         modalities: ['image', 'text'],
       }),
     });
