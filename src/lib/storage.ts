@@ -503,24 +503,28 @@ export async function createScheduledUpload(
   videoStoragePath: string | null,
   metadata: VideoMetadata,
   platforms: string[],
-  scheduledAt: string
+  scheduledAt: string,
+  accountId?: string
 ): Promise<ScheduledUpload> {
   const normalizedScheduledAt = Number.isNaN(new Date(scheduledAt).getTime())
     ? scheduledAt
     : new Date(scheduledAt).toISOString();
 
+  const insertPayload: any = {
+    video_file_name: videoFileName,
+    video_storage_path: videoStoragePath,
+    title: metadata.title,
+    description: metadata.description,
+    tags: metadata.tags,
+    target_platforms: platforms,
+    scheduled_at: normalizedScheduledAt,
+    status: 'scheduled',
+  };
+  if (accountId) insertPayload.account_id = accountId;
+
   const { data, error } = await supabase
     .from('scheduled_uploads')
-    .insert({
-      video_file_name: videoFileName,
-      video_storage_path: videoStoragePath,
-      title: metadata.title,
-      description: metadata.description,
-      tags: metadata.tags,
-      target_platforms: platforms,
-      scheduled_at: normalizedScheduledAt,
-      status: 'scheduled',
-    })
+    .insert(insertPayload)
     .select()
     .single();
 
