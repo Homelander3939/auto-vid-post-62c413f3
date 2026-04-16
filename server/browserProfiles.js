@@ -12,6 +12,9 @@ const PROFILE_URLS = {
   youtube: 'https://studio.youtube.com',
   tiktok: 'https://www.tiktok.com/tiktokstudio/upload',
   instagram: 'https://www.instagram.com',
+  'social-x': 'https://x.com/compose/post',
+  'social-tiktok': 'https://www.tiktok.com/tiktokstudio/upload?from=upload&lang=en',
+  'social-facebook': 'https://www.facebook.com/',
 };
 
 const openContexts = new Map();
@@ -30,7 +33,7 @@ function emptyState() {
 }
 
 function sanitizeSelections(selections = {}) {
-  const allowedPlatforms = new Set(['youtube', 'tiktok', 'instagram']);
+  const allowedPlatforms = new Set(['youtube', 'tiktok', 'instagram', 'x', 'facebook']);
   return Object.fromEntries(
     Object.entries(selections || {}).filter(([platform, accountId]) => {
       return allowedPlatforms.has(platform) && typeof accountId === 'string' && accountId.trim().length > 0;
