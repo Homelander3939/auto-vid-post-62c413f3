@@ -768,8 +768,146 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* Agent (Research + Image) Settings */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Bot className="w-4 h-4 text-primary" />
+            Research & Image Agent
+          </CardTitle>
+          <CardDescription>
+            Powers the deep research loop. With API keys the agent uses fast hosted providers; without keys it falls back to your local browser (DuckDuckGo → Google) for scraping.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {/* Research provider */}
+          <div className="space-y-3">
+            <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <SearchIcon className="w-3.5 h-3.5" /> Research provider
+            </Label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Select value={agentSettings.researchProvider} onValueChange={(v) => setAgentSettings((s) => ({ ...s, researchProvider: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto (key if set, else local browser)</SelectItem>
+                  <SelectItem value="brave">Brave Search API</SelectItem>
+                  <SelectItem value="tavily">Tavily</SelectItem>
+                  <SelectItem value="serper">Serper (Google)</SelectItem>
+                  <SelectItem value="firecrawl">Firecrawl Search</SelectItem>
+                  <SelectItem value="local">Local browser only (DuckDuckGo + Google)</SelectItem>
+                </SelectContent>
+              </Select>
+              {agentSettings.researchProvider !== 'local' && agentSettings.researchProvider !== 'auto' && (
+                <PasswordInput
+                  value={agentSettings.researchApiKey}
+                  onChange={(v) => setAgentSettings((s) => ({ ...s, researchApiKey: v }))}
+                  placeholder={
+                    agentSettings.researchProvider === 'brave' ? 'BSA...' :
+                    agentSettings.researchProvider === 'tavily' ? 'tvly-...' :
+                    agentSettings.researchProvider === 'serper' ? 'serper key' :
+                    'fc-...'
+                  }
+                />
+              )}
+              {agentSettings.researchProvider === 'auto' && (
+                <PasswordInput
+                  value={agentSettings.researchApiKey}
+                  onChange={(v) => setAgentSettings((s) => ({ ...s, researchApiKey: v }))}
+                  placeholder="Optional: any search API key (Brave/Tavily/Serper/Firecrawl)"
+                />
+              )}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              {agentSettings.researchProvider === 'brave' && 'Get a key at api.search.brave.com — 2k free queries/month.'}
+              {agentSettings.researchProvider === 'tavily' && 'Get a key at tavily.com — best for AI agents, 1k free/month.'}
+              {agentSettings.researchProvider === 'serper' && 'Get a key at serper.dev — Google results, 2.5k free.'}
+              {agentSettings.researchProvider === 'firecrawl' && 'Get a key at firecrawl.dev — search + scrape combined.'}
+              {agentSettings.researchProvider === 'local' && 'Uses your local Playwright browser. Requires the local server running on the URL below.'}
+              {agentSettings.researchProvider === 'auto' && 'Will use your search API key if provided, otherwise falls back to the local browser.'}
+            </p>
+          </div>
 
-      {/* Telegram */}
+          {/* Image provider */}
+          <div className="space-y-3 border-t pt-4">
+            <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <ImageIcon className="w-3.5 h-3.5" /> Image provider
+            </Label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Select value={agentSettings.imageProvider} onValueChange={(v) => setAgentSettings((s) => ({ ...s, imageProvider: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto (agent decides: real photo vs generated)</SelectItem>
+                  <SelectItem value="unsplash">Unsplash (real photos)</SelectItem>
+                  <SelectItem value="pexels">Pexels (real photos)</SelectItem>
+                  <SelectItem value="openai">OpenAI DALL-E (generated)</SelectItem>
+                  <SelectItem value="lovable">Lovable AI image (generated)</SelectItem>
+                </SelectContent>
+              </Select>
+              {agentSettings.imageProvider !== 'lovable' && agentSettings.imageProvider !== 'auto' && (
+                <PasswordInput
+                  value={agentSettings.imageApiKey}
+                  onChange={(v) => setAgentSettings((s) => ({ ...s, imageApiKey: v }))}
+                  placeholder={
+                    agentSettings.imageProvider === 'unsplash' ? 'Unsplash Access Key' :
+                    agentSettings.imageProvider === 'pexels' ? 'Pexels API Key' :
+                    'sk-...'
+                  }
+                />
+              )}
+              {agentSettings.imageProvider === 'auto' && (
+                <PasswordInput
+                  value={agentSettings.imageApiKey}
+                  onChange={(v) => setAgentSettings((s) => ({ ...s, imageApiKey: v }))}
+                  placeholder="Optional: Unsplash/Pexels/OpenAI key (else uses Lovable AI)"
+                />
+              )}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              In Auto mode the agent picks real photos for news/events and generated images for abstract/conceptual prompts. Without any key it falls back to Lovable AI image generation.
+            </p>
+          </div>
+
+          {/* Depth + local URL */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t pt-4">
+            <div className="space-y-2">
+              <Label className="text-xs">Research depth</Label>
+              <Select value={agentSettings.researchDepth} onValueChange={(v) => setAgentSettings((s) => ({ ...s, researchDepth: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="light">Light — 1 search, fast</SelectItem>
+                  <SelectItem value="standard">Standard — 2-3 searches</SelectItem>
+                  <SelectItem value="deep">Deep — plan → search → re-plan → search</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Local agent URL</Label>
+              <Input
+                value={agentSettings.localAgentUrl}
+                onChange={(e) => setAgentSettings((s) => ({ ...s, localAgentUrl: e.target.value }))}
+                placeholder="http://localhost:3001"
+                className="font-mono text-xs"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap pt-1">
+            <Button size="sm" onClick={handleSaveAgent} disabled={savingAgent} className="gap-1.5">
+              <Check className="w-3.5 h-3.5" />
+              {savingAgent ? 'Saving…' : 'Save Agent Settings'}
+            </Button>
+            <Badge variant="outline" className="text-[11px] font-mono gap-1">
+              <SearchIcon className="w-3 h-3" /> {savedAgent?.researchProvider || 'auto'}
+            </Badge>
+            <Badge variant="outline" className="text-[11px] font-mono gap-1">
+              <ImageIcon className="w-3 h-3" /> {savedAgent?.imageProvider || 'auto'}
+            </Badge>
+            <Badge variant="outline" className="text-[11px] font-mono">depth: {savedAgent?.researchDepth || 'standard'}</Badge>
+          </div>
+        </CardContent>
+      </Card>
+
+
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
