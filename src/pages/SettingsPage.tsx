@@ -945,9 +945,12 @@ export default function SettingsPage() {
                     </Badge>
                   : <Badge variant="destructive" className="gap-1"><XCircle className="w-3 h-3" /> {imageTest.error?.slice(0, 50)}</Badge>
               )}
+              {autoDetectedHint && (
+                <Badge variant="secondary" className="text-[10px]">{autoDetectedHint}</Badge>
+              )}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Select value={agentSettings.imageProvider} onValueChange={(v) => { setAgentSettings((s) => ({ ...s, imageProvider: v })); setImageTest(null); }}>
+              <Select value={agentSettings.imageProvider} onValueChange={(v) => { setAgentSettings((s) => ({ ...s, imageProvider: v, imageModel: '' })); setImageTest(null); setImageModels([]); }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="auto">⚡ Auto — agent picks photo vs generated</SelectItem>
