@@ -282,19 +282,20 @@ serve(async (req) => {
         body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
       });
 
-      // Queue AI processing to local server via pending_commands
-      // The local server will pick this up, call LM Studio, execute tools, and send the reply
-      await supabase.from('pending_commands').insert({
-        command: 'ai_response',
-        args: {
-          chat_id: chatId,
-          update_id: update.update_id,
-          user_text: displayText,
-          images: images.map((img: TelegramMediaRef) => ({ url: img.url, name: img.name })),
-          files: files.map((f: TelegramMediaRef) => ({ url: f.url, name: f.name, type: f.type, size: f.size })),
+      // Invoke the cloud ai-chat edge function directly (no LM Studio dependency).
+      // Fire-and-forget — the ai-chat function calls Lovable AI Gateway, runs tools,
+      // and sends the reply back to Telegram itself.
+      void fetch(`${supabaseUrl}/functions/v1/ai-chat`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json',
         },
-        status: 'pending',
-      });
+        body: JSON.stringify({
+          telegram_chat_id: chatId,
+          telegram_user_text: displayText,
+        }),
+      }).catch((e) => console.error('ai-chat invoke failed:', e));
 
       totalProcessed++;
     }
