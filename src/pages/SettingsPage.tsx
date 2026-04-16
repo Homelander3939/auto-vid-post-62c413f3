@@ -386,6 +386,23 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [aiSettings, setAiSettings] = useState<AISettings>({ provider: 'lovable', apiKey: '', model: 'google/gemini-3-flash-preview' });
   const [savingAI, setSavingAI] = useState(false);
+  const [aiModels, setAiModels] = useState<AIModel[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+
+  const loadModels = async (provider: string, apiKey: string) => {
+    setLoadingModels(true);
+    setModelsError(null);
+    try {
+      const models = await listAIModels(provider, apiKey);
+      setAiModels(models);
+    } catch (e: any) {
+      setModelsError(e.message || 'Failed to load models');
+      setAiModels([]);
+    } finally {
+      setLoadingModels(false);
+    }
+  };
 
   useEffect(() => {
     if (savedSettings) setSettings(savedSettings);
