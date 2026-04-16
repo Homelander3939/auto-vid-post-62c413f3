@@ -14,7 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import SocialAccountCard from '@/components/SocialAccountCard';
-import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, testAgentConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption } from '@/lib/socialPosts';
+import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, testAgentConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, detectProviderFromKey, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption } from '@/lib/socialPosts';
 import { Search as SearchIcon, Image as ImageIcon, Bot, Loader2, CheckCircle2, XCircle, ExternalLink } from 'lucide-react';
 
 function PasswordInput({
@@ -398,7 +398,7 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>({
-    researchProvider: 'auto', researchApiKey: '', imageProvider: 'auto', imageApiKey: '',
+    researchProvider: 'auto', researchApiKey: '', imageProvider: 'auto', imageApiKey: '', imageModel: '',
     researchDepth: 'standard', localAgentUrl: 'http://localhost:3001',
   });
   const [savingAgent, setSavingAgent] = useState(false);
@@ -408,7 +408,7 @@ export default function SettingsPage() {
   const [imageTest, setImageTest] = useState<ConnectionTestResult | null>(null);
   const [imageModels, setImageModels] = useState<ImageModelOption[]>([]);
   const [loadingImageModels, setLoadingImageModels] = useState(false);
-  const [imageModel, setImageModel] = useState<string>('');
+  const [autoDetectedHint, setAutoDetectedHint] = useState<string>('');
 
   const handleTestResearch = async () => {
     setTestingResearch(true); setResearchTest(null);
