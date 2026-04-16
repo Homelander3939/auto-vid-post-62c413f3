@@ -4,9 +4,11 @@ const fs = require('fs');
 const { uploadToX } = require('./uploaders/x');
 const { uploadToFacebook } = require('./uploaders/facebook');
 const { uploadToTikTokPost } = require('./uploaders/tiktok-post');
+const { uploadToLinkedIn } = require('./uploaders/linkedin');
 const { getBrowserProfileForAccount, getJobAccountSelections } = require('./browserProfiles');
 
-const uploaders = { x: uploadToX, facebook: uploadToFacebook, tiktok: uploadToTikTokPost };
+// `tiktok` is kept for backward-compat with old rows; new social posts use linkedin.
+const uploaders = { x: uploadToX, facebook: uploadToFacebook, linkedin: uploadToLinkedIn, tiktok: uploadToTikTokPost };
 
 const processing = new Set();
 
