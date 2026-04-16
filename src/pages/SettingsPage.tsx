@@ -441,6 +441,23 @@ export default function SettingsPage() {
     if (savedAi) setAiSettings(savedAi);
   }, [savedAi]);
 
+  useEffect(() => {
+    if (savedAgent) setAgentSettings(savedAgent);
+  }, [savedAgent]);
+
+  const handleSaveAgent = async () => {
+    setSavingAgent(true);
+    try {
+      await saveAgentSettings(agentSettings);
+      queryClient.invalidateQueries({ queryKey: ['agent_settings'] });
+      toast({ title: 'Agent settings saved' });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    } finally {
+      setSavingAgent(false);
+    }
+  };
+
   // Auto-load models when provider changes (or API key for non-lovable providers)
   useEffect(() => {
     if (aiSettings.provider === 'lovable') {
