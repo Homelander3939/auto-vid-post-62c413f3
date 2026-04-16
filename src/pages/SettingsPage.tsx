@@ -1053,8 +1053,123 @@ export default function SettingsPage() {
               )}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              In Auto mode the agent picks real photos for news/events and generated images for abstract/conceptual prompts. Use <strong>Google</strong> with your AI Studio key for direct Nano Banana access, or <strong>Lovable AI</strong> for built-in Nano Banana (no key required).
+              In Auto mode the agent picks real photos for news/events and generated images for abstract/conceptual prompts. Use <strong>Google</strong>, <strong>NVIDIA</strong>, or <strong>xAI</strong> with your key, or <strong>Lovable AI</strong> for built-in Nano Banana (no key required).
             </p>
+          </div>
+
+          {/* Multi-key fallback chain editor */}
+          <div className="space-y-2 border-t pt-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <ImageIcon className="w-3.5 h-3.5" /> Image generation fallback chain
+              </Label>
+              <Badge variant="secondary" className="text-[10px]">{agentSettings.imageKeys.length}/10 keys</Badge>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Add up to 10 image-gen API keys (any mix of providers/models). When the agent generates an image, it tries them <strong>in order</strong> — if one is rate-limited or out of quota, it automatically falls back to the next. Lovable AI is always tried last as a safety net.
+            </p>
+            <div className="space-y-2">
+              {agentSettings.imageKeys.map((k, idx) => (
+                <div key={k.id} className="rounded-lg border bg-card p-2.5 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-[10px] font-mono shrink-0">#{idx + 1}</Badge>
+                    <Input
+                      value={k.label || ''}
+                      onChange={(e) => setAgentSettings((s) => ({
+                        ...s,
+                        imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, label: e.target.value } : x),
+                      }))}
+                      placeholder="Label (e.g. Personal Google, Work OpenAI)"
+                      className="h-8 text-xs flex-1"
+                    />
+                    <Switch
+                      checked={k.enabled !== false}
+                      onCheckedChange={(v) => setAgentSettings((s) => ({
+                        ...s,
+                        imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, enabled: v } : x),
+                      }))}
+                    />
+                    <Button
+                      type="button" variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive"
+                      onClick={() => setAgentSettings((s) => ({
+                        ...s,
+                        imageKeys: s.imageKeys.filter((_, i) => i !== idx),
+                      }))}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <Select value={k.provider} onValueChange={(v) => setAgentSettings((s) => ({
+                      ...s,
+                      imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, provider: v, model: '' } : x),
+                    }))}>
+                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="lovable">✨ Lovable AI</SelectItem>
+                        <SelectItem value="google">🍌 Google Gemini</SelectItem>
+                        <SelectItem value="openai">🎨 OpenAI</SelectItem>
+                        <SelectItem value="nvidia">🟢 NVIDIA NIM</SelectItem>
+                        <SelectItem value="xai">⚡ xAI Grok</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      value={k.model || ''}
+                      onChange={(e) => setAgentSettings((s) => ({
+                        ...s,
+                        imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, model: e.target.value } : x),
+                      }))}
+                      placeholder={
+                        k.provider === 'google' ? 'gemini-3.1-flash-image-preview' :
+                        k.provider === 'openai' ? 'gpt-image-1' :
+                        k.provider === 'nvidia' ? 'black-forest-labs/flux.1-schnell' :
+                        k.provider === 'xai' ? 'grok-2-image-1212' :
+                        'google/gemini-2.5-flash-image'
+                      }
+                      className="h-8 text-xs font-mono"
+                    />
+                  </div>
+                  {k.provider !== 'lovable' && (
+                    <PasswordInput
+                      value={k.apiKey}
+                      onChange={(v) => setAgentSettings((s) => {
+                        const nextKeys = s.imageKeys.map((x, i) => {
+                          if (i !== idx) return x;
+                          // Auto-detect provider from key prefix
+                          const det = detectProviderFromKey(v);
+                          return { ...x, apiKey: v, provider: det.image || x.provider };
+                        });
+                        return { ...s, imageKeys: nextKeys };
+                      })}
+                      placeholder={
+                        k.provider === 'google' ? 'AIza…' :
+                        k.provider === 'nvidia' ? 'nvapi-…' :
+                        k.provider === 'xai' ? 'xai-…' :
+                        'sk-…'
+                      }
+                    />
+                  )}
+                </div>
+              ))}
+              {agentSettings.imageKeys.length < 10 && (
+                <Button
+                  type="button" variant="outline" size="sm" className="w-full gap-1.5"
+                  onClick={() => setAgentSettings((s) => ({
+                    ...s,
+                    imageKeys: [...s.imageKeys, {
+                      id: crypto.randomUUID(),
+                      provider: 'lovable',
+                      apiKey: '',
+                      model: '',
+                      label: '',
+                      enabled: true,
+                    }],
+                  }))}
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add fallback key ({agentSettings.imageKeys.length}/10)
+                </Button>
+              )}
+            </div>
           </div>
 
           {/* Depth + local URL */}
@@ -1094,6 +1209,9 @@ export default function SettingsPage() {
               {savedAgent?.imageModel && <span className="text-muted-foreground">· {savedAgent.imageModel.split('/').pop()}</span>}
             </Badge>
             <Badge variant="outline" className="text-[11px] font-mono">depth: {savedAgent?.researchDepth || 'standard'}</Badge>
+            {(savedAgent?.imageKeys?.length || 0) > 0 && (
+              <Badge variant="outline" className="text-[11px] font-mono">↪️ {savedAgent.imageKeys.length} fallback{savedAgent.imageKeys.length === 1 ? '' : 's'}</Badge>
+            )}
           </div>
         </CardContent>
       </Card>
