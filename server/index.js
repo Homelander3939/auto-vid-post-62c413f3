@@ -171,9 +171,18 @@ async function processJob(jobId, options = {}) {
     const results = job.platform_results || [];
 
     // === CREDENTIAL VALIDATION: Skip platforms without credentials ===
+    // If accountCredentials exists, use those for the matching platform
     for (const platform of results) {
       if (platform.status !== 'pending') continue;
-      const ps = settings[platform.name];
+      
+      // Resolve credentials: account_id override > app_settings fallback
+      let ps;
+      if (accountCredentials && accountCredentials.platform === platform.name) {
+        ps = { email: accountCredentials.email, password: accountCredentials.password, enabled: accountCredentials.enabled };
+      } else {
+        ps = settings[platform.name];
+      }
+      
       if (!ps?.enabled) {
         platform.status = 'error';
         platform.error = `${platform.name} is not enabled in Settings`;
