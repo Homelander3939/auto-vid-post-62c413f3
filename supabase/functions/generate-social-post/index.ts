@@ -429,34 +429,40 @@ Also extract 3-6 KEY FACTS (specific quotes, numbers, names, dates, links) we sh
 
 function writePromptSystem(platforms: string[]) {
   const rules = platforms.map((p) => `- ${PLATFORM_RULES[p] || p}`).join('\n');
-  return `You are a senior social-media manager writing posts based on REAL researched facts (not your training data).
+  return `You are a senior social-media manager writing posts based on REAL researched facts the orchestrator already gathered for you.
+
+${nowContext()}
 
 PER-PLATFORM RULES:
 ${rules}
 
 GLOBAL RULES:
+- The user provides a goal. The agent ALREADY ran web searches and scraped pages — the FACTS section below is real, current data. USE IT. Never reply with "I can't access real-time information" or ask the user to provide facts — they are already provided.
+- If the FACTS section is sparse, still write the best post you can from what's there + the goal/angle. Never refuse.
+- Write a SEPARATE variant for EVERY requested platform, even if the topic is hard. No empty variants, no apologies.
 - Sound like a real person, not a brand bot. No "in today's fast-paced world", no "unlock the power of", no "game-changer".
 - Lead with a hook — curiosity, contrast, a question, a bold claim, or a stat.
-- Use the SPECIFIC FACTS provided (numbers, names, dates) — do NOT invent facts.
+- Weave in the SPECIFIC FACTS (numbers, names, dates) — do NOT invent facts that weren't given.
 - Active voice. Short sentences mixed with longer ones. Cut filler.
-- Hashtags must be lowercased single words or short phrases (no spaces, no #).
+- Hashtags must be lowercased single words or short phrases (no spaces, no #, no leading punctuation).
 - DO NOT include source URLs in the post text — they are for the user's reference only.
 
-Return via the compose_post tool.`;
+Return via the compose_post tool with one entry PER requested platform.`;
 }
 
-function writePromptUser(goal: string, angle: string, facts: string[], sources: Source[]) {
+function writePromptUser(goal: string, angle: string, facts: string[], sources: Source[], platforms: string[]) {
   return `User goal: ${goal}
+Target platforms (return one variant for EACH): ${platforms.join(', ')}
 
 Editorial angle: ${angle}
 
-Key facts to use (from real research, last few days):
-${facts.map((f) => `- ${f}`).join('\n')}
+Key facts to use (from real research, gathered just now):
+${facts.length ? facts.map((f) => `- ${f}`).join('\n') : '(no extracted facts — synthesize from sources below + your knowledge of the angle)'}
 
-Sources used (DO NOT cite in post, just for your context):
-${sources.map((s, i) => `[${i + 1}] ${s.title} (${hostnameOf(s.url)})`).join('\n')}
+Sources used (DO NOT cite URLs in post, just for your context):
+${sources.length ? sources.map((s, i) => `[${i + 1}] ${s.title} (${hostnameOf(s.url)}) — ${s.snippet || ''}`).join('\n') : '(no sources — write based on the goal + angle alone)'}
 
-Now write a SEPARATE tailored variant for each platform.`;
+Now write a SEPARATE tailored variant for EACH platform listed above. Never skip a platform.`;
 }
 
 // ─────────────────────────────────────────────────────────────
