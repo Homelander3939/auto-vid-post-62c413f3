@@ -6,7 +6,13 @@ const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } =
 const { sendTelegramPhoto } = require('../telegram');
 const { getTikTokPageDescription, isTikTokPublishedUrl, isTikTokVideoUrl } = require('./tiktok-state');
 
-const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok');
+const DEFAULT_USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok');
+
+function resolveUserDataDir(accountId) {
+  if (!accountId) return DEFAULT_USER_DATA_DIR;
+  return path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok', accountId);
+}
+
 
 // TikTok Studio upload URL (updated — old /creator-center/upload no longer works)
 const TIKTOK_UPLOAD_URL = 'https://www.tiktok.com/tiktokstudio/upload';

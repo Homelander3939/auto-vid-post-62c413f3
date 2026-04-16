@@ -71,7 +71,13 @@ function prepareVerticalVideo(videoPath) {
   }
 }
 
-const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
+const DEFAULT_USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram');
+
+function resolveUserDataDir(accountId) {
+  if (!accountId) return DEFAULT_USER_DATA_DIR;
+  return path.join(__dirname, '..', 'data', 'browser-sessions', 'instagram', accountId);
+}
+
 const MAX_CAPTION_LENGTH = 2200;
 // How long to wait for the user's reels grid to load after navigating to their profile
 const PROFILE_REELS_LOAD_WAIT_MS = 6000;

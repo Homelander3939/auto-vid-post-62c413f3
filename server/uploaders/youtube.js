@@ -4,9 +4,14 @@ const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 const { smartClick, smartFill, waitForStateChange, analyzePage } = require('./smart-agent');
 
-const USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube');
+const DEFAULT_USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube');
 const YT_STUDIO_URL = 'https://studio.youtube.com';
 const YT_UPLOAD_URL = 'https://studio.youtube.com/upload';
+
+function resolveUserDataDir(accountId) {
+  if (!accountId) return DEFAULT_USER_DATA_DIR;
+  return path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube', accountId);
+}
 
 async function gotoYouTubePage(page, url, timeout = 60000, settleMs = 2500) {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
