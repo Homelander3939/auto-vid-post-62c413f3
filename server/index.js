@@ -441,8 +441,79 @@ app.get('/', (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
 
-// --- Research search endpoint (DuckDuckGo HTML → Google scrape fallback) ---
+// --- Research search endpoint (DuckDuckGo HTML → Brave/Google scrape via persistent browser) ---
 // Used by the cloud AI agent when no research API key is configured.
+// Strategy:
+//   1) Cheap DuckDuckGo HTML scrape (no browser).
+//   2) If empty/blocked, open a PERSISTENT Chromium context (shared profile, like uploads) and
+//      try Brave Search → Google → DuckDuckGo, in that order. Visible by default so the user
+//      can watch + intervene on captchas, matching the upload-flow behavior.
+const { launchPersistent: launchPersistentSocial, safeClose: safeCloseSocial } = require('./uploaders/social-post-base');
+
+async function scrapeWithLocalBrowser(query, count, { headless = false } = {}) {
+  const context = await launchPersistentSocial('research', {});
+  try {
+    if (!headless) {
+      // Visible mode is the default — but persistent context already shows. Nothing extra needed.
+    }
+    const page = await context.newPage();
+    // 1) Brave (no captchas, often best results)
+    try {
+      await page.goto(`https://search.brave.com/search?q=${encodeURIComponent(query)}&source=web`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      const r = await page.evaluate((max) => {
+        const out = [];
+        document.querySelectorAll('div.snippet, div[data-type="web"], #results .snippet').forEach((el) => {
+          if (out.length >= max) return;
+          const a = el.querySelector('a[href^="http"]');
+          const t = el.querySelector('.title, .snippet-title, h3, .url');
+          const sn = el.querySelector('.snippet-description, .description, p');
+          if (a && t) out.push({ title: (t.textContent || '').trim(), url: a.href, snippet: sn ? (sn.textContent || '').trim() : '' });
+        });
+        return out;
+      }, count);
+      if (r.length) return { provider: 'brave-local', results: r };
+    } catch (e) { console.warn('[Research] Brave-local failed:', e.message); }
+
+    // 2) DuckDuckGo via the visible browser (handles JS challenges DDG html sometimes shows)
+    try {
+      await page.goto(`https://duckduckgo.com/?q=${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await page.waitForTimeout(800);
+      const r = await page.evaluate((max) => {
+        const out = [];
+        document.querySelectorAll('article[data-testid="result"], .react-results--main article').forEach((el) => {
+          if (out.length >= max) return;
+          const a = el.querySelector('a[data-testid="result-title-a"], h2 a');
+          const sn = el.querySelector('[data-result="snippet"], .result__snippet');
+          if (a) out.push({ title: (a.textContent || '').trim(), url: a.href, snippet: sn ? (sn.textContent || '').trim() : '' });
+        });
+        return out;
+      }, count);
+      if (r.length) return { provider: 'duckduckgo-local', results: r };
+    } catch (e) { console.warn('[Research] DDG-local failed:', e.message); }
+
+    // 3) Google as last resort (may show captcha — visible browser lets the user solve it)
+    try {
+      await page.goto(`https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en&num=${count}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      const r = await page.evaluate((max) => {
+        const out = [];
+        document.querySelectorAll('div.g, div.MjjYud').forEach((el) => {
+          if (out.length >= max) return;
+          const a = el.querySelector('a[href^="http"]');
+          const h3 = el.querySelector('h3');
+          const sn = el.querySelector('div[data-sncf], .VwiC3b, .yXK7lf');
+          if (a && h3) out.push({ title: h3.textContent || '', url: a.href, snippet: sn ? (sn.textContent || '') : '' });
+        });
+        return out;
+      }, count);
+      if (r.length) return { provider: 'google-local', results: r };
+    } catch (e) { console.warn('[Research] Google-local failed:', e.message); }
+
+    return { provider: 'none', results: [] };
+  } finally {
+    await safeCloseSocial(context);
+  }
+}
+
 app.post('/api/research/search', async (req, res) => {
   const { query, count = 6 } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query required' });
@@ -451,7 +522,7 @@ app.post('/api/research/search', async (req, res) => {
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
 
-  // 1) DuckDuckGo HTML
+  // 1) DuckDuckGo HTML (cheap, no browser)
   try {
     const r = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LovableAgent/1.0)' },
@@ -471,30 +542,64 @@ app.post('/api/research/search', async (req, res) => {
       }
       if (results.length) return res.json({ provider: 'duckduckgo', results });
     }
-  } catch (e) { console.warn('[Research] DuckDuckGo failed:', e.message); }
+  } catch (e) { console.warn('[Research] DuckDuckGo HTML failed:', e.message); }
 
-  // 2) Google scrape via Playwright (last resort)
+  // 2) Open a real persistent browser (visible) — same approach as video uploads.
   try {
-    const { chromium } = require('playwright');
-    const browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36' });
-    await page.goto(`https://www.google.com/search?q=${encodeURIComponent(query)}&hl=en&num=${count}`, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    const results = await page.evaluate((max) => {
-      const out = [];
-      document.querySelectorAll('div.g, div.MjjYud').forEach((el) => {
-        if (out.length >= max) return;
-        const a = el.querySelector('a[href^="http"]');
-        const h3 = el.querySelector('h3');
-        const sn = el.querySelector('div[data-sncf], .VwiC3b, .yXK7lf');
-        if (a && h3) out.push({ title: h3.textContent || '', url: a.href, snippet: sn ? (sn.textContent || '') : '' });
-      });
-      return out;
-    }, count);
-    await browser.close();
-    if (results.length) return res.json({ provider: 'google-scrape', results });
-  } catch (e) { console.warn('[Research] Google scrape failed:', e.message); }
+    const out = await scrapeWithLocalBrowser(query, count, { headless: false });
+    if (out.results.length) return res.json(out);
+  } catch (e) { console.warn('[Research] Local browser scrape failed:', e.message); }
 
   return res.json({ provider: 'none', results: [] });
+});
+
+// Image search via local browser — DuckDuckGo Images (no captchas) → Bing Images fallback.
+// Used by the cloud agent when stock providers (Unsplash/Pexels) are not configured.
+app.post('/api/research/image-search', async (req, res) => {
+  const { query, count = 5 } = req.body || {};
+  if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query required' });
+
+  const context = await launchPersistentSocial('research', {});
+  try {
+    const page = await context.newPage();
+    // 1) DuckDuckGo Images (uses XHR JSON under the hood, easy to parse from the page)
+    try {
+      await page.goto(`https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await page.waitForTimeout(1500);
+      const images = await page.evaluate((max) => {
+        const out = [];
+        document.querySelectorAll('img.tile--img__img, .tile--img img, img[data-src*="http"]').forEach((el) => {
+          if (out.length >= max) return;
+          const url = el.getAttribute('data-src') || el.getAttribute('src');
+          if (url && url.startsWith('http')) out.push({ url, source: 'duckduckgo' });
+        });
+        return out;
+      }, count);
+      if (images.length) return res.json({ provider: 'duckduckgo-images', images });
+    } catch (e) { console.warn('[Image] DDG images failed:', e.message); }
+
+    // 2) Bing Images
+    try {
+      await page.goto(`https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await page.waitForTimeout(1000);
+      const images = await page.evaluate((max) => {
+        const out = [];
+        document.querySelectorAll('a.iusc').forEach((el) => {
+          if (out.length >= max) return;
+          try {
+            const m = JSON.parse(el.getAttribute('m') || '{}');
+            if (m.murl) out.push({ url: m.murl, source: 'bing' });
+          } catch {}
+        });
+        return out;
+      }, count);
+      if (images.length) return res.json({ provider: 'bing-images', images });
+    } catch (e) { console.warn('[Image] Bing images failed:', e.message); }
+
+    return res.json({ provider: 'none', images: [] });
+  } finally {
+    await safeCloseSocial(context);
+  }
 });
 
 app.post('/api/process/:id', async (req, res) => {
