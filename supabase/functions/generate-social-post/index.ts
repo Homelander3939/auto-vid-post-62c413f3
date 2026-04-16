@@ -108,27 +108,49 @@ async function searchFirecrawl(apiKey: string, query: string, count = 6): Promis
   }));
 }
 
-// Local browser fallback (DuckDuckGo HTML → Google scrape) via the user's local server
-async function searchLocal(localUrl: string, query: string, count = 6): Promise<Source[]> {
-  const r = await fetch(`${localUrl.replace(/\/$/, '')}/api/research/search`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, count }),
-  });
-  if (!r.ok) throw new Error(`Local search ${r.status}: ${await r.text()}`);
-  const data = await r.json();
-  return (data?.results || []).slice(0, count).map((x: any) => ({
-    title: x.title, url: x.url, snippet: trimSnippet(x.snippet || ''),
-    favicon: faviconFor(x.url),
-  }));
+// Local browser fallback — routed through pending_commands so the user's local Playwright
+// worker (which polls Supabase) can do the actual DuckDuckGo/Google scraping. This works
+// from cloud edge functions where localhost:3001 is unreachable.
+async function searchLocalViaCommand(supabase: any, query: string, count = 6, timeoutMs = 25000): Promise<Source[]> {
+  const { data: inserted, error } = await supabase
+    .from('pending_commands')
+    .insert({ command: 'research_search', args: { query, count } })
+    .select('id')
+    .single();
+  if (error || !inserted?.id) throw new Error(`Could not queue local research: ${error?.message || 'unknown'}`);
+  const cmdId = inserted.id;
+
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const { data: row } = await supabase
+      .from('pending_commands')
+      .select('status, result')
+      .eq('id', cmdId)
+      .single();
+    if (!row) continue;
+    if (row.status === 'completed') {
+      try {
+        const parsed = JSON.parse(row.result || '{}');
+        const list = Array.isArray(parsed?.results) ? parsed.results : [];
+        return list.slice(0, count).map((x: any) => ({
+          title: x.title, url: x.url, snippet: trimSnippet(x.snippet || ''),
+          favicon: faviconFor(x.url),
+        }));
+      } catch { return []; }
+    }
+    if (row.status === 'failed') throw new Error(row.result || 'Local research failed');
+  }
+  throw new Error('Local research timed out (worker offline?)');
 }
 
 async function runSearch(opts: {
-  provider: string; key: string; localUrl: string; query: string; count?: number;
+  provider: string; key: string; query: string; count?: number; supabase: any;
 }): Promise<{ sources: Source[]; usedProvider: string }> {
-  const { provider, key, localUrl, query, count = 6 } = opts;
+  const { provider, key, query, count = 6, supabase } = opts;
   const order: string[] = [];
   if (provider && provider !== 'auto' && provider !== 'local') order.push(provider);
-  // Always try local fallback last
+  // Always try local browser fallback last (via pending_commands queue)
   order.push('local');
 
   let lastErr: any = null;
@@ -139,9 +161,9 @@ async function runSearch(opts: {
       else if (p === 'tavily' && key) sources = await searchTavily(key, query, count);
       else if (p === 'serper' && key) sources = await searchSerper(key, query, count);
       else if (p === 'firecrawl' && key) sources = await searchFirecrawl(key, query, count);
-      else if (p === 'local') sources = await searchLocal(localUrl, query, count);
+      else if (p === 'local') sources = await searchLocalViaCommand(supabase, query, count);
       else continue;
-      if (sources.length) return { sources, usedProvider: p };
+      if (sources.length) return { sources, usedProvider: p === 'local' ? 'local-browser' : p };
     } catch (e) { lastErr = e; }
   }
   if (lastErr) throw lastErr;
