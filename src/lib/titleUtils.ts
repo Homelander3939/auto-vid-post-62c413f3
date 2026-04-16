@@ -51,7 +51,8 @@ export function matchVideoTextFiles(
     textMap.set(stem, tf);
   }
 
-  return videoFiles.map((video) => {
+  const sorted = sortFilesBySeriesNumber(videoFiles);
+  return sorted.map((video) => {
     const stem = video.name.replace(/\.[^.]+$/, '').toLowerCase();
     return { video, textFile: textMap.get(stem) };
   });
