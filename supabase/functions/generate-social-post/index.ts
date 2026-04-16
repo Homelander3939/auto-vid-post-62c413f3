@@ -244,7 +244,7 @@ async function generateAIImage(provider: string, key: string, prompt: string, mo
       const r = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: `Vibrant, modern, photographic, no text overlays. Square 1:1. ${prompt.slice(0, 500)}` }] }],
+          contents: [{ role: 'user', parts: [{ text: prompt.slice(0, 1500) }] }],
           generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
         }),
       });
@@ -263,7 +263,7 @@ async function generateAIImage(provider: string, key: string, prompt: string, mo
       method: 'POST', headers: { Authorization: `Bearer ${lk}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: model || 'google/gemini-2.5-flash-image',
-        messages: [{ role: 'user', content: `Vibrant, modern, photographic, no text overlays. Square 1:1. ${prompt.slice(0, 500)}` }],
+        messages: [{ role: 'user', content: prompt.slice(0, 1500) }],
         modalities: ['image', 'text'],
       }),
     });
@@ -388,24 +388,41 @@ function writeSchema(platforms: string[]) {
   };
 }
 
-function planPrompt() {
-  return `You are an autonomous research+social-media agent. Given a user goal, plan how to fulfill it:
-- Decide if web research is needed (almost always YES if the topic is news, trends, products, current events).
-- Generate 2-4 SHARP, SPECIFIC search queries (not vague). Use date qualifiers like "2025", "this week", "latest" when freshness matters.
-- Decide image strategy:
-  • "real_photo" — for news, real events, products, places, real people. Use 2-5 word stock photo query.
-  • "generated" — for abstract concepts, illustrations, "imagine if" posts. Provide a vivid AI image prompt.
-  • "none" — if no image is needed.
-- Identify the angle/hook the post should take.
+function nowContext(): string {
+  const now = new Date();
+  const iso = now.toISOString();
+  const human = now.toUTCString();
+  const date = iso.slice(0, 10);
+  return `CURRENT DATE/TIME (UTC): ${human} (ISO ${iso}).
+Today's date is ${date}. The current year is ${now.getUTCFullYear()}.
+You ARE running inside an autonomous agent that HAS live internet access via web-search tools and a local browser.
+Never refuse with "I don't have real-time data" — the orchestrator runs the searches FOR you and feeds the results back. Your job is to plan what to search and then USE the returned facts.`;
+}
 
-Return via the plan tool.`;
+function planPrompt() {
+  return `You are an autonomous research+social-media agent (OpenClaw-style). Plan how to fulfill the user goal.
+
+${nowContext()}
+
+PLANNING RULES:
+- needsResearch: TRUE for any topic that benefits from current information (news, trends, products, events, prices, releases, "latest", "recent", time-bounded asks like "last 24 hours"/"this week"). Default to TRUE unless the prompt is purely creative/timeless.
+- queries: 2-4 SHARP, SPECIFIC search queries. Embed the CURRENT YEAR and time qualifiers ("${new Date().getUTCFullYear()}", "this week", "today", explicit month names) when freshness matters. Vary angles (broad → narrow, different keywords).
+- imageStrategy:
+  • "real_photo" — news, real events, products, places, real people. Use 2-5 word stock photo query.
+  • "generated" — abstract concepts, illustrations, "imagine if" posts. Provide a vivid, concrete AI image prompt (subject + setting + style + lighting, no text overlays).
+  • "none" — only if user explicitly says no image.
+- angle: the editorial hook (curiosity, contrast, FOMO, contrarian take, surprising stat).
+
+Return via the plan tool. Do NOT refuse — planning is always possible.`;
 }
 
 function replanPrompt(originalGoal: string, sources: Source[]) {
   const summarised = sources.map((s, i) => `[${i + 1}] ${s.title} — ${hostnameOf(s.url)}\n   ${s.snippet || ''}`).join('\n\n');
-  return `Original goal: "${originalGoal}"
+  return `${nowContext()}
 
-Current research collected:
+Original goal: "${originalGoal}"
+
+Current research collected (real, just now):
 ${summarised}
 
 Decide: do we have enough specific, factual material to write an excellent, NON-generic post? Or do we need ONE more focused search to fill a gap?
@@ -414,34 +431,40 @@ Also extract 3-6 KEY FACTS (specific quotes, numbers, names, dates, links) we sh
 
 function writePromptSystem(platforms: string[]) {
   const rules = platforms.map((p) => `- ${PLATFORM_RULES[p] || p}`).join('\n');
-  return `You are a senior social-media manager writing posts based on REAL researched facts (not your training data).
+  return `You are a senior social-media manager writing posts based on REAL researched facts the orchestrator already gathered for you.
+
+${nowContext()}
 
 PER-PLATFORM RULES:
 ${rules}
 
 GLOBAL RULES:
+- The user provides a goal. The agent ALREADY ran web searches and scraped pages — the FACTS section below is real, current data. USE IT. Never reply with "I can't access real-time information" or ask the user to provide facts — they are already provided.
+- If the FACTS section is sparse, still write the best post you can from what's there + the goal/angle. Never refuse.
+- Write a SEPARATE variant for EVERY requested platform, even if the topic is hard. No empty variants, no apologies.
 - Sound like a real person, not a brand bot. No "in today's fast-paced world", no "unlock the power of", no "game-changer".
 - Lead with a hook — curiosity, contrast, a question, a bold claim, or a stat.
-- Use the SPECIFIC FACTS provided (numbers, names, dates) — do NOT invent facts.
+- Weave in the SPECIFIC FACTS (numbers, names, dates) — do NOT invent facts that weren't given.
 - Active voice. Short sentences mixed with longer ones. Cut filler.
-- Hashtags must be lowercased single words or short phrases (no spaces, no #).
+- Hashtags must be lowercased single words or short phrases (no spaces, no #, no leading punctuation).
 - DO NOT include source URLs in the post text — they are for the user's reference only.
 
-Return via the compose_post tool.`;
+Return via the compose_post tool with one entry PER requested platform.`;
 }
 
-function writePromptUser(goal: string, angle: string, facts: string[], sources: Source[]) {
+function writePromptUser(goal: string, angle: string, facts: string[], sources: Source[], platforms: string[]) {
   return `User goal: ${goal}
+Target platforms (return one variant for EACH): ${platforms.join(', ')}
 
 Editorial angle: ${angle}
 
-Key facts to use (from real research, last few days):
-${facts.map((f) => `- ${f}`).join('\n')}
+Key facts to use (from real research, gathered just now):
+${facts.length ? facts.map((f) => `- ${f}`).join('\n') : '(no extracted facts — synthesize from sources below + your knowledge of the angle)'}
 
-Sources used (DO NOT cite in post, just for your context):
-${sources.map((s, i) => `[${i + 1}] ${s.title} (${hostnameOf(s.url)})`).join('\n')}
+Sources used (DO NOT cite URLs in post, just for your context):
+${sources.length ? sources.map((s, i) => `[${i + 1}] ${s.title} (${hostnameOf(s.url)}) — ${s.snippet || ''}`).join('\n') : '(no sources — write based on the goal + angle alone)'}
 
-Now write a SEPARATE tailored variant for each platform.`;
+Now write a SEPARATE tailored variant for EACH platform listed above. Never skip a platform.`;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -595,6 +618,13 @@ Deno.serve(async (req) => {
           if (!body.includeImage || plan.imageStrategy === 'none') return { url: null, path: null, strategy: 'none' };
           const strategy = plan.imageStrategy;
           const query = plan.imageQuery || body.prompt;
+          // Rich AI image prompt: subject + context + style + composition. Stock photo searches use the short query.
+          const richAIPrompt = [
+            query,
+            plan.angle ? `Editorial angle: ${plan.angle}.` : '',
+            `User goal: ${body.prompt.slice(0, 200)}.`,
+            'Photographic, vibrant, modern, eye-catching social media visual. Square 1:1 framing. Strong subject in focus. Cinematic lighting. NO text, NO watermarks, NO logos, NO captions overlayed.',
+          ].filter(Boolean).join(' ');
           send('step', { id: 'image-plan', emoji: '🎨', label: `Strategy: ${strategy === 'real_photo' ? 'finding real photo' : 'generating with AI'} — "${query.slice(0, 60)}"`, status: 'active' });
           let raw: string | null = null;
           let credit = '';
@@ -614,11 +644,11 @@ Deno.serve(async (req) => {
             if (tryUnsplash && imageKey) { const r = await findUnsplashImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; send('tool', { kind: 'image', name: 'unsplash', detail: query }); } }
             if (!raw && tryPexels && imageKey) { const r = await findPexelsImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; send('tool', { kind: 'image', name: 'pexels', detail: query }); } }
             if (!raw) {
-              raw = await generateAIImage(aiProvider, aiKey, query);
+              raw = await generateAIImage(aiProvider, aiKey, richAIPrompt);
               if (raw) send('tool', { kind: 'image', name: aiName, detail: query });
             }
           } else {
-            raw = await generateAIImage(aiProvider, aiKey, query);
+            raw = await generateAIImage(aiProvider, aiKey, richAIPrompt);
             if (raw) send('tool', { kind: 'image', name: aiName, detail: query });
           }
 
@@ -637,7 +667,7 @@ Deno.serve(async (req) => {
         const writeResult = await callLLMJson({
           ...llm, toolName: 'compose_post', schema: writeSchema(body.platforms),
           systemPrompt: writePromptSystem(body.platforms),
-          userPrompt: writePromptUser(body.prompt, plan.angle || plan.intent, keyFacts, enrichedSources.slice(0, 8)),
+          userPrompt: writePromptUser(body.prompt, plan.angle || plan.intent, keyFacts, enrichedSources.slice(0, 8), body.platforms),
         });
         const variants: Variants = writeResult.variants || {};
         send('step', { id: 'write', emoji: '✨', label: `Wrote ${Object.keys(variants).length} platform variant${Object.keys(variants).length === 1 ? '' : 's'}`, status: 'done' });

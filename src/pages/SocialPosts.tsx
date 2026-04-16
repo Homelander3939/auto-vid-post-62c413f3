@@ -147,7 +147,7 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
 
   return (
     <div className="space-y-6">
-      <AIPostComposer platforms={selectedPlatforms} onUse={handleAIUse} />
+      <AIPostComposer platforms={[...SOCIAL_PLATFORMS]} onUse={handleAIUse} />
 
       <Card>
         <CardHeader>
