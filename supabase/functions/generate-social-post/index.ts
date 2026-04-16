@@ -660,7 +660,7 @@ Deno.serve(async (req) => {
         const writeResult = await callLLMJson({
           ...llm, toolName: 'compose_post', schema: writeSchema(body.platforms),
           systemPrompt: writePromptSystem(body.platforms),
-          userPrompt: writePromptUser(body.prompt, plan.angle || plan.intent, keyFacts, enrichedSources.slice(0, 8)),
+          userPrompt: writePromptUser(body.prompt, plan.angle || plan.intent, keyFacts, enrichedSources.slice(0, 8), body.platforms),
         });
         const variants: Variants = writeResult.variants || {};
         send('step', { id: 'write', emoji: '✨', label: `Wrote ${Object.keys(variants).length} platform variant${Object.keys(variants).length === 1 ? '' : 's'}`, status: 'done' });
