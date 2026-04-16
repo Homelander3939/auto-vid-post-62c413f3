@@ -13,10 +13,12 @@ import AIChat from "@/pages/AIChat";
 import BrowserSessions from "@/pages/BrowserSessions";
 import SocialPosts from "@/pages/SocialPosts";
 import NotFound from "@/pages/NotFound";
+import { ThemeProvider } from "@/lib/theme";
 
 const queryClient = new QueryClient();
 
 const App = () => (
+  <ThemeProvider>
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
@@ -38,6 +40,7 @@ const App = () => (
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
+  </ThemeProvider>
 );
 
 export default App;

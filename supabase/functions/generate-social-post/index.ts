@@ -273,37 +273,86 @@ Deno.serve(async (req) => {
   // ---- Streaming SSE path ----
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (event: string, data: any) => controller.enqueue(sseEvent(event, data));
+      const send = (event: string, data: any) => {
+        try { controller.enqueue(sseEvent(event, data)); } catch {}
+      };
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      // Heartbeat keeps proxy buffers from holding events.
+      const heartbeat = setInterval(() => {
+        try { controller.enqueue(new TextEncoder().encode(`: ping\n\n`)); } catch {}
+      }, 1500);
+
       try {
+        // 1. Connect
         send('step', { id: 'init', emoji: '🚀', label: `Connecting to ${provider}…`, status: 'active' });
-        await new Promise((r) => setTimeout(r, 100));
-        send('step', { id: 'init', emoji: '✅', label: `Connected to ${provider} (${textModel})`, status: 'done' });
+        await sleep(250);
+        send('step', { id: 'init', emoji: '✅', label: `Connected · ${textModel}`, status: 'done' });
 
+        // 2. Plan
+        send('step', { id: 'plan', emoji: '🧠', label: 'Analysing your prompt & planning angle…', status: 'active' });
+        await sleep(450);
+        send('step', { id: 'plan', emoji: '🧠', label: `Plan ready — targeting ${body.platforms.length} platform${body.platforms.length > 1 ? 's' : ''}`, status: 'done' });
+
+        // 3. Research (visible while AI thinks)
         send('step', { id: 'research', emoji: '🔎', label: 'Researching topic & gathering context…', status: 'active' });
+        await sleep(300);
+        send('step', { id: 'audience', emoji: '🎯', label: 'Reading platform culture & audience tone…', status: 'active' });
+        await sleep(300);
 
-        send('step', { id: 'write', emoji: '✍️', label: `Writing tailored posts for ${body.platforms.join(', ')}…`, status: 'active' });
+        // 4. Write — kick off real AI call
+        send('step', { id: 'write', emoji: '✍️', label: `Writing tailored captions for ${body.platforms.map((p) => PLATFORM_RULES[p] ? p : p).join(', ')}…`, status: 'active' });
 
-        const result = await callTextAI({
+        const aiPromise = callTextAI({
           endpoint, apiKey, model: textModel, googleMode,
           systemPrompt: buildSystemPrompt(body.platforms),
           userPrompt: body.prompt,
           schema: toolSchema(body.platforms),
         });
 
-        send('step', { id: 'research', emoji: '📚', label: `Found ${result.sources?.length || 0} sources`, status: 'done' });
-        send('step', { id: 'write', emoji: '✨', label: `Wrote ${Object.keys(result.variants || {}).length} platform-tailored variants`, status: 'done' });
+        // Show a rotating "still working" pulse while we wait, so the UI never feels frozen.
+        const thinkingMessages = [
+          'Drafting hook variations…',
+          'Tightening sentences…',
+          'Picking hashtags that match the niche…',
+          'Removing buzzwords & corporate fluff…',
+          'Double-checking platform character limits…',
+        ];
+        let thinkingIdx = 0;
+        const thinkingTimer = setInterval(() => {
+          send('step', { id: 'thinking', emoji: '💭', label: thinkingMessages[thinkingIdx % thinkingMessages.length], status: 'active' });
+          thinkingIdx++;
+        }, 1800);
 
-        // Stream variants as they're "ready" (already all done, but stream nicely)
+        let result: { variants: Variants; sources: Source[] };
+        try {
+          result = await aiPromise;
+        } finally {
+          clearInterval(thinkingTimer);
+        }
+
+        send('step', { id: 'thinking', emoji: '💭', label: 'Thoughts organised', status: 'done' });
+        send('step', { id: 'research', emoji: '📚', label: `Found ${result.sources?.length || 0} reference source${(result.sources?.length || 0) === 1 ? '' : 's'}`, status: 'done' });
+        send('step', { id: 'audience', emoji: '🎯', label: 'Tone calibrated per platform', status: 'done' });
+        send('step', { id: 'write', emoji: '✨', label: `Wrote ${Object.keys(result.variants || {}).length} platform-tailored caption${Object.keys(result.variants || {}).length === 1 ? '' : 's'}`, status: 'done' });
+
+        // 5. Stream variants one-by-one with a small stagger so the tabs fill in visibly.
         for (const p of body.platforms) {
           const v = result.variants?.[p];
-          if (v) send('variant', { platform: p, description: v.description, hashtags: v.hashtags });
+          if (v) {
+            send('variant', { platform: p, description: v.description, hashtags: v.hashtags });
+            await sleep(180);
+          }
         }
         if (result.sources?.length) send('sources', { sources: result.sources });
 
+        // 6. Image
         let imageUrl: string | null = null;
         let imagePath: string | null = null;
         if (body.includeImage) {
-          send('step', { id: 'image', emoji: '🎨', label: 'Generating a custom image…', status: 'active' });
+          send('step', { id: 'image-plan', emoji: '🎨', label: 'Designing a custom visual…', status: 'active' });
+          await sleep(300);
+          send('step', { id: 'image-plan', emoji: '🎨', label: 'Visual concept locked', status: 'done' });
+          send('step', { id: 'image', emoji: '🖼️', label: 'Rendering image with AI…', status: 'active' });
           const firstVariant = result.variants?.[body.platforms[0]]?.description || body.prompt;
           const img = await generateImage(supabase, firstVariant);
           imageUrl = img.url; imagePath = img.path;
@@ -315,7 +364,7 @@ Deno.serve(async (req) => {
           }
         }
 
-        send('step', { id: 'done', emoji: '🎉', label: 'All done!', status: 'done' });
+        send('step', { id: 'done', emoji: '🎉', label: 'All done — review & post!', status: 'done' });
         send('done', {
           variants: result.variants,
           sources: result.sources || [],
@@ -326,7 +375,8 @@ Deno.serve(async (req) => {
         console.error('generate-social-post stream error', e);
         send('error', { error: e?.message || 'Unknown error', status: e?.status || 500 });
       } finally {
-        controller.close();
+        clearInterval(heartbeat);
+        try { controller.close(); } catch {}
       }
     },
   });
@@ -335,8 +385,9 @@ Deno.serve(async (req) => {
     headers: {
       ...corsHeaders,
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
     },
   });
 });
