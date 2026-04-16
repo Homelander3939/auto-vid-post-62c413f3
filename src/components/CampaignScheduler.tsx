@@ -13,6 +13,7 @@ import {
   type ScheduledUpload,
 } from '@/lib/storage';
 import { cleanVideoTitle, matchVideoTextFiles, INTENSITY_OPTIONS } from '@/lib/titleUtils';
+import AccountPicker, { useAccountsForPlatforms } from '@/components/AccountPicker';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
@@ -78,6 +79,19 @@ export default function CampaignScheduler() {
   const [platforms, setPlatforms] = useState<string[]>(['youtube', 'tiktok', 'instagram']);
   const [scheduledAt, setScheduledAt] = useState('');
   const [intensityMinutes, setIntensityMinutes] = useState(60);
+  const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({});
+
+  const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);
+
+  // Initialize default accounts
+  useEffect(() => {
+    const defaults: Record<string, string> = {};
+    for (const p of platforms) {
+      const defId = getDefaultAccountId(p);
+      if (defId) defaults[p] = defId;
+    }
+    setSelectedAccounts((prev) => ({ ...defaults, ...prev }));
+  }, [platforms.join(',')]);
 
   const isMultiFile = videoFiles.length > 1;
 
@@ -288,11 +302,13 @@ export default function CampaignScheduler() {
 
         if (isImmediate) {
           setSaveProgress(`Creating job ${i + 1}/${entries.length}...`);
-          const job = await createUploadJob(fileName, storagePath, metadata, entry.platforms);
+          const accountId = Object.values(selectedAccounts)[0];
+          const job = await createUploadJob(fileName, storagePath, metadata, entry.platforms, accountId);
           immediateJobIds.push(job.id);
         } else {
           setSaveProgress(`Scheduling ${i + 1}/${entries.length}...`);
-          await createScheduledUpload(fileName, storagePath, metadata, entry.platforms, scheduledAtIso);
+          const accountId = Object.values(selectedAccounts)[0];
+          await createScheduledUpload(fileName, storagePath, metadata, entry.platforms, scheduledAtIso, accountId);
         }
       }
 
@@ -534,6 +550,19 @@ export default function CampaignScheduler() {
                 </Button>
               ))}
             </div>
+            {/* Account pickers */}
+            {needsPicker && platforms.length > 0 && (
+              <div className="flex flex-wrap gap-3 pt-2">
+                {platforms.map((p) => (
+                  <AccountPicker
+                    key={p}
+                    platform={p}
+                    selectedAccountId={selectedAccounts[p]}
+                    onSelect={(id) => setSelectedAccounts((prev) => ({ ...prev, [p]: id }))}
+                  />
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Date/time */}

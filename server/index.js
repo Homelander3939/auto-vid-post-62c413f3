@@ -151,13 +151,38 @@ async function processJob(jobId, options = {}) {
     }
 
     const settings = await getSettings();
+
+    // === RESOLVE ACCOUNT CREDENTIALS ===
+    // If job has account_id, look up platform_accounts for credentials
+    let accountCredentials = null;
+    if (job.account_id) {
+      const { data: account } = await supabase
+        .from('platform_accounts')
+        .select('*')
+        .eq('id', job.account_id)
+        .single();
+      if (account) {
+        accountCredentials = account;
+        console.log(`[Worker] Using account "${account.label}" (${account.platform}) for job ${jobId}`);
+      }
+    }
+
     const folderPathOverride = normalizeFolderPath(options.folderPath);
     const results = job.platform_results || [];
 
     // === CREDENTIAL VALIDATION: Skip platforms without credentials ===
+    // If accountCredentials exists, use those for the matching platform
     for (const platform of results) {
       if (platform.status !== 'pending') continue;
-      const ps = settings[platform.name];
+      
+      // Resolve credentials: account_id override > app_settings fallback
+      let ps;
+      if (accountCredentials && accountCredentials.platform === platform.name) {
+        ps = { email: accountCredentials.email, password: accountCredentials.password, enabled: accountCredentials.enabled };
+      } else {
+        ps = settings[platform.name];
+      }
+      
       if (!ps?.enabled) {
         platform.status = 'error';
         platform.error = `${platform.name} is not enabled in Settings`;
@@ -264,8 +289,12 @@ async function processJob(jobId, options = {}) {
 
       try {
         console.log(`[Worker] Uploading to ${platform.name}...`);
+        // Use account credentials if available for this platform, otherwise app_settings
+        const platformCreds = (accountCredentials && accountCredentials.platform === platform.name)
+          ? { email: accountCredentials.email, password: accountCredentials.password, enabled: true }
+          : settings[platform.name];
         const result = await uploaders[platform.name](videoPath, metadata, {
-          ...settings[platform.name],
+          ...platformCreds,
           telegram: settings.telegram,
           backend: settings.backend,
         });

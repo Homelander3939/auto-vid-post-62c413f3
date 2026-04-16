@@ -6,11 +6,14 @@ import {
   parseTextContent,
   uploadVideoFile,
   getSettings,
+  getPlatformAccounts,
   type VideoMetadata,
   type AppSettings,
+  type PlatformAccount,
 } from '@/lib/storage';
 import { cleanVideoTitle, matchVideoTextFiles, sortFilesBySeriesNumber, INTENSITY_OPTIONS } from '@/lib/titleUtils';
 import { supabase } from '@/integrations/supabase/client';
+import AccountPicker, { useAccountsForPlatforms } from '@/components/AccountPicker';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -26,7 +29,10 @@ import CampaignScheduler from '@/components/CampaignScheduler';
 
 type PlatformStatus = { ready: boolean; reason: string };
 
-function getPlatformStatuses(settings: AppSettings | undefined): Record<string, PlatformStatus> {
+function getPlatformStatuses(
+  settings: AppSettings | undefined,
+  accountsByPlatform: Record<string, PlatformAccount[]>
+): Record<string, PlatformStatus> {
   if (!settings) return {
     youtube: { ready: false, reason: 'Loading settings…' },
     tiktok: { ready: false, reason: 'Loading settings…' },
@@ -34,6 +40,12 @@ function getPlatformStatuses(settings: AppSettings | undefined): Record<string, 
   };
 
   const check = (p: 'youtube' | 'tiktok' | 'instagram'): PlatformStatus => {
+    const accs = accountsByPlatform[p] || [];
+    // If we have platform_accounts, use those
+    if (accs.length > 0) {
+      return { ready: true, reason: '' };
+    }
+    // Fallback to app_settings
     const s = settings[p];
     if (!s.enabled) return { ready: false, reason: `${p} is disabled in Settings` };
     if (!s.email || !s.password) return { ready: false, reason: `${p} credentials missing in Settings` };
@@ -71,6 +83,9 @@ export default function Dashboard() {
   const [batchEntries, setBatchEntries] = useState<BatchEntry[]>([]);
   const [intensityMinutes, setIntensityMinutes] = useState(60);
 
+  // Account selection per platform
+  const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({});
+
   const isMultiFile = batchEntries.length > 1;
 
   const { data: settings } = useQuery({
@@ -78,7 +93,9 @@ export default function Dashboard() {
     queryFn: getSettings,
   });
 
-  const platformStatuses = getPlatformStatuses(settings);
+  const { accountsByPlatform, getDefaultAccountId, needsPicker } = useAccountsForPlatforms(['youtube', 'tiktok', 'instagram']);
+
+  const platformStatuses = getPlatformStatuses(settings, accountsByPlatform);
 
   useEffect(() => {
     if (!settings) return;
@@ -86,8 +103,16 @@ export default function Dashboard() {
       .filter(([, s]) => s.ready)
       .map(([name]) => name);
     setSelectedPlatforms(ready);
+    // Initialize default account selections
+    const defaults: Record<string, string> = {};
+    for (const p of ready) {
+      const defId = getDefaultAccountId(p);
+      if (defId) defaults[p] = defId;
+    }
+    setSelectedAccounts((prev) => ({ ...defaults, ...prev }));
   }, [settings?.youtube.enabled, settings?.tiktok.enabled, settings?.instagram.enabled,
-      settings?.youtube.email, settings?.tiktok.email, settings?.instagram.email]);
+      settings?.youtube.email, settings?.tiktok.email, settings?.instagram.email,
+      JSON.stringify(accountsByPlatform)]);
 
   const handleVideoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -213,12 +238,14 @@ export default function Dashboard() {
 
           if (i === 0) {
             // First video: immediate
-            const job = await createUploadJob(entry.videoFile.name, storagePath, metadata, readyPlatforms);
+            const accountId = Object.values(selectedAccounts)[0]; // use first selected account
+            const job = await createUploadJob(entry.videoFile.name, storagePath, metadata, readyPlatforms, accountId);
             immediateIds.push(job.id);
           } else {
             // Subsequent videos: scheduled with intensity spacing
             const scheduledAt = new Date(Date.now() + i * intensityMinutes * 60_000).toISOString();
-            await createScheduledUpload(entry.videoFile.name, storagePath, metadata, readyPlatforms, scheduledAt);
+            const accountId = Object.values(selectedAccounts)[0];
+            await createScheduledUpload(entry.videoFile.name, storagePath, metadata, readyPlatforms, scheduledAt, accountId);
           }
         }
 
@@ -248,7 +275,8 @@ export default function Dashboard() {
           platforms: readyPlatforms,
         };
         const storagePath = await uploadVideoFile(videoFile);
-        const job = await createUploadJob(videoFile.name, storagePath, metadata, readyPlatforms);
+        const accountId = Object.values(selectedAccounts)[0];
+        const job = await createUploadJob(videoFile.name, storagePath, metadata, readyPlatforms, accountId);
 
         const uploadMode = settings?.uploadMode || 'local';
         if (uploadMode === 'local') {
@@ -492,6 +520,19 @@ export default function Dashboard() {
                     <AlertTriangle className="w-3 h-3" />
                     No platforms ready. Configure credentials in Settings.
                   </p>
+                )}
+                {/* Account pickers — only shown when multiple accounts exist */}
+                {needsPicker && selectedPlatforms.length > 0 && (
+                  <div className="flex flex-wrap gap-3 pt-2 border-t">
+                    {selectedPlatforms.map((p) => (
+                      <AccountPicker
+                        key={p}
+                        platform={p}
+                        selectedAccountId={selectedAccounts[p]}
+                        onSelect={(id) => setSelectedAccounts((prev) => ({ ...prev, [p]: id }))}
+                      />
+                    ))}
+                  </div>
                 )}
               </div>
               <Button onClick={handleUpload} disabled={!canUpload || uploading} className="w-full gap-2" size="lg">

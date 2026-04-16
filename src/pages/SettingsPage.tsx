@@ -1,14 +1,16 @@
-import { getSettings, saveSettings, type AppSettings } from '@/lib/storage';
+import { getSettings, saveSettings, type AppSettings, getPlatformAccounts, savePlatformAccount, deletePlatformAccount, setDefaultAccount, type PlatformAccount } from '@/lib/storage';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { useState, useEffect } from 'react';
-import { FolderOpen, Eye, EyeOff, Send, Info, Cloud, Monitor } from 'lucide-react';
+import { FolderOpen, Eye, EyeOff, Send, Info, Cloud, Monitor, Plus, Trash2, Star, Pencil, X, Check } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 
 function PasswordInput({
   value,
@@ -39,6 +41,269 @@ function PasswordInput({
   );
 }
 
+interface AccountFormData {
+  label: string;
+  email: string;
+  password: string;
+}
+
+function PlatformAccountCard({
+  platform,
+  accounts,
+  onRefresh,
+}: {
+  platform: string;
+  accounts: PlatformAccount[];
+  onRefresh: () => void;
+}) {
+  const { toast } = useToast();
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<AccountFormData>({ label: '', email: '', password: '' });
+  const [saving, setSaving] = useState(false);
+
+  const platformAccounts = accounts.filter((a) => a.platform === platform);
+  const hasAccounts = platformAccounts.length > 0;
+
+  const descriptions: Record<string, string> = {
+    youtube: 'YouTube Studio login — browser opens studio.youtube.com',
+    tiktok: 'TikTok Creator login — browser opens tiktok.com/creator',
+    instagram: 'Instagram login — browser opens instagram.com',
+  };
+
+  const resetForm = () => {
+    setForm({ label: '', email: '', password: '' });
+    setAdding(false);
+    setEditingId(null);
+  };
+
+  const handleSave = async () => {
+    if (!form.email.trim()) {
+      toast({ title: 'Email is required', variant: 'destructive' });
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload: any = {
+        platform,
+        label: form.label.trim() || form.email.split('@')[0],
+        email: form.email.trim(),
+        password: form.password,
+        enabled: true,
+      };
+
+      if (editingId) {
+        payload.id = editingId;
+      } else if (!hasAccounts) {
+        payload.is_default = true;
+      }
+
+      await savePlatformAccount(payload);
+      toast({ title: editingId ? 'Account updated' : 'Account added' });
+      resetForm();
+      onRefresh();
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await deletePlatformAccount(id);
+      toast({ title: 'Account removed' });
+      onRefresh();
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleSetDefault = async (id: string) => {
+    try {
+      await setDefaultAccount(id, platform);
+      toast({ title: 'Default account updated' });
+      onRefresh();
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const handleToggleEnabled = async (account: PlatformAccount) => {
+    try {
+      await savePlatformAccount({ id: account.id, platform, enabled: !account.enabled });
+      onRefresh();
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const startEdit = (account: PlatformAccount) => {
+    setEditingId(account.id);
+    setForm({ label: account.label, email: account.email, password: account.password });
+    setAdding(true);
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <CardTitle className="text-base capitalize">{platform}</CardTitle>
+            <CardDescription>{descriptions[platform]}</CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 shrink-0"
+            onClick={() => {
+              resetForm();
+              setAdding(true);
+            }}
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!hasAccounts && !adding && (
+          <p className="text-sm text-muted-foreground text-center py-3">
+            No accounts configured. Add one to enable {platform} uploads.
+          </p>
+        )}
+
+        {/* Account list */}
+        {platformAccounts.map((account) => (
+          <div
+            key={account.id}
+            className={`flex items-center gap-3 rounded-lg border p-3 transition-colors ${
+              account.enabled ? 'border-border' : 'border-border/50 opacity-60'
+            }`}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium truncate">{account.label || account.email}</span>
+                {account.is_default && (
+                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 shrink-0">
+                    <Star className="w-2.5 h-2.5 fill-current" />
+                    Default
+                  </Badge>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground truncate">{account.email}</p>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <Switch
+                checked={account.enabled}
+                onCheckedChange={() => handleToggleEnabled(account)}
+                className="scale-75"
+              />
+              {!account.is_default && platformAccounts.length > 1 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-1.5 text-muted-foreground hover:text-amber-600"
+                  title="Set as default"
+                  onClick={() => handleSetDefault(account.id)}
+                >
+                  <Star className="w-3.5 h-3.5" />
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-1.5 text-muted-foreground hover:text-foreground"
+                onClick={() => startEdit(account)}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-1.5 text-muted-foreground hover:text-destructive"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Remove account?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will remove the {platform} account "{account.label || account.email}".
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() => handleDelete(account.id)}
+                      className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+                    >
+                      Remove
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
+          </div>
+        ))}
+
+        {/* Add/Edit form */}
+        {adding && (
+          <div className="rounded-lg border-2 border-dashed border-primary/30 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium">{editingId ? 'Edit Account' : 'New Account'}</p>
+              <Button variant="ghost" size="sm" className="h-6 px-1.5" onClick={resetForm}>
+                <X className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Label (optional)</Label>
+              <Input
+                value={form.label}
+                onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
+                placeholder="e.g. Main Channel, Gaming, Personal"
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Email / Username</Label>
+              <Input
+                value={form.email}
+                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                placeholder={`${platform}@example.com`}
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Password</Label>
+              <PasswordInput
+                value={form.password}
+                onChange={(v) => setForm((f) => ({ ...f, password: v }))}
+                placeholder="••••••••"
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
+                <Check className="w-3.5 h-3.5" />
+                {saving ? 'Saving…' : editingId ? 'Update' : 'Add Account'}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={resetForm}>
+                Cancel
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground bg-secondary p-2.5 rounded-lg">
+              💡 First upload will open a browser window. Log in manually if needed — the session is saved for all future uploads.
+            </p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 const defaultSettings: AppSettings = {
   folderPath: '',
   uploadMode: 'local',
@@ -57,12 +322,21 @@ export default function SettingsPage() {
     queryFn: () => getSettings(),
   });
 
+  const { data: accounts = [] } = useQuery({
+    queryKey: ['platform_accounts'],
+    queryFn: getPlatformAccounts,
+  });
+
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (savedSettings) setSettings(savedSettings);
   }, [savedSettings]);
+
+  const refreshAccounts = () => {
+    queryClient.invalidateQueries({ queryKey: ['platform_accounts'] });
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -77,17 +351,6 @@ export default function SettingsPage() {
     }
   };
 
-  const updatePlatform = (
-    platform: 'youtube' | 'tiktok' | 'instagram',
-    field: string,
-    value: any
-  ) => {
-    setSettings((prev) => ({
-      ...prev,
-      [platform]: { ...prev[platform], [field]: value },
-    }));
-  };
-
   const isCloud = settings.uploadMode === 'cloud';
 
   return (
@@ -95,7 +358,7 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Configure platform logins, upload mode, and notifications
+          Configure platform accounts, upload mode, and notifications
         </p>
       </div>
 
@@ -190,49 +453,14 @@ export default function SettingsPage() {
         </Card>
       )}
 
-      {/* Platform Credentials */}
+      {/* Platform Accounts */}
       {(['youtube', 'tiktok', 'instagram'] as const).map((platform) => (
-        <Card key={platform}>
-          <CardHeader>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <CardTitle className="text-base capitalize">{platform}</CardTitle>
-                <CardDescription>
-                  {platform === 'youtube' && 'YouTube Studio login — browser opens studio.youtube.com'}
-                  {platform === 'tiktok' && 'TikTok Creator login — browser opens tiktok.com/creator'}
-                  {platform === 'instagram' && 'Instagram login — browser opens instagram.com'}
-                </CardDescription>
-              </div>
-              <Switch
-                checked={settings[platform].enabled}
-                onCheckedChange={(v) => updatePlatform(platform, 'enabled', v)}
-              />
-            </div>
-          </CardHeader>
-          {settings[platform].enabled && (
-            <CardContent className="space-y-4">
-              <p className="text-xs text-muted-foreground bg-secondary p-3 rounded-lg">
-                💡 First upload will open a browser window. Log in manually if needed — the session is saved for all future uploads.
-              </p>
-              <div className="space-y-2">
-                <Label>Email / Username</Label>
-                <Input
-                  value={settings[platform].email}
-                  onChange={(e) => updatePlatform(platform, 'email', e.target.value)}
-                  placeholder={`${platform}@example.com`}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Password</Label>
-                <PasswordInput
-                  value={settings[platform].password}
-                  onChange={(v) => updatePlatform(platform, 'password', v)}
-                  placeholder="••••••••"
-                />
-              </div>
-            </CardContent>
-          )}
-        </Card>
+        <PlatformAccountCard
+          key={platform}
+          platform={platform}
+          accounts={accounts}
+          onRefresh={refreshAccounts}
+        />
       ))}
 
       {/* Telegram */}

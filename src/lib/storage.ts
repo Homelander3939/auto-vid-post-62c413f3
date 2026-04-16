@@ -3,6 +3,17 @@
 
 import { supabase } from '@/integrations/supabase/client';
 
+export interface PlatformAccount {
+  id: string;
+  platform: string;
+  label: string;
+  email: string;
+  password: string;
+  enabled: boolean;
+  is_default: boolean;
+  created_at: string;
+}
+
 export interface AppSettings {
   folderPath: string;
   uploadMode: 'local' | 'cloud';
@@ -125,6 +136,40 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   if (error) {
     throw new Error(error.message || 'Failed to save settings');
   }
+}
+
+// --- Platform Accounts ---
+export async function getPlatformAccounts(): Promise<PlatformAccount[]> {
+  const { data, error } = await supabase
+    .from('platform_accounts')
+    .select('*')
+    .order('created_at', { ascending: true });
+  if (error || !data) return [];
+  return data as unknown as PlatformAccount[];
+}
+
+export async function savePlatformAccount(account: Partial<PlatformAccount> & { platform: string }): Promise<PlatformAccount> {
+  if (account.id) {
+    const { id, ...rest } = account;
+    const { data, error } = await supabase.from('platform_accounts').update(rest as any).eq('id', id).select().single();
+    if (error || !data) throw new Error(error?.message || 'Failed to update account');
+    return data as unknown as PlatformAccount;
+  } else {
+    const { data, error } = await supabase.from('platform_accounts').insert(account as any).select().single();
+    if (error || !data) throw new Error(error?.message || 'Failed to create account');
+    return data as unknown as PlatformAccount;
+  }
+}
+
+export async function deletePlatformAccount(id: string): Promise<void> {
+  const { error } = await supabase.from('platform_accounts').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+export async function setDefaultAccount(id: string, platform: string): Promise<void> {
+  // Unset all defaults for platform, then set the chosen one
+  await supabase.from('platform_accounts').update({ is_default: false } as any).eq('platform', platform);
+  await supabase.from('platform_accounts').update({ is_default: true } as any).eq('id', id);
 }
 
 // --- Video file upload to storage ---
@@ -297,25 +342,29 @@ export async function createUploadJob(
   videoFileName: string,
   videoStoragePath: string | null,
   metadata: VideoMetadata,
-  platforms: string[]
+  platforms: string[],
+  accountId?: string
 ): Promise<UploadJob> {
   const platformResults: PlatformResult[] = platforms.map((name) => ({
     name,
     status: 'pending' as const,
   }));
 
+  const insertPayload: any = {
+    video_file_name: videoFileName,
+    video_storage_path: videoStoragePath,
+    title: metadata.title,
+    description: metadata.description,
+    tags: metadata.tags,
+    target_platforms: platforms,
+    status: 'pending',
+    platform_results: platformResults as any,
+  };
+  if (accountId) insertPayload.account_id = accountId;
+
   const { data, error } = await supabase
     .from('upload_jobs')
-    .insert({
-      video_file_name: videoFileName,
-      video_storage_path: videoStoragePath,
-      title: metadata.title,
-      description: metadata.description,
-      tags: metadata.tags,
-      target_platforms: platforms,
-      status: 'pending',
-      platform_results: platformResults as any,
-    })
+    .insert(insertPayload)
     .select()
     .single();
 
@@ -454,24 +503,28 @@ export async function createScheduledUpload(
   videoStoragePath: string | null,
   metadata: VideoMetadata,
   platforms: string[],
-  scheduledAt: string
+  scheduledAt: string,
+  accountId?: string
 ): Promise<ScheduledUpload> {
   const normalizedScheduledAt = Number.isNaN(new Date(scheduledAt).getTime())
     ? scheduledAt
     : new Date(scheduledAt).toISOString();
 
+  const insertPayload: any = {
+    video_file_name: videoFileName,
+    video_storage_path: videoStoragePath,
+    title: metadata.title,
+    description: metadata.description,
+    tags: metadata.tags,
+    target_platforms: platforms,
+    scheduled_at: normalizedScheduledAt,
+    status: 'scheduled',
+  };
+  if (accountId) insertPayload.account_id = accountId;
+
   const { data, error } = await supabase
     .from('scheduled_uploads')
-    .insert({
-      video_file_name: videoFileName,
-      video_storage_path: videoStoragePath,
-      title: metadata.title,
-      description: metadata.description,
-      tags: metadata.tags,
-      target_platforms: platforms,
-      scheduled_at: normalizedScheduledAt,
-      status: 'scheduled',
-    })
+    .insert(insertPayload)
     .select()
     .single();
 

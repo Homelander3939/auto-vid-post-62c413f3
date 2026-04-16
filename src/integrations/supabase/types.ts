@@ -104,6 +104,39 @@ export type Database = {
         }
         Relationships: []
       }
+      platform_accounts: {
+        Row: {
+          created_at: string
+          email: string
+          enabled: boolean
+          id: string
+          is_default: boolean
+          label: string
+          password: string
+          platform: string
+        }
+        Insert: {
+          created_at?: string
+          email?: string
+          enabled?: boolean
+          id?: string
+          is_default?: boolean
+          label?: string
+          password?: string
+          platform: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          enabled?: boolean
+          id?: string
+          is_default?: boolean
+          label?: string
+          password?: string
+          platform?: string
+        }
+        Relationships: []
+      }
       schedule_config: {
         Row: {
           cron_expression: string
@@ -145,6 +178,7 @@ export type Database = {
       }
       scheduled_uploads: {
         Row: {
+          account_id: string | null
           created_at: string
           description: string
           id: string
@@ -158,6 +192,7 @@ export type Database = {
           video_storage_path: string | null
         }
         Insert: {
+          account_id?: string | null
           created_at?: string
           description?: string
           id?: string
@@ -171,6 +206,7 @@ export type Database = {
           video_storage_path?: string | null
         }
         Update: {
+          account_id?: string | null
           created_at?: string
           description?: string
           id?: string
@@ -184,6 +220,13 @@ export type Database = {
           video_storage_path?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "scheduled_uploads_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "platform_accounts"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "scheduled_uploads_upload_job_id_fkey"
             columns: ["upload_job_id"]
@@ -240,6 +283,7 @@ export type Database = {
       }
       upload_jobs: {
         Row: {
+          account_id: string | null
           browserbase_session_id: string | null
           completed_at: string | null
           created_at: string
@@ -254,6 +298,7 @@ export type Database = {
           video_storage_path: string | null
         }
         Insert: {
+          account_id?: string | null
           browserbase_session_id?: string | null
           completed_at?: string | null
           created_at?: string
@@ -268,6 +313,7 @@ export type Database = {
           video_storage_path?: string | null
         }
         Update: {
+          account_id?: string | null
           browserbase_session_id?: string | null
           completed_at?: string | null
           created_at?: string
@@ -281,7 +327,15 @@ export type Database = {
           video_file_name?: string
           video_storage_path?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "upload_jobs_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "platform_accounts"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {
