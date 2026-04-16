@@ -38,6 +38,7 @@ import {
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
+import { saveLocalJobAccountSelections, saveLocalScheduledAccountSelections, type PlatformAccountSelections } from '@/lib/localBrowserProfiles';
 
 interface ScheduleEntry {
   videoFile?: File;
@@ -47,6 +48,14 @@ interface ScheduleEntry {
   tags: string[];
   scheduledAt: string;
   platforms: string[];
+}
+
+function buildPlatformAccountSelections(platforms: string[], selectedAccounts: Record<string, string>): PlatformAccountSelections {
+  return platforms.reduce<PlatformAccountSelections>((acc, platform) => {
+    const accountId = selectedAccounts[platform];
+    if (accountId) acc[platform] = accountId;
+    return acc;
+  }, {});
 }
 
 function toLocalDateTimeInputValue(date: Date) {
@@ -294,6 +303,8 @@ export default function CampaignScheduler() {
           tags: entry.tags,
           platforms: entry.platforms,
         };
+        const accountSelections = buildPlatformAccountSelections(entry.platforms, selectedAccounts);
+        const primaryAccountId = entry.platforms.map((platform) => accountSelections[platform]).find(Boolean);
 
         const scheduledAtIso = new Date(entry.scheduledAt).toISOString();
         const scheduledTime = new Date(scheduledAtIso).getTime();
@@ -302,13 +313,21 @@ export default function CampaignScheduler() {
 
         if (isImmediate) {
           setSaveProgress(`Creating job ${i + 1}/${entries.length}...`);
-          const accountId = Object.values(selectedAccounts)[0];
-          const job = await createUploadJob(fileName, storagePath, metadata, entry.platforms, accountId);
+          const job = await createUploadJob(fileName, storagePath, metadata, entry.platforms, primaryAccountId);
+          try {
+            await saveLocalJobAccountSelections(job.id, accountSelections);
+          } catch (error) {
+            console.warn('Failed to save local account selections for job', error);
+          }
           immediateJobIds.push(job.id);
         } else {
           setSaveProgress(`Scheduling ${i + 1}/${entries.length}...`);
-          const accountId = Object.values(selectedAccounts)[0];
-          await createScheduledUpload(fileName, storagePath, metadata, entry.platforms, scheduledAtIso, accountId);
+          const scheduled = await createScheduledUpload(fileName, storagePath, metadata, entry.platforms, scheduledAtIso, primaryAccountId);
+          try {
+            await saveLocalScheduledAccountSelections(scheduled.id, accountSelections);
+          } catch (error) {
+            console.warn('Failed to save local account selections for scheduled upload', error);
+          }
         }
       }
 

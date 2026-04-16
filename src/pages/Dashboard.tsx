@@ -26,6 +26,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { FileVideo, FileText, UploadCloud, CheckCircle2, CalendarClock, Zap, X, AlertTriangle, Clock } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import CampaignScheduler from '@/components/CampaignScheduler';
+import { saveLocalJobAccountSelections, saveLocalScheduledAccountSelections, type PlatformAccountSelections } from '@/lib/localBrowserProfiles';
 
 type PlatformStatus = { ready: boolean; reason: string };
 
@@ -61,6 +62,14 @@ interface BatchEntry {
   title: string;
   description: string;
   tags: string[];
+}
+
+function buildPlatformAccountSelections(platforms: string[], selectedAccounts: Record<string, string>): PlatformAccountSelections {
+  return platforms.reduce<PlatformAccountSelections>((acc, platform) => {
+    const accountId = selectedAccounts[platform];
+    if (accountId) acc[platform] = accountId;
+    return acc;
+  }, {});
 }
 
 export default function Dashboard() {
@@ -235,17 +244,27 @@ export default function Dashboard() {
             tags: entry.tags,
             platforms: readyPlatforms,
           };
+          const accountSelections = buildPlatformAccountSelections(readyPlatforms, selectedAccounts);
+          const primaryAccountId = readyPlatforms.map((platform) => accountSelections[platform]).find(Boolean);
 
           if (i === 0) {
             // First video: immediate
-            const accountId = Object.values(selectedAccounts)[0]; // use first selected account
-            const job = await createUploadJob(entry.videoFile.name, storagePath, metadata, readyPlatforms, accountId);
+            const job = await createUploadJob(entry.videoFile.name, storagePath, metadata, readyPlatforms, primaryAccountId);
+            try {
+              await saveLocalJobAccountSelections(job.id, accountSelections);
+            } catch (error) {
+              console.warn('Failed to save local account selections for job', error);
+            }
             immediateIds.push(job.id);
           } else {
             // Subsequent videos: scheduled with intensity spacing
             const scheduledAt = new Date(Date.now() + i * intensityMinutes * 60_000).toISOString();
-            const accountId = Object.values(selectedAccounts)[0];
-            await createScheduledUpload(entry.videoFile.name, storagePath, metadata, readyPlatforms, scheduledAt, accountId);
+            const scheduled = await createScheduledUpload(entry.videoFile.name, storagePath, metadata, readyPlatforms, scheduledAt, primaryAccountId);
+            try {
+              await saveLocalScheduledAccountSelections(scheduled.id, accountSelections);
+            } catch (error) {
+              console.warn('Failed to save local account selections for scheduled upload', error);
+            }
           }
         }
 
@@ -275,8 +294,14 @@ export default function Dashboard() {
           platforms: readyPlatforms,
         };
         const storagePath = await uploadVideoFile(videoFile);
-        const accountId = Object.values(selectedAccounts)[0];
-        const job = await createUploadJob(videoFile.name, storagePath, metadata, readyPlatforms, accountId);
+        const accountSelections = buildPlatformAccountSelections(readyPlatforms, selectedAccounts);
+        const primaryAccountId = readyPlatforms.map((platform) => accountSelections[platform]).find(Boolean);
+        const job = await createUploadJob(videoFile.name, storagePath, metadata, readyPlatforms, primaryAccountId);
+        try {
+          await saveLocalJobAccountSelections(job.id, accountSelections);
+        } catch (error) {
+          console.warn('Failed to save local account selections for job', error);
+        }
 
         const uploadMode = settings?.uploadMode || 'local';
         if (uploadMode === 'local') {

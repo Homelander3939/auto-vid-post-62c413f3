@@ -11,6 +11,7 @@ import { useState, useEffect } from 'react';
 import { FolderOpen, Eye, EyeOff, Send, Info, Cloud, Monitor, Plus, Trash2, Star, Pencil, X, Check } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 
 function PasswordInput({
   value,
@@ -51,16 +52,19 @@ function PlatformAccountCard({
   platform,
   accounts,
   onRefresh,
+  localMode,
 }: {
   platform: string;
   accounts: PlatformAccount[];
   onRefresh: () => void;
+  localMode: boolean;
 }) {
   const { toast } = useToast();
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<AccountFormData>({ label: '', email: '', password: '' });
   const [saving, setSaving] = useState(false);
+  const [preparingId, setPreparingId] = useState<string | null>(null);
 
   const platformAccounts = accounts.filter((a) => a.platform === platform);
   const hasAccounts = platformAccounts.length > 0;
@@ -144,6 +148,32 @@ function PlatformAccountCard({
     setAdding(true);
   };
 
+  const handlePrepareProfile = async (account: PlatformAccount) => {
+    setPreparingId(account.id);
+    try {
+      const result = await openLocalBrowserProfileSession({
+        platform,
+        accountId: account.id,
+        label: account.label || account.email,
+      });
+      const linkedCount = result.linkedAccountIds.length;
+      toast({
+        title: 'Browser profile opened',
+        description: linkedCount > 1
+          ? `Log in once in the opened browser. This profile is now shared with ${linkedCount} matching accounts.`
+          : 'Log in once in the opened browser. This profile will now be reused for future uploads.',
+      });
+    } catch (err: any) {
+      toast({
+        title: 'Could not open local browser profile',
+        description: err.message || 'Make sure your local server is running on port 3001.',
+        variant: 'destructive',
+      });
+    } finally {
+      setPreparingId(null);
+    }
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -199,6 +229,18 @@ function PlatformAccountCard({
                 onCheckedChange={() => handleToggleEnabled(account)}
                 className="scale-75"
               />
+              {localMode && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-muted-foreground hover:text-foreground"
+                  onClick={() => handlePrepareProfile(account)}
+                  disabled={preparingId === account.id}
+                >
+                  <Monitor className="w-3.5 h-3.5 mr-1" />
+                  {preparingId === account.id ? 'Opening…' : 'Prepare'}
+                </Button>
+              )}
               {!account.is_default && platformAccounts.length > 1 && (
                 <Button
                   variant="ghost"
@@ -295,7 +337,7 @@ function PlatformAccountCard({
               </Button>
             </div>
             <p className="text-xs text-muted-foreground bg-secondary p-2.5 rounded-lg">
-              💡 First upload will open a browser window. Log in manually if needed — the session is saved for all future uploads.
+              💡 Use Prepare once per account to open its Chrome profile and save the login. Future uploads will reuse that same saved profile.
             </p>
           </div>
         )}
@@ -460,6 +502,7 @@ export default function SettingsPage() {
           platform={platform}
           accounts={accounts}
           onRefresh={refreshAccounts}
+          localMode={!isCloud}
         />
       ))}
 
