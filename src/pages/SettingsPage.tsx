@@ -14,7 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import SocialAccountCard from '@/components/SocialAccountCard';
-import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, testAgentConnection, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings } from '@/lib/socialPosts';
+import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, testAgentConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption } from '@/lib/socialPosts';
 import { Search as SearchIcon, Image as ImageIcon, Bot, Loader2, CheckCircle2, XCircle, ExternalLink } from 'lucide-react';
 
 function PasswordInput({
