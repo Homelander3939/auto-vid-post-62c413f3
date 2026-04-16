@@ -253,16 +253,40 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
             <Input type="datetime-local" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} />
           </div>
 
-          <div className="flex gap-2 pt-2">
+          <div className="flex gap-2 pt-2 flex-wrap">
             <Button onClick={() => handleSubmit('now')} disabled={submitting} className="gap-2">
               <Send className="w-4 h-4" /> Post Now
             </Button>
             <Button variant="outline" onClick={() => handleSubmit('schedule')} disabled={submitting || !scheduledAt} className="gap-2">
               <Calendar className="w-4 h-4" /> Schedule
             </Button>
+            <Button variant="secondary" onClick={() => handleSubmit('draft')} disabled={submitting} className="gap-2">
+              💾 Save as Draft
+            </Button>
           </div>
         </CardContent>
       </Card>
+
+      {/* Missing-accounts dialog: prompts user to add accounts before posting (or save as draft instead) */}
+      <AlertDialog open={missingAccountsOpen} onOpenChange={setMissingAccountsOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>No accounts for {missingPlatforms.map((p) => PLATFORM_LABELS[p]).join(', ')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              You need to add at least one account per platform before posting. You can save this post as a draft now and add accounts later, or jump to Settings to add them.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <Button variant="secondary" onClick={async () => { setMissingAccountsOpen(false); await handleSubmit('draft'); }}>
+              Save as draft
+            </Button>
+            <AlertDialogAction onClick={() => { setMissingAccountsOpen(false); window.location.href = '/settings'; }}>
+              Add accounts
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
