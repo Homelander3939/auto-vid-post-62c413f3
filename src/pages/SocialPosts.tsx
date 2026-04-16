@@ -28,7 +28,7 @@ import AIPostComposer from '@/components/AIPostComposer';
 import { saveLocalJobAccountSelections } from '@/lib/localBrowserProfiles';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 
-const PLATFORM_LABELS: Record<string, string> = { x: 'X', tiktok: 'TikTok', facebook: 'Facebook' };
+const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
 
 function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCreated: () => void }) {
   const { toast } = useToast();
@@ -402,7 +402,7 @@ export default function SocialPostsPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Social Posts</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Compose, schedule, and AI-generate posts for X, TikTok, and Facebook.
+          Compose, schedule, and AI-generate posts for X, LinkedIn, and Facebook.
         </p>
       </div>
 
