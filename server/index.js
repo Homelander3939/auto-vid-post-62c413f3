@@ -1104,6 +1104,29 @@ async function processPendingCommands() {
             await supabase.from('pending_commands').update({
               status: 'completed', result: 'done', completed_at: new Date().toISOString(),
             }).eq('id', cmd.id);
+          } else if (cmd.command === 'research_search') {
+            // Cloud agent asked us to scrape DuckDuckGo/Google with the local browser.
+            const query = cmd.args?.query || '';
+            const count = Number(cmd.args?.count) || 6;
+            console.log(`[Commands] research_search: "${query}" (count=${count})`);
+            try {
+              // Reuse the same logic as the /api/research/search endpoint by calling it via HTTP loopback.
+              const r = await fetch(`http://localhost:${PORT}/api/research/search`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query, count }),
+              });
+              const data = await r.json().catch(() => ({}));
+              await supabase.from('pending_commands').update({
+                status: 'completed',
+                result: JSON.stringify({ provider: data.provider || 'none', results: data.results || [] }),
+                completed_at: new Date().toISOString(),
+              }).eq('id', cmd.id);
+              console.log(`[Commands] research_search done: ${(data.results || []).length} results via ${data.provider || 'none'}`);
+            } catch (err) {
+              await supabase.from('pending_commands').update({
+                status: 'failed', result: err.message, completed_at: new Date().toISOString(),
+              }).eq('id', cmd.id);
+            }
           } else {
             await supabase.from('pending_commands').update({
               status: 'failed', result: `Unknown command: ${cmd.command}`, completed_at: new Date().toISOString(),
