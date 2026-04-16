@@ -238,12 +238,14 @@ export default function Dashboard() {
 
           if (i === 0) {
             // First video: immediate
-            const job = await createUploadJob(entry.videoFile.name, storagePath, metadata, readyPlatforms);
+            const accountId = Object.values(selectedAccounts)[0]; // use first selected account
+            const job = await createUploadJob(entry.videoFile.name, storagePath, metadata, readyPlatforms, accountId);
             immediateIds.push(job.id);
           } else {
             // Subsequent videos: scheduled with intensity spacing
             const scheduledAt = new Date(Date.now() + i * intensityMinutes * 60_000).toISOString();
-            await createScheduledUpload(entry.videoFile.name, storagePath, metadata, readyPlatforms, scheduledAt);
+            const accountId = Object.values(selectedAccounts)[0];
+            await createScheduledUpload(entry.videoFile.name, storagePath, metadata, readyPlatforms, scheduledAt, accountId);
           }
         }
 
