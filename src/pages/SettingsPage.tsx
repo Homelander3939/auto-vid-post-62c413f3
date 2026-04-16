@@ -14,7 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import SocialAccountCard from '@/components/SocialAccountCard';
-import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, SOCIAL_PLATFORMS, type AISettings, type AIModel } from '@/lib/socialPosts';
+import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, SOCIAL_PLATFORMS, type AISettings, type AIModel, type ConnectionTestResult } from '@/lib/socialPosts';
 
 function PasswordInput({
   value,
@@ -389,6 +389,8 @@ export default function SettingsPage() {
   const [aiModels, setAiModels] = useState<AIModel[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
 
   const loadModels = async (provider: string, apiKey: string) => {
     setLoadingModels(true);
@@ -401,6 +403,22 @@ export default function SettingsPage() {
       setAiModels([]);
     } finally {
       setLoadingModels(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const r = await testAIConnection(aiSettings.provider, aiSettings.apiKey, aiSettings.model);
+      setTestResult(r);
+      if (r.ok) toast({ title: '✅ Connected', description: `${r.model} responded in ${r.latency}ms` });
+      else toast({ title: 'Connection failed', description: r.error, variant: 'destructive' });
+    } catch (e: any) {
+      setTestResult({ ok: false, error: e.message });
+      toast({ title: 'Test failed', description: e.message, variant: 'destructive' });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -691,10 +709,34 @@ export default function SettingsPage() {
               </p>
             </div>
           )}
-          <Button size="sm" onClick={handleSaveAI} disabled={savingAI} className="gap-1.5">
-            <Check className="w-3.5 h-3.5" />
-            {savingAI ? 'Saving…' : 'Save AI Settings'}
-          </Button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button size="sm" onClick={handleSaveAI} disabled={savingAI} className="gap-1.5">
+              <Check className="w-3.5 h-3.5" />
+              {savingAI ? 'Saving…' : 'Save AI Settings'}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleTestConnection}
+              disabled={testing || !aiSettings.model || (aiSettings.provider !== 'lovable' && !aiSettings.apiKey)}
+              className="gap-1.5"
+            >
+              {testing ? '⏳ Testing…' : '🔌 Test connection'}
+            </Button>
+            {testResult && (
+              testResult.ok ? (
+                <Badge className="gap-1 bg-emerald-500/15 text-emerald-700 border-emerald-500/30 hover:bg-emerald-500/15">
+                  ✅ Connected · {testResult.latency}ms
+                </Badge>
+              ) : (
+                <Badge variant="destructive" className="gap-1">❌ {testResult.error?.slice(0, 60)}</Badge>
+              )
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground border-t pt-3 mt-1">
+            <span className="font-medium">Currently active in AI Post Generator:</span>{' '}
+            <span className="font-mono text-foreground">{savedAi?.provider || 'lovable'} · {savedAi?.model || 'default'}</span>
+          </div>
         </CardContent>
       </Card>
 

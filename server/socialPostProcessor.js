@@ -73,9 +73,15 @@ async function processSocialPost(supabase, postId, notify) {
       r.status = 'uploading';
       await supabase.from('social_posts').update({ platform_results: [...results] }).eq('id', postId);
       try {
+        // Use per-platform variant when available; fall back to the main description/hashtags
+        const variant = (post.platform_variants || {})[r.name];
+        const platformDescription = (variant && variant.description) ? variant.description : (post.description || '');
+        const platformHashtags = (variant && variant.hashtags && variant.hashtags.length)
+          ? variant.hashtags
+          : (post.hashtags || []);
         const out = await uploader(localImage, {
-          description: post.description || '',
-          hashtags: post.hashtags || [],
+          description: platformDescription,
+          hashtags: platformHashtags,
         }, {
           accountId: account.id,
           browserProfileId: profile?.id,
