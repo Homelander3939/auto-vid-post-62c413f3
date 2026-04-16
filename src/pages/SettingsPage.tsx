@@ -383,6 +383,11 @@ export default function SettingsPage() {
     queryFn: getAISettings,
   });
 
+  const { data: savedAgent } = useQuery({
+    queryKey: ['agent_settings'],
+    queryFn: getAgentSettings,
+  });
+
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [saving, setSaving] = useState(false);
   const [aiSettings, setAiSettings] = useState<AISettings>({ provider: 'lovable', apiKey: '', model: 'google/gemini-3-flash-preview' });
@@ -392,6 +397,11 @@ export default function SettingsPage() {
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
+  const [agentSettings, setAgentSettings] = useState<AgentSettings>({
+    researchProvider: 'auto', researchApiKey: '', imageProvider: 'auto', imageApiKey: '',
+    researchDepth: 'standard', localAgentUrl: 'http://localhost:3001',
+  });
+  const [savingAgent, setSavingAgent] = useState(false);
 
   const loadModels = async (provider: string, apiKey: string) => {
     setLoadingModels(true);
