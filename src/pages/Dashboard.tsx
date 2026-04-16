@@ -521,6 +521,19 @@ export default function Dashboard() {
                     No platforms ready. Configure credentials in Settings.
                   </p>
                 )}
+                {/* Account pickers — only shown when multiple accounts exist */}
+                {needsPicker && selectedPlatforms.length > 0 && (
+                  <div className="flex flex-wrap gap-3 pt-2 border-t">
+                    {selectedPlatforms.map((p) => (
+                      <AccountPicker
+                        key={p}
+                        platform={p}
+                        selectedAccountId={selectedAccounts[p]}
+                        onSelect={(id) => setSelectedAccounts((prev) => ({ ...prev, [p]: id }))}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
               <Button onClick={handleUpload} disabled={!canUpload || uploading} className="w-full gap-2" size="lg">
                 <UploadCloud className="w-4 h-4" />
