@@ -1171,10 +1171,10 @@ function setupCron() {
     try { await triggerPendingUploadProcessing(5); } catch (e) { console.error('[Uploads] Poll error:', e.message); }
   }, 5000);
 
-  // Fast poll: check pending_commands every 15 seconds for responsive bot
+  // Fast poll: check pending_commands every 3 seconds for responsive bot + research
   commandPollInterval = setInterval(async () => {
     try { await processPendingCommands(); } catch (e) { console.error('[Commands] Poll error:', e.message); }
-  }, 15000);
+  }, 3000);
 
   // Kick once immediately on startup/reload so new jobs don't wait for first interval tick.
   triggerPendingUploadProcessing(5).catch((e) => console.error('[Uploads] Initial trigger failed:', e.message));
