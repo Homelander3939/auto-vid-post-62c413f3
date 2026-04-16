@@ -574,10 +574,47 @@ Deno.serve(async (req) => {
 
   const wantsStream = body.stream !== false;
 
+  // Persist a generation_jobs row so the UI can resume after navigating away and the
+  // Job Queue can show live progress without holding the browser SSE stream open.
+  const { data: jobRow } = await supabase.from('generation_jobs').insert({
+    prompt: body.prompt,
+    platforms: body.platforms,
+    include_image: !!body.includeImage,
+    status: 'running',
+    events: [],
+  }).select('id').single();
+  const jobId: string | null = jobRow?.id || null;
+
+  // Buffered DB writer — flushes events to generation_jobs.events at most every 500ms
+  // to avoid hammering the DB. Stream still emits in real time over SSE.
+  const eventBuffer: any[] = [];
+  let pendingFlush = false;
+  const flushEvents = async () => {
+    if (!jobId || eventBuffer.length === 0) return;
+    const toWrite = eventBuffer.splice(0, eventBuffer.length);
+    try {
+      // Append-only: read current then update (RLS allows; small payload)
+      const { data: cur } = await supabase.from('generation_jobs').select('events').eq('id', jobId).single();
+      const merged = [...((cur?.events as any[]) || []), ...toWrite];
+      await supabase.from('generation_jobs').update({ events: merged }).eq('id', jobId);
+    } catch (e) { console.error('flushEvents failed', e); }
+  };
+  const scheduleFlush = () => {
+    if (pendingFlush) return;
+    pendingFlush = true;
+    setTimeout(async () => { pendingFlush = false; await flushEvents(); }, 500);
+  };
+
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (event: string, data: any) => { try { controller.enqueue(sseEvent(event, data)); } catch {} };
+      const send = (event: string, data: any) => {
+        try { controller.enqueue(sseEvent(event, data)); } catch {}
+        if (jobId) { eventBuffer.push({ type: event, ...data, _ts: Date.now() }); scheduleFlush(); }
+      };
       const heartbeat = setInterval(() => { try { controller.enqueue(new TextEncoder().encode(`: ping\n\n`)); } catch {} }, 1500);
+
+      // Send the jobId first so the client can persist it and resume on reload.
+      if (jobId) send('job', { id: jobId });
 
       try {
         // ── 1. Connect ──
@@ -781,6 +818,7 @@ Deno.serve(async (req) => {
         // ── 8b. Auto-save as draft so the post appears on /social even if the user navigates away.
         // The Compose tab can re-load and edit it; on Post Now/Schedule it gets re-created or its
         // status flipped to pending. This is the "every successful generation lands on Social Posts" UX.
+        let savedPostId: string | null = null;
         try {
           const primary = variants[body.platforms[0]] || Object.values(variants)[0];
           if (primary) {
@@ -798,21 +836,37 @@ Deno.serve(async (req) => {
               platform_results: platformResults,
               platform_variants: variants,
             } as any).select('id').single();
-            if (savedRow?.id) send('saved', { id: savedRow.id, status: 'draft' });
+            if (savedRow?.id) { savedPostId = savedRow.id; send('saved', { id: savedRow.id, status: 'draft' }); }
           }
         } catch (e) {
           console.error('auto-save draft failed', e);
         }
 
         send('step', { id: 'done', emoji: '🎉', label: 'All done — saved as draft on Social Posts!', status: 'done' });
-        send('done', {
+        const finalResult = {
           variants, sources: finalSources,
           imageUrl: imgResult.url, imagePath: imgResult.path,
           provider, model: textModel,
-        });
+        };
+        send('done', finalResult);
+
+        if (jobId) {
+          await flushEvents();
+          await supabase.from('generation_jobs').update({
+            status: 'completed', result: finalResult, saved_post_id: savedPostId,
+            completed_at: new Date().toISOString(),
+          }).eq('id', jobId);
+        }
       } catch (e: any) {
         console.error('agent error', e);
         send('error', { error: e?.message || 'Unknown error', status: e?.status || 500 });
+        if (jobId) {
+          await flushEvents();
+          await supabase.from('generation_jobs').update({
+            status: 'failed', error: e?.message || 'Unknown error',
+            completed_at: new Date().toISOString(),
+          }).eq('id', jobId);
+        }
       } finally {
         clearInterval(heartbeat);
         try { controller.close(); } catch {}

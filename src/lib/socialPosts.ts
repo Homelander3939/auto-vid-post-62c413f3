@@ -302,6 +302,7 @@ export interface AgentTool {
 }
 
 export type AIStreamEvent =
+  | { type: 'job'; id: string }
   | { type: 'step'; id: string; emoji: string; label: string; status: 'active' | 'done' | 'error' }
   | { type: 'plan'; queries: string[]; imageStrategy: string; angle: string }
   | { type: 'source'; title: string; url: string; snippet?: string; favicon?: string; publishedAt?: string; note?: string }
@@ -309,8 +310,38 @@ export type AIStreamEvent =
   | { type: 'variant'; platform: string; description: string; hashtags: string[] }
   | { type: 'sources'; sources: AgentSource[] }
   | { type: 'image'; imageUrl: string; imagePath: string; credit?: string }
+  | { type: 'saved'; id: string; status: string }
   | { type: 'done'; variants: Record<string, PlatformVariant>; sources: AgentSource[]; imageUrl: string | null; imagePath: string | null; provider?: string; model?: string }
   | { type: 'error'; error: string };
+
+// Persisted generation job — survives page navigation. The edge function mirrors every
+// SSE event into generation_jobs.events so we can rehydrate the UI on reload.
+export interface GenerationJob {
+  id: string;
+  prompt: string;
+  platforms: string[];
+  include_image: boolean;
+  status: 'running' | 'completed' | 'failed';
+  events: any[];
+  result: AIGenerateOutput | null;
+  error: string | null;
+  saved_post_id: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export async function listGenerationJobs(): Promise<GenerationJob[]> {
+  const { data } = await (supabase as any).from('generation_jobs')
+    .select('*').order('created_at', { ascending: false }).limit(10);
+  return (data || []) as GenerationJob[];
+}
+
+export async function getGenerationJob(id: string): Promise<GenerationJob | null> {
+  const { data } = await (supabase as any).from('generation_jobs')
+    .select('*').eq('id', id).maybeSingle();
+  return (data || null) as GenerationJob | null;
+}
 
 // Streaming generation via SSE — calls the edge function and emits parsed events as they arrive.
 export async function generatePostStream(

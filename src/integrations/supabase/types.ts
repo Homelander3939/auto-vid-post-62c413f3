@@ -110,6 +110,51 @@ export type Database = {
         }
         Relationships: []
       }
+      generation_jobs: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          error: string | null
+          events: Json
+          id: string
+          include_image: boolean
+          platforms: string[]
+          prompt: string
+          result: Json | null
+          saved_post_id: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          events?: Json
+          id?: string
+          include_image?: boolean
+          platforms?: string[]
+          prompt?: string
+          result?: Json | null
+          saved_post_id?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          events?: Json
+          id?: string
+          include_image?: boolean
+          platforms?: string[]
+          prompt?: string
+          result?: Json | null
+          saved_post_id?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       pending_commands: {
         Row: {
           args: Json | null
