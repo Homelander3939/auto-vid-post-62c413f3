@@ -79,6 +79,19 @@ export default function CampaignScheduler() {
   const [platforms, setPlatforms] = useState<string[]>(['youtube', 'tiktok', 'instagram']);
   const [scheduledAt, setScheduledAt] = useState('');
   const [intensityMinutes, setIntensityMinutes] = useState(60);
+  const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({});
+
+  const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);
+
+  // Initialize default accounts
+  useEffect(() => {
+    const defaults: Record<string, string> = {};
+    for (const p of platforms) {
+      const defId = getDefaultAccountId(p);
+      if (defId) defaults[p] = defId;
+    }
+    setSelectedAccounts((prev) => ({ ...defaults, ...prev }));
+  }, [platforms.join(',')]);
 
   const isMultiFile = videoFiles.length > 1;
 
