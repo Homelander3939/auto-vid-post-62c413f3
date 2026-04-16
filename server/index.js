@@ -289,8 +289,12 @@ async function processJob(jobId, options = {}) {
 
       try {
         console.log(`[Worker] Uploading to ${platform.name}...`);
+        // Use account credentials if available for this platform, otherwise app_settings
+        const platformCreds = (accountCredentials && accountCredentials.platform === platform.name)
+          ? { email: accountCredentials.email, password: accountCredentials.password, enabled: true }
+          : settings[platform.name];
         const result = await uploaders[platform.name](videoPath, metadata, {
-          ...settings[platform.name],
+          ...platformCreds,
           telegram: settings.telegram,
           backend: settings.backend,
         });
