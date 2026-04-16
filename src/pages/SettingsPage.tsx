@@ -412,6 +412,19 @@ export default function SettingsPage() {
     if (savedAi) setAiSettings(savedAi);
   }, [savedAi]);
 
+  // Auto-load models when provider changes (or API key for non-lovable providers)
+  useEffect(() => {
+    if (aiSettings.provider === 'lovable') {
+      loadModels('lovable', '');
+    } else if (aiSettings.apiKey) {
+      loadModels(aiSettings.provider, aiSettings.apiKey);
+    } else {
+      setAiModels([]);
+      setModelsError(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiSettings.provider]);
+
   const refreshAccounts = () => {
     queryClient.invalidateQueries({ queryKey: ['platform_accounts'] });
   };
