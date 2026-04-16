@@ -1,0 +1,378 @@
+import { useState, useMemo } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useToast } from '@/hooks/use-toast';
+import { Send, Calendar, Trash2, RefreshCw, Image as ImageIcon, X, Clock, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import {
+  getSocialAccounts,
+  listSocialPosts,
+  createSocialPost,
+  deleteSocialPost,
+  retrySocialPost,
+  uploadSocialImage,
+  getSocialImageUrl,
+  SOCIAL_PLATFORMS,
+  type SocialAccount,
+  type SocialPost,
+  type AIGenerateOutput,
+} from '@/lib/socialPosts';
+import AIPostComposer from '@/components/AIPostComposer';
+import { saveLocalJobAccountSelections } from '@/lib/localBrowserProfiles';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+
+const PLATFORM_LABELS: Record<string, string> = { x: 'X', tiktok: 'TikTok', facebook: 'Facebook' };
+
+function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCreated: () => void }) {
+  const { toast } = useToast();
+  const [description, setDescription] = useState('');
+  const [hashtagsRaw, setHashtagsRaw] = useState('');
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(['x']);
+  const [accountSelections, setAccountSelections] = useState<Record<string, string>>({});
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [aiImagePath, setAiImagePath] = useState<string | null>(null);
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState<string | null>(null);
+  const [aiSources, setAiSources] = useState<any[]>([]);
+
+  const accountsByPlatform = useMemo(() => {
+    const map: Record<string, SocialAccount[]> = {};
+    for (const p of SOCIAL_PLATFORMS) map[p] = accounts.filter((a) => a.platform === p && a.enabled);
+    return map;
+  }, [accounts]);
+
+  const togglePlatform = (p: string) => {
+    setSelectedPlatforms((prev) => {
+      const next = prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p];
+      // Auto-pick default account
+      if (!prev.includes(p)) {
+        const list = accountsByPlatform[p] || [];
+        const def = list.find((a) => a.is_default) || list[0];
+        if (def) setAccountSelections((s) => ({ ...s, [p]: def.id }));
+      }
+      return next;
+    });
+  };
+
+  const handleImageChange = (file: File | null) => {
+    setImageFile(file);
+    setAiImagePath(null);
+    if (imagePreview) URL.revokeObjectURL(imagePreview);
+    setImagePreview(file ? URL.createObjectURL(file) : null);
+  };
+
+  const handleAIUse = (out: AIGenerateOutput, prompt: string) => {
+    setDescription(out.description);
+    setHashtagsRaw(out.hashtags.join(' '));
+    setAiPrompt(prompt);
+    setAiSources(out.sources || []);
+    if (out.imagePath && out.imageUrl) {
+      setAiImagePath(out.imagePath);
+      setImageFile(null);
+      if (imagePreview) URL.revokeObjectURL(imagePreview);
+      setImagePreview(out.imageUrl);
+    }
+    toast({ title: 'AI content loaded', description: 'Review and adjust before posting.' });
+  };
+
+  const handleSubmit = async (mode: 'now' | 'schedule') => {
+    if (!description.trim()) { toast({ title: 'Description is required', variant: 'destructive' }); return; }
+    if (selectedPlatforms.length === 0) { toast({ title: 'Pick at least one platform', variant: 'destructive' }); return; }
+    if (mode === 'schedule' && !scheduledAt) { toast({ title: 'Pick a scheduled time', variant: 'destructive' }); return; }
+
+    // Validate accounts
+    for (const p of selectedPlatforms) {
+      if (!accountSelections[p]) {
+        const list = accountsByPlatform[p] || [];
+        if (list.length === 0) {
+          toast({ title: `No ${PLATFORM_LABELS[p]} account`, description: `Add one in Settings.`, variant: 'destructive' });
+          return;
+        }
+        accountSelections[p] = (list.find((a) => a.is_default) || list[0]).id;
+      }
+    }
+
+    setSubmitting(true);
+    try {
+      let imagePath: string | null = aiImagePath;
+      if (imageFile) imagePath = await uploadSocialImage(imageFile);
+
+      const hashtags = hashtagsRaw
+        .split(/[\s,]+/).map((t) => t.replace(/^#/, '').trim()).filter(Boolean);
+
+      const post = await createSocialPost({
+        description,
+        imagePath,
+        hashtags,
+        platforms: selectedPlatforms,
+        accountSelections,
+        scheduledAt: mode === 'schedule' ? new Date(scheduledAt).toISOString() : null,
+        aiPrompt,
+        aiSources,
+      });
+
+      // Persist selections to local server too (matches video upload pattern)
+      try { await saveLocalJobAccountSelections(post.id, accountSelections); } catch {}
+
+      // Trigger immediate processing for "now"
+      if (mode === 'now') {
+        try {
+          await fetch(`http://localhost:3001/api/social-posts/process/${post.id}`, { method: 'POST' });
+        } catch {}
+      }
+
+      toast({ title: mode === 'now' ? 'Post queued' : 'Post scheduled' });
+      // Reset
+      setDescription(''); setHashtagsRaw(''); setImageFile(null); setAiImagePath(null);
+      if (imagePreview) URL.revokeObjectURL(imagePreview);
+      setImagePreview(null); setScheduledAt(''); setAiPrompt(null); setAiSources([]);
+      onCreated();
+    } catch (e: any) {
+      toast({ title: 'Failed', description: e.message, variant: 'destructive' });
+    } finally { setSubmitting(false); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <AIPostComposer platforms={selectedPlatforms} onUse={handleAIUse} />
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Compose Post</CardTitle>
+          <CardDescription>Manual or AI-assisted. Select platforms, account, image, then post or schedule.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="space-y-2">
+            <Label>Platforms</Label>
+            <div className="flex flex-wrap gap-2">
+              {SOCIAL_PLATFORMS.map((p) => {
+                const active = selectedPlatforms.includes(p);
+                const hasAccounts = (accountsByPlatform[p] || []).length > 0;
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => togglePlatform(p)}
+                    disabled={!hasAccounts}
+                    className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
+                      active ? 'bg-primary text-primary-foreground border-primary'
+                        : hasAccounts ? 'bg-secondary text-foreground hover:bg-secondary/80 border-border'
+                        : 'opacity-50 cursor-not-allowed border-border'
+                    }`}
+                  >
+                    {PLATFORM_LABELS[p]}{!hasAccounts && ' (no accounts)'}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {selectedPlatforms.map((p) => {
+            const list = accountsByPlatform[p] || [];
+            if (list.length <= 1) return null;
+            return (
+              <div key={p} className="space-y-1.5">
+                <Label className="text-xs capitalize">{PLATFORM_LABELS[p]} Account</Label>
+                <Select value={accountSelections[p] || ''} onValueChange={(v) => setAccountSelections((s) => ({ ...s, [p]: v }))}>
+                  <SelectTrigger className="h-9"><SelectValue placeholder="Select account" /></SelectTrigger>
+                  <SelectContent>
+                    {list.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>{a.label || a.email}{a.is_default ? ' ★' : ''}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            );
+          })}
+
+          <div className="space-y-2">
+            <Label>Description</Label>
+            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={5}
+              placeholder="What's on your mind? You can include #hashtags inline." />
+            <p className="text-xs text-muted-foreground">{description.length} chars · X limit ≈ 280</p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Extra Hashtags (optional)</Label>
+            <Input value={hashtagsRaw} onChange={(e) => setHashtagsRaw(e.target.value)}
+              placeholder="summer, beach, sale (or #summer #beach)" />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Image</Label>
+            {imagePreview ? (
+              <div className="relative inline-block">
+                <img src={imagePreview} alt="" className="max-h-60 rounded-lg border" />
+                <button type="button" onClick={() => handleImageChange(null)}
+                  className="absolute top-2 right-2 bg-background/90 rounded-full p-1 hover:bg-destructive hover:text-destructive-foreground">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <label className="flex items-center justify-center gap-2 border-2 border-dashed border-border rounded-lg p-6 cursor-pointer hover:border-primary/50 transition-colors">
+                <ImageIcon className="w-5 h-5 text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">Click to upload image</span>
+                <input type="file" accept="image/*" className="hidden"
+                  onChange={(e) => handleImageChange(e.target.files?.[0] || null)} />
+              </label>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label>Schedule (optional)</Label>
+            <Input type="datetime-local" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} />
+          </div>
+
+          <div className="flex gap-2 pt-2">
+            <Button onClick={() => handleSubmit('now')} disabled={submitting} className="gap-2">
+              <Send className="w-4 h-4" /> Post Now
+            </Button>
+            <Button variant="outline" onClick={() => handleSubmit('schedule')} disabled={submitting || !scheduledAt} className="gap-2">
+              <Calendar className="w-4 h-4" /> Schedule
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function StatusIcon({ status }: { status: string }) {
+  if (status === 'success' || status === 'completed') return <CheckCircle2 className="w-4 h-4 text-emerald-500" />;
+  if (status === 'error' || status === 'failed') return <AlertCircle className="w-4 h-4 text-destructive" />;
+  if (status === 'uploading' || status === 'processing') return <Loader2 className="w-4 h-4 text-primary animate-spin" />;
+  return <Clock className="w-4 h-4 text-muted-foreground" />;
+}
+
+function QueueTab({ posts, onChange }: { posts: SocialPost[]; onChange: () => void }) {
+  const { toast } = useToast();
+
+  const handleDelete = async (id: string) => {
+    try { await deleteSocialPost(id); toast({ title: 'Removed' }); onChange(); }
+    catch (e: any) { toast({ title: 'Error', description: e.message, variant: 'destructive' }); }
+  };
+
+  const handleRetry = async (id: string) => {
+    try {
+      await retrySocialPost(id);
+      try { await fetch(`http://localhost:3001/api/social-posts/process/${id}`, { method: 'POST' }); } catch {}
+      toast({ title: 'Retrying' });
+      onChange();
+    } catch (e: any) { toast({ title: 'Error', description: e.message, variant: 'destructive' }); }
+  };
+
+  if (posts.length === 0) {
+    return <div className="text-center text-muted-foreground py-12">No posts yet. Compose one above.</div>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {posts.map((post) => {
+        const imageUrl = getSocialImageUrl(post.image_path);
+        return (
+          <Card key={post.id}>
+            <CardContent className="p-4 flex gap-4">
+              {imageUrl && (
+                <img src={imageUrl} alt="" className="w-20 h-20 object-cover rounded-md border shrink-0" />
+              )}
+              <div className="flex-1 min-w-0 space-y-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <StatusIcon status={post.status} />
+                  <Badge variant="outline" className="capitalize">{post.status}</Badge>
+                  {post.target_platforms.map((p) => (
+                    <Badge key={p} variant="secondary" className="text-[10px]">{PLATFORM_LABELS[p] || p}</Badge>
+                  ))}
+                  {post.scheduled_at && (
+                    <span className="text-xs text-muted-foreground">
+                      <Clock className="w-3 h-3 inline mr-0.5" />
+                      {new Date(post.scheduled_at).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm whitespace-pre-wrap line-clamp-3">{post.description}</p>
+                {post.platform_results.length > 0 && (
+                  <div className="space-y-0.5">
+                    {post.platform_results.map((r) => (
+                      <div key={r.name} className="text-xs flex items-center gap-1.5">
+                        <StatusIcon status={r.status} />
+                        <span className="capitalize font-medium">{PLATFORM_LABELS[r.name] || r.name}:</span>
+                        {r.url && <a href={r.url} target="_blank" rel="noreferrer" className="text-primary hover:underline truncate">{r.url}</a>}
+                        {r.error && <span className="text-destructive truncate">{r.error}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-col gap-1 shrink-0">
+                {(post.status === 'failed' || post.platform_results.some((r) => r.status === 'error')) && (
+                  <Button size="sm" variant="outline" onClick={() => handleRetry(post.id)}>
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </Button>
+                )}
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button size="sm" variant="ghost" className="hover:text-destructive"><Trash2 className="w-3.5 h-3.5" /></Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete post?</AlertDialogTitle>
+                      <AlertDialogDescription>This permanently removes the post from the queue.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => handleDelete(post.id)} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Delete</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+export default function SocialPostsPage() {
+  const queryClient = useQueryClient();
+  const { data: accounts = [] } = useQuery({ queryKey: ['social_accounts'], queryFn: getSocialAccounts });
+  const { data: posts = [] } = useQuery({ queryKey: ['social_posts'], queryFn: listSocialPosts, refetchInterval: 5000 });
+
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['social_posts'] });
+    queryClient.invalidateQueries({ queryKey: ['social_accounts'] });
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Social Posts</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Compose, schedule, and AI-generate posts for X, TikTok, and Facebook.
+        </p>
+      </div>
+
+      <Tabs defaultValue="compose">
+        <TabsList>
+          <TabsTrigger value="compose">Compose</TabsTrigger>
+          <TabsTrigger value="queue">Queue ({posts.length})</TabsTrigger>
+        </TabsList>
+        <TabsContent value="compose" className="mt-6">
+          <ComposeTab accounts={accounts} onCreated={refresh} />
+        </TabsContent>
+        <TabsContent value="queue" className="mt-6">
+          <QueueTab posts={posts} onChange={refresh} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

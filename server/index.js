@@ -514,12 +514,17 @@ app.post('/api/browser-profiles/scheduled-selections', (req, res) => {
 app.post('/api/browser-profiles/open', async (req, res) => {
   try {
     const { accountId, label, platform, profileId } = req.body || {};
-    if (!platform || !['youtube', 'tiktok', 'instagram'].includes(platform)) {
+    const ALLOWED = ['youtube', 'tiktok', 'instagram', 'social-x', 'social-tiktok', 'social-facebook'];
+    if (!platform || !ALLOWED.includes(platform)) {
       return res.status(400).json({ error: 'Valid platform is required' });
     }
 
-    const accounts = await getAllPlatformAccounts();
+    const isSocial = platform.startsWith('social-');
+    const accountTable = isSocial ? 'social_post_accounts' : 'platform_accounts';
+    const { data: rawAccounts } = await supabase.from(accountTable).select('*');
+    const accounts = rawAccounts || [];
     const account = accountId ? accounts.find((item) => item.id === String(accountId)) : null;
+
     let profile = profileId
       ? upsertBrowserProfile({ profileId: String(profileId), label: label || account?.label || 'Browser Profile' })
       : account
@@ -546,6 +551,18 @@ app.post('/api/browser-profiles/open', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// --- Social posts processing ---
+const { processSocialPost, pollDueSocialPosts } = require('./socialPostProcessor');
+
+app.post('/api/social-posts/process/:id', (req, res) => {
+  const id = req.params.id;
+  processSocialPost(supabase, id, async (msg) => {
+    const settings = await getSettings().catch(() => null);
+    if (settings) await notifyTelegram(settings, msg);
+  }).catch((e) => console.error('[SocialPosts] Job error:', e.message));
+  res.json({ started: true });
 });
 
 // --- Stats check endpoint ---
