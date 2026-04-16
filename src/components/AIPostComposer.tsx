@@ -6,14 +6,14 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Sparkles, RefreshCw, Wand2, ExternalLink, CheckCircle2, AlertTriangle, Loader2, Cpu } from 'lucide-react';
+import { Sparkles, RefreshCw, Wand2, ExternalLink, CheckCircle2, AlertTriangle, Loader2, Cpu, Search, Image as ImageIcon } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useQuery } from '@tanstack/react-query';
 import {
   generatePostStream,
   getAISettings,
   type AIGenerateOutput,
-  type AISource,
+  type AgentSource,
   type AIStreamEvent,
   type PlatformVariant,
 } from '@/lib/socialPosts';
@@ -21,16 +21,16 @@ import {
 const PLATFORM_LABELS: Record<string, string> = { x: 'X', tiktok: 'TikTok', facebook: 'Facebook' };
 const PLATFORM_LIMITS: Record<string, number> = { x: 280, tiktok: 180, facebook: 2200 };
 
-interface Step {
-  id: string;
-  emoji: string;
-  label: string;
-  status: 'active' | 'done' | 'error';
-}
+interface Step { id: string; emoji: string; label: string; status: 'active' | 'done' | 'error' }
+interface Plan { queries: string[]; imageStrategy: string; angle: string }
 
 interface Props {
   platforms: string[];
   onUse: (output: AIGenerateOutput, prompt: string) => void;
+}
+
+function hostOf(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
 }
 
 export default function AIPostComposer({ platforms, onUse }: Props) {
@@ -39,16 +39,18 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
   const [includeImage, setIncludeImage] = useState(true);
   const [loading, setLoading] = useState(false);
   const [steps, setSteps] = useState<Step[]>([]);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [liveSources, setLiveSources] = useState<AgentSource[]>([]);
   const [variants, setVariants] = useState<Record<string, PlatformVariant>>({});
-  const [sources, setSources] = useState<AISource[]>([]);
+  const [sources, setSources] = useState<AgentSource[]>([]);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imagePath, setImagePath] = useState<string | null>(null);
+  const [imageCredit, setImageCredit] = useState<string>('');
   const [activeTab, setActiveTab] = useState<string>('');
   const [meta, setMeta] = useState<{ provider?: string; model?: string }>({});
 
   const { data: aiSettings } = useQuery({ queryKey: ['ai_settings'], queryFn: getAISettings });
 
-  // Reset active tab when platforms change
   useEffect(() => {
     if (platforms.length && !platforms.includes(activeTab)) setActiveTab(platforms[0]);
   }, [platforms, activeTab]);
@@ -57,9 +59,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
     setSteps((prev) => {
       const idx = prev.findIndex((x) => x.id === s.id);
       if (idx === -1) return [...prev, s];
-      const copy = [...prev];
-      copy[idx] = s;
-      return copy;
+      const copy = [...prev]; copy[idx] = s; return copy;
     });
   };
 
@@ -68,22 +68,22 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
     if (platforms.length === 0) { toast({ title: 'Select at least one platform', variant: 'destructive' }); return; }
 
     setLoading(true);
-    setSteps([]);
-    setVariants({});
-    setSources([]);
-    setImageUrl(null);
-    setImagePath(null);
-    setMeta({});
+    setSteps([]); setPlan(null); setLiveSources([]); setVariants({}); setSources([]);
+    setImageUrl(null); setImagePath(null); setImageCredit(''); setMeta({});
 
     try {
-      await generatePostStream({ prompt, platforms, includeImage }, (e) => {
+      await generatePostStream({ prompt, platforms, includeImage }, (e: AIStreamEvent) => {
         if (e.type === 'step') upsertStep({ id: e.id, emoji: e.emoji, label: e.label, status: e.status });
+        else if (e.type === 'plan') setPlan({ queries: e.queries, imageStrategy: e.imageStrategy, angle: e.angle });
+        else if (e.type === 'source') setLiveSources((s) => {
+          if (s.find((x) => x.url === (e as any).url)) return s;
+          return [...s, { title: (e as any).title, url: (e as any).url, snippet: (e as any).snippet, favicon: (e as any).favicon, publishedAt: (e as any).publishedAt }];
+        });
         else if (e.type === 'variant') setVariants((v) => ({ ...v, [e.platform]: { description: e.description, hashtags: e.hashtags } }));
         else if (e.type === 'sources') setSources(e.sources);
-        else if (e.type === 'image') { setImageUrl(e.imageUrl); setImagePath(e.imagePath); }
+        else if (e.type === 'image') { setImageUrl(e.imageUrl); setImagePath(e.imagePath); setImageCredit((e as any).credit || ''); }
         else if (e.type === 'done') {
-          setVariants(e.variants);
-          setSources(e.sources);
+          setVariants(e.variants); setSources(e.sources);
           if (e.imageUrl) { setImageUrl(e.imageUrl); setImagePath(e.imagePath); }
           setMeta({ provider: e.provider, model: e.model });
         }
@@ -93,47 +93,25 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
       });
     } catch (e: any) {
       toast({ title: 'AI generation failed', description: e.message, variant: 'destructive' });
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   const useVariant = (platform: string) => {
-    const v = variants[platform];
-    if (!v) return;
-    const out: AIGenerateOutput = {
-      description: v.description,
-      hashtags: v.hashtags,
-      variants,
-      imageUrl,
-      imagePath,
-      sources,
-      provider: meta.provider,
-      model: meta.model,
-    };
-    onUse(out, prompt);
-    toast({ title: `Loaded ${PLATFORM_LABELS[platform] || platform} variant`, description: 'Review and post.' });
+    const v = variants[platform]; if (!v) return;
+    onUse({ description: v.description, hashtags: v.hashtags, variants, imageUrl, imagePath, sources, provider: meta.provider, model: meta.model }, prompt);
+    toast({ title: `Loaded ${PLATFORM_LABELS[platform] || platform} variant` });
   };
 
   const useAll = () => {
     if (!Object.keys(variants).length) return;
     const primary = variants[platforms[0]] || Object.values(variants)[0];
-    const out: AIGenerateOutput = {
-      description: primary.description,
-      hashtags: primary.hashtags,
-      variants,
-      imageUrl,
-      imagePath,
-      sources,
-      provider: meta.provider,
-      model: meta.model,
-    };
-    onUse(out, prompt);
-    toast({ title: 'All variants loaded', description: 'Each platform will use its own tailored caption.' });
+    onUse({ description: primary.description, hashtags: primary.hashtags, variants, imageUrl, imagePath, sources, provider: meta.provider, model: meta.model }, prompt);
+    toast({ title: 'All variants loaded' });
   };
 
   const currentAi = meta.model || aiSettings?.model || 'google/gemini-3-flash-preview';
   const currentProvider = meta.provider || aiSettings?.provider || 'lovable';
+  const finalSources = sources.length ? sources : liveSources;
 
   return (
     <Card className="border-primary/30 bg-gradient-to-br from-primary/5 to-transparent">
@@ -144,7 +122,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
               <Wand2 className="w-4 h-4 text-primary" /> AI Post Generator
             </CardTitle>
             <CardDescription className="mt-1">
-              Describe what you want to post. AI researches, writes platform-tailored captions, and optionally creates an image.
+              Real research agent: plans → searches the web → reads sources → finds/generates an image → writes platform-tailored posts.
             </CardDescription>
           </div>
           <Badge variant="outline" className="gap-1.5 text-[11px] font-mono">
@@ -159,20 +137,38 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
           <Textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="e.g. Last 24h tech news in Web3 + AI — find sources, generate an image, casual tone"
+            placeholder="e.g. Latest Web3 news from the past 24h — research real sources, find a fitting image, casual tone"
             rows={3}
           />
         </div>
         <div className="flex items-center justify-between flex-wrap gap-2">
           <Label className="text-sm flex items-center gap-2 cursor-pointer">
             <Switch checked={includeImage} onCheckedChange={setIncludeImage} disabled={loading} />
-            Generate image
+            Include image
           </Label>
           <Button onClick={handleGenerate} disabled={loading} className="gap-2">
             {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            {loading ? 'Generating…' : 'Generate'}
+            {loading ? 'Agent working…' : 'Generate'}
           </Button>
         </div>
+
+        {/* Plan strip */}
+        {plan && (
+          <div className="rounded-lg border bg-card/60 backdrop-blur p-3 space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">Agent plan</div>
+            <p className="text-sm font-medium leading-snug">{plan.angle}</p>
+            <div className="flex flex-wrap gap-1.5">
+              {plan.queries.map((q, i) => (
+                <Badge key={i} variant="secondary" className="text-[11px] gap-1 font-normal">
+                  <Search className="w-3 h-3" /> {q}
+                </Badge>
+              ))}
+              <Badge variant="outline" className="text-[11px] gap-1 font-normal">
+                <ImageIcon className="w-3 h-3" /> {plan.imageStrategy === 'real_photo' ? 'real photo' : plan.imageStrategy === 'generated' ? 'AI generated' : 'no image'}
+              </Badge>
+            </div>
+          </div>
+        )}
 
         {/* Live agent timeline */}
         {(loading || steps.length > 0) && (
@@ -190,13 +186,9 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
               </span>
             </div>
             <ol className="relative space-y-2.5">
-              {/* connector line */}
               <div className="absolute left-[15px] top-2 bottom-2 w-px bg-gradient-to-b from-primary/40 via-border to-border" aria-hidden />
               {steps.map((s, i) => (
-                <li
-                  key={s.id + '-' + i}
-                  className="relative flex items-start gap-3 animate-in fade-in slide-in-from-left-2 duration-300"
-                >
+                <li key={s.id + '-' + i} className="relative flex items-start gap-3 animate-in fade-in slide-in-from-left-2 duration-300">
                   <div className={`relative z-10 flex items-center justify-center w-8 h-8 rounded-full border-2 text-base shrink-0 transition-all ${
                     s.status === 'active' ? 'border-primary bg-primary/10 shadow-[0_0_0_4px_hsl(var(--primary)/0.12)]' :
                     s.status === 'done' ? 'border-emerald-500/50 bg-emerald-500/10' :
@@ -211,9 +203,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
                       s.status === 'error' ? 'text-destructive font-medium' :
                       s.status === 'active' ? 'text-foreground font-medium' :
                       'text-muted-foreground'
-                    }`}>
-                      {s.label}
-                    </div>
+                    }`}>{s.label}</div>
                     {s.status === 'active' && (
                       <div className="mt-1.5 h-0.5 w-full bg-muted rounded-full overflow-hidden">
                         <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-primary to-transparent animate-shimmer" />
@@ -228,6 +218,28 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
                 </li>
               ))}
             </ol>
+          </div>
+        )}
+
+        {/* Live sources (cards) */}
+        {liveSources.length > 0 && finalSources === liveSources && (
+          <div className="rounded-lg border bg-card p-3 space-y-2 animate-in fade-in duration-300">
+            <Label className="text-[11px] uppercase text-muted-foreground tracking-wider">Sources discovered live ({liveSources.length})</Label>
+            <div className="grid sm:grid-cols-2 gap-2">
+              {liveSources.map((s, i) => (
+                <a key={i} href={s.url} target="_blank" rel="noreferrer"
+                  className="group flex items-start gap-2.5 rounded-md border bg-background/60 p-2.5 hover:bg-accent transition-colors animate-in fade-in slide-in-from-bottom-1 duration-300">
+                  {s.favicon
+                    ? <img src={s.favicon} alt="" className="w-4 h-4 mt-0.5 rounded shrink-0" />
+                    : <div className="w-4 h-4 mt-0.5 rounded bg-muted shrink-0" />}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium truncate group-hover:text-primary">{s.title || hostOf(s.url)}</div>
+                    <div className="text-[10px] text-muted-foreground truncate">{hostOf(s.url)}{s.publishedAt ? ` · ${s.publishedAt}` : ''}</div>
+                    {s.snippet && <div className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{s.snippet}</div>}
+                  </div>
+                </a>
+              ))}
+            </div>
           </div>
         )}
 
@@ -251,13 +263,11 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
               </TabsList>
               {platforms.map((p) => {
                 const v = variants[p];
-                if (!v) {
-                  return (
-                    <TabsContent key={p} value={p} className="mt-3 text-sm text-muted-foreground">
-                      Waiting for {PLATFORM_LABELS[p] || p} variant…
-                    </TabsContent>
-                  );
-                }
+                if (!v) return (
+                  <TabsContent key={p} value={p} className="mt-3 text-sm text-muted-foreground">
+                    Waiting for {PLATFORM_LABELS[p] || p} variant…
+                  </TabsContent>
+                );
                 const charCount = v.description.length + (v.hashtags.length ? v.hashtags.reduce((a, h) => a + h.length + 2, 0) : 0);
                 const limit = PLATFORM_LIMITS[p] || 2200;
                 const overLimit = charCount > limit;
@@ -284,35 +294,35 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
 
         {imageUrl && (
           <div className="rounded-lg border bg-card p-4 space-y-2 animate-in fade-in duration-500">
-            <Label className="text-xs uppercase text-muted-foreground">Generated image</Label>
-            <img src={imageUrl} alt="AI-generated" className="rounded-lg max-h-72 object-contain bg-muted w-full" />
+            <Label className="text-xs uppercase text-muted-foreground">Image{imageCredit ? ` · ${imageCredit}` : ''}</Label>
+            <img src={imageUrl} alt="" className="rounded-lg max-h-72 object-contain bg-muted w-full" />
           </div>
         )}
 
+        {/* Final sources panel — richer than the live one */}
         {sources.length > 0 && (
           <div className="rounded-lg border bg-card p-4 space-y-2 animate-in fade-in duration-500">
             <Label className="text-xs uppercase text-muted-foreground flex items-center gap-1.5">
-              📚 Research sources
-              <span className="font-normal normal-case text-muted-foreground/70">
-                (NOT included in post — for your reference)
-              </span>
+              📚 Research sources ({sources.length})
+              <span className="font-normal normal-case text-muted-foreground/70">— for your reference, not in post</span>
             </Label>
-            <ul className="space-y-1.5 mt-1">
+            <div className="grid sm:grid-cols-2 gap-2 mt-1">
               {sources.map((s, i) => (
-                <li key={i} className="text-sm">
-                  <a
-                    href={s.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-primary hover:underline inline-flex items-center gap-1 font-medium"
-                  >
-                    {s.title || s.url}
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                  {s.note && <p className="text-xs text-muted-foreground ml-0 mt-0.5">{s.note}</p>}
-                </li>
+                <a key={i} href={s.url} target="_blank" rel="noreferrer"
+                  className="group flex items-start gap-2.5 rounded-md border bg-background/60 p-2.5 hover:bg-accent transition-colors">
+                  {s.favicon
+                    ? <img src={s.favicon} alt="" className="w-4 h-4 mt-0.5 rounded shrink-0" />
+                    : <div className="w-4 h-4 mt-0.5 rounded bg-muted shrink-0" />}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium truncate group-hover:text-primary inline-flex items-center gap-1">
+                      {s.title || hostOf(s.url)} <ExternalLink className="w-3 h-3 opacity-0 group-hover:opacity-60 transition-opacity" />
+                    </div>
+                    <div className="text-[10px] text-muted-foreground truncate">{hostOf(s.url)}{s.publishedAt ? ` · ${s.publishedAt}` : ''}</div>
+                    {(s.snippet || s.note) && <div className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{s.snippet || s.note}</div>}
+                  </div>
+                </a>
               ))}
-            </ul>
+            </div>
           </div>
         )}
 
