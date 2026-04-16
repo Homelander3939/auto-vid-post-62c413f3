@@ -14,7 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import SocialAccountCard from '@/components/SocialAccountCard';
-import { getSocialAccounts, getAISettings, saveAISettings, SOCIAL_PLATFORMS, type AISettings } from '@/lib/socialPosts';
+import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, SOCIAL_PLATFORMS, type AISettings, type AIModel } from '@/lib/socialPosts';
 
 function PasswordInput({
   value,
