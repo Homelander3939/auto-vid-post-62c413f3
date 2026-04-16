@@ -6,6 +6,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getSettings, saveSettings } from '@/lib/storage';
 import { formatBuildLabel } from '@/lib/buildInfo';
+import ThemeToggle from '@/components/ThemeToggle';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -134,6 +135,7 @@ export default function AppLayout() {
         </nav>
 
         <div className="p-4 border-t space-y-3">
+          <ThemeToggle />
           {/* Mode toggle button */}
           <Tooltip>
             <TooltipTrigger asChild>
