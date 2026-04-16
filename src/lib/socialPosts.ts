@@ -337,3 +337,9 @@ export async function testAgentConnection(
   return data as ConnectionTestResult;
 }
 
+export interface ImageModelOption { id: string; label: string; recommended?: boolean }
+export async function listImageModels(provider: string, apiKey: string): Promise<{ models: ImageModelOption[]; error?: string }> {
+  const { data, error } = await supabase.functions.invoke('list-image-models', { body: { provider, apiKey } });
+  if (error) return { models: [], error: error.message };
+  return data as { models: ImageModelOption[]; error?: string };
+}
