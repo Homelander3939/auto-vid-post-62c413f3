@@ -23,6 +23,7 @@ export type Database = {
           folder_path: string
           id: number
           image_api_key: string
+          image_keys: Json
           image_model: string
           image_provider: string
           image_secondary_key: string
@@ -53,6 +54,7 @@ export type Database = {
           folder_path?: string
           id?: number
           image_api_key?: string
+          image_keys?: Json
           image_model?: string
           image_provider?: string
           image_secondary_key?: string
@@ -83,6 +85,7 @@ export type Database = {
           folder_path?: string
           id?: number
           image_api_key?: string
+          image_keys?: Json
           image_model?: string
           image_provider?: string
           image_secondary_key?: string
