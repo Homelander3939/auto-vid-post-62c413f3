@@ -335,6 +335,7 @@ export type Database = {
           id: string
           image_path: string | null
           platform_results: Json
+          platform_variants: Json
           scheduled_at: string | null
           status: string
           target_platforms: string[]
@@ -350,6 +351,7 @@ export type Database = {
           id?: string
           image_path?: string | null
           platform_results?: Json
+          platform_variants?: Json
           scheduled_at?: string | null
           status?: string
           target_platforms?: string[]
@@ -365,6 +367,7 @@ export type Database = {
           id?: string
           image_path?: string | null
           platform_results?: Json
+          platform_variants?: Json
           scheduled_at?: string | null
           status?: string
           target_platforms?: string[]
