@@ -43,6 +43,7 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
   const [submitting, setSubmitting] = useState(false);
   const [aiPrompt, setAiPrompt] = useState<string | null>(null);
   const [aiSources, setAiSources] = useState<any[]>([]);
+  const [platformVariants, setPlatformVariants] = useState<Record<string, { description: string; hashtags: string[] }>>({});
 
   const accountsByPlatform = useMemo(() => {
     const map: Record<string, SocialAccount[]> = {};
@@ -75,13 +76,14 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
     setHashtagsRaw(out.hashtags.join(' '));
     setAiPrompt(prompt);
     setAiSources(out.sources || []);
+    setPlatformVariants(out.variants || {});
     if (out.imagePath && out.imageUrl) {
       setAiImagePath(out.imagePath);
       setImageFile(null);
       if (imagePreview) URL.revokeObjectURL(imagePreview);
       setImagePreview(out.imageUrl);
     }
-    toast({ title: 'AI content loaded', description: 'Review and adjust before posting.' });
+    toast({ title: 'AI content loaded', description: 'Each platform will use its own tailored caption.' });
   };
 
   const handleSubmit = async (mode: 'now' | 'schedule') => {
@@ -118,6 +120,7 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
         scheduledAt: mode === 'schedule' ? new Date(scheduledAt).toISOString() : null,
         aiPrompt,
         aiSources,
+        platformVariants: Object.keys(platformVariants).length ? platformVariants : undefined,
       });
 
       // Persist selections to local server too (matches video upload pattern)
@@ -135,6 +138,7 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
       setDescription(''); setHashtagsRaw(''); setImageFile(null); setAiImagePath(null);
       if (imagePreview) URL.revokeObjectURL(imagePreview);
       setImagePreview(null); setScheduledAt(''); setAiPrompt(null); setAiSources([]);
+      setPlatformVariants({});
       onCreated();
     } catch (e: any) {
       toast({ title: 'Failed', description: e.message, variant: 'destructive' });
