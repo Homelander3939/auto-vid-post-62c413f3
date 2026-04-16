@@ -302,11 +302,13 @@ export default function CampaignScheduler() {
 
         if (isImmediate) {
           setSaveProgress(`Creating job ${i + 1}/${entries.length}...`);
-          const job = await createUploadJob(fileName, storagePath, metadata, entry.platforms);
+          const accountId = Object.values(selectedAccounts)[0];
+          const job = await createUploadJob(fileName, storagePath, metadata, entry.platforms, accountId);
           immediateJobIds.push(job.id);
         } else {
           setSaveProgress(`Scheduling ${i + 1}/${entries.length}...`);
-          await createScheduledUpload(fileName, storagePath, metadata, entry.platforms, scheduledAtIso);
+          const accountId = Object.values(selectedAccounts)[0];
+          await createScheduledUpload(fileName, storagePath, metadata, entry.platforms, scheduledAtIso, accountId);
         }
       }
 
