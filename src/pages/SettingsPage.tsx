@@ -985,10 +985,12 @@ export default function SettingsPage() {
                     setImageModels([]);
                   }}
                   placeholder={
-                    agentSettings.imageProvider === 'auto' ? 'Optional: Unsplash/Pexels/OpenAI/Google key' :
+                    agentSettings.imageProvider === 'auto' ? 'Optional: paste any key — provider auto-detected' :
                     agentSettings.imageProvider === 'unsplash' ? 'Unsplash Access Key' :
                     agentSettings.imageProvider === 'pexels' ? 'Pexels API Key' :
                     agentSettings.imageProvider === 'google' ? 'Google AI Studio API key (AIza…)' :
+                    agentSettings.imageProvider === 'nvidia' ? 'NVIDIA API key (nvapi-…)' :
+                    agentSettings.imageProvider === 'xai' ? 'xAI API key (xai-…)' :
                     'sk-...'
                   }
                 />
@@ -996,7 +998,7 @@ export default function SettingsPage() {
             </div>
 
             {/* Image model selector — appears after "Show models" succeeds */}
-            {imageModels.length > 0 && (agentSettings.imageProvider === 'google' || agentSettings.imageProvider === 'openai' || agentSettings.imageProvider === 'lovable') && (
+            {imageModels.length > 0 && ['google', 'openai', 'lovable', 'nvidia', 'xai'].includes(agentSettings.imageProvider) && (
               <div className="space-y-2">
                 <Label className="text-xs flex items-center gap-1.5">
                   <ImageIcon className="w-3.5 h-3.5" /> Image model
@@ -1042,6 +1044,8 @@ export default function SettingsPage() {
                   agentSettings.imageProvider === 'unsplash' ? 'https://unsplash.com/oauth/applications' :
                   agentSettings.imageProvider === 'pexels' ? 'https://www.pexels.com/api/' :
                   agentSettings.imageProvider === 'google' ? 'https://aistudio.google.com/app/apikey' :
+                  agentSettings.imageProvider === 'nvidia' ? 'https://build.nvidia.com/explore/discover' :
+                  agentSettings.imageProvider === 'xai' ? 'https://console.x.ai/' :
                   'https://platform.openai.com/api-keys'
                 } target="_blank" rel="noreferrer" className="text-[11px] text-primary hover:underline inline-flex items-center gap-1 ml-auto">
                   Get key <ExternalLink className="w-3 h-3" />
