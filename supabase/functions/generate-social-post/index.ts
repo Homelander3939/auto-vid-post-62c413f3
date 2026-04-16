@@ -244,7 +244,7 @@ async function generateAIImage(provider: string, key: string, prompt: string, mo
       const r = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: `Vibrant, modern, photographic, no text overlays. Square 1:1. ${prompt.slice(0, 500)}` }] }],
+          contents: [{ role: 'user', parts: [{ text: prompt.slice(0, 1500) }] }],
           generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
         }),
       });
