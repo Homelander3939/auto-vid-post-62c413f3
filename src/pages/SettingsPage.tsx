@@ -871,12 +871,27 @@ export default function SettingsPage() {
               {agentSettings.researchProvider !== 'local' && (
                 <PasswordInput
                   value={agentSettings.researchApiKey}
-                  onChange={(v) => { setAgentSettings((s) => ({ ...s, researchApiKey: v })); setResearchTest(null); }}
+                  onChange={(v) => {
+                    setAgentSettings((s) => {
+                      const next = { ...s, researchApiKey: v };
+                      // Auto-detect provider from key prefix when on Auto.
+                      if (s.researchProvider === 'auto' && v) {
+                        const det = detectProviderFromKey(v);
+                        if (det.research) {
+                          next.researchProvider = det.research;
+                          setAutoDetectedHint(`Auto-detected research provider: ${det.research}`);
+                          setTimeout(() => setAutoDetectedHint(''), 4000);
+                        }
+                      }
+                      return next;
+                    });
+                    setResearchTest(null);
+                  }}
                   placeholder={
-                    agentSettings.researchProvider === 'auto' ? 'Optional: any search API key' :
+                    agentSettings.researchProvider === 'auto' ? 'Paste any key — provider auto-detected' :
                     agentSettings.researchProvider === 'brave' ? 'BSA...' :
                     agentSettings.researchProvider === 'tavily' ? 'tvly-...' :
-                    agentSettings.researchProvider === 'serper' ? 'serper key' :
+                    agentSettings.researchProvider === 'serper' ? 'serper key (64 hex chars)' :
                     'fc-...'
                   }
                 />
