@@ -818,6 +818,7 @@ Deno.serve(async (req) => {
         // ── 8b. Auto-save as draft so the post appears on /social even if the user navigates away.
         // The Compose tab can re-load and edit it; on Post Now/Schedule it gets re-created or its
         // status flipped to pending. This is the "every successful generation lands on Social Posts" UX.
+        let savedPostId: string | null = null;
         try {
           const primary = variants[body.platforms[0]] || Object.values(variants)[0];
           if (primary) {
@@ -835,21 +836,37 @@ Deno.serve(async (req) => {
               platform_results: platformResults,
               platform_variants: variants,
             } as any).select('id').single();
-            if (savedRow?.id) send('saved', { id: savedRow.id, status: 'draft' });
+            if (savedRow?.id) { savedPostId = savedRow.id; send('saved', { id: savedRow.id, status: 'draft' }); }
           }
         } catch (e) {
           console.error('auto-save draft failed', e);
         }
 
         send('step', { id: 'done', emoji: '🎉', label: 'All done — saved as draft on Social Posts!', status: 'done' });
-        send('done', {
+        const finalResult = {
           variants, sources: finalSources,
           imageUrl: imgResult.url, imagePath: imgResult.path,
           provider, model: textModel,
-        });
+        };
+        send('done', finalResult);
+
+        if (jobId) {
+          await flushEvents();
+          await supabase.from('generation_jobs').update({
+            status: 'completed', result: finalResult, saved_post_id: savedPostId,
+            completed_at: new Date().toISOString(),
+          }).eq('id', jobId);
+        }
       } catch (e: any) {
         console.error('agent error', e);
         send('error', { error: e?.message || 'Unknown error', status: e?.status || 500 });
+        if (jobId) {
+          await flushEvents();
+          await supabase.from('generation_jobs').update({
+            status: 'failed', error: e?.message || 'Unknown error',
+            completed_at: new Date().toISOString(),
+          }).eq('id', jobId);
+        }
       } finally {
         clearInterval(heartbeat);
         try { controller.close(); } catch {}
