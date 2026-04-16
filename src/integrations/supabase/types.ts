@@ -16,6 +16,9 @@ export type Database = {
     Tables: {
       app_settings: {
         Row: {
+          ai_api_key: string
+          ai_model: string
+          ai_provider: string
           created_at: string
           folder_path: string
           id: number
@@ -35,6 +38,9 @@ export type Database = {
           youtube_password: string
         }
         Insert: {
+          ai_api_key?: string
+          ai_model?: string
+          ai_provider?: string
           created_at?: string
           folder_path?: string
           id?: number
@@ -54,6 +60,9 @@ export type Database = {
           youtube_password?: string
         }
         Update: {
+          ai_api_key?: string
+          ai_model?: string
+          ai_provider?: string
           created_at?: string
           folder_path?: string
           id?: number
@@ -235,6 +244,132 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      social_post_accounts: {
+        Row: {
+          created_at: string
+          email: string
+          enabled: boolean
+          id: string
+          is_default: boolean
+          label: string
+          password: string
+          platform: string
+        }
+        Insert: {
+          created_at?: string
+          email?: string
+          enabled?: boolean
+          id?: string
+          is_default?: boolean
+          label?: string
+          password?: string
+          platform: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          enabled?: boolean
+          id?: string
+          is_default?: boolean
+          label?: string
+          password?: string
+          platform?: string
+        }
+        Relationships: []
+      }
+      social_post_schedules: {
+        Row: {
+          account_selections: Json
+          ai_prompt: string
+          cron_expression: string
+          enabled: boolean
+          end_at: string | null
+          id: number
+          include_image: boolean
+          last_run_at: string | null
+          name: string
+          target_platforms: string[]
+          updated_at: string
+          upload_interval_minutes: number
+        }
+        Insert: {
+          account_selections?: Json
+          ai_prompt?: string
+          cron_expression?: string
+          enabled?: boolean
+          end_at?: string | null
+          id?: number
+          include_image?: boolean
+          last_run_at?: string | null
+          name?: string
+          target_platforms?: string[]
+          updated_at?: string
+          upload_interval_minutes?: number
+        }
+        Update: {
+          account_selections?: Json
+          ai_prompt?: string
+          cron_expression?: string
+          enabled?: boolean
+          end_at?: string | null
+          id?: number
+          include_image?: boolean
+          last_run_at?: string | null
+          name?: string
+          target_platforms?: string[]
+          updated_at?: string
+          upload_interval_minutes?: number
+        }
+        Relationships: []
+      }
+      social_posts: {
+        Row: {
+          account_selections: Json
+          ai_prompt: string | null
+          ai_sources: Json
+          completed_at: string | null
+          created_at: string
+          description: string
+          hashtags: string[]
+          id: string
+          image_path: string | null
+          platform_results: Json
+          scheduled_at: string | null
+          status: string
+          target_platforms: string[]
+        }
+        Insert: {
+          account_selections?: Json
+          ai_prompt?: string | null
+          ai_sources?: Json
+          completed_at?: string | null
+          created_at?: string
+          description?: string
+          hashtags?: string[]
+          id?: string
+          image_path?: string | null
+          platform_results?: Json
+          scheduled_at?: string | null
+          status?: string
+          target_platforms?: string[]
+        }
+        Update: {
+          account_selections?: Json
+          ai_prompt?: string | null
+          ai_sources?: Json
+          completed_at?: string | null
+          created_at?: string
+          description?: string
+          hashtags?: string[]
+          id?: string
+          image_path?: string | null
+          platform_results?: Json
+          scheduled_at?: string | null
+          status?: string
+          target_platforms?: string[]
+        }
+        Relationships: []
       }
       telegram_bot_state: {
         Row: {
