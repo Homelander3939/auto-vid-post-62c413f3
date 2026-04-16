@@ -691,10 +691,34 @@ export default function SettingsPage() {
               </p>
             </div>
           )}
-          <Button size="sm" onClick={handleSaveAI} disabled={savingAI} className="gap-1.5">
-            <Check className="w-3.5 h-3.5" />
-            {savingAI ? 'Saving…' : 'Save AI Settings'}
-          </Button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button size="sm" onClick={handleSaveAI} disabled={savingAI} className="gap-1.5">
+              <Check className="w-3.5 h-3.5" />
+              {savingAI ? 'Saving…' : 'Save AI Settings'}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleTestConnection}
+              disabled={testing || !aiSettings.model || (aiSettings.provider !== 'lovable' && !aiSettings.apiKey)}
+              className="gap-1.5"
+            >
+              {testing ? '⏳ Testing…' : '🔌 Test connection'}
+            </Button>
+            {testResult && (
+              testResult.ok ? (
+                <Badge className="gap-1 bg-emerald-500/15 text-emerald-700 border-emerald-500/30 hover:bg-emerald-500/15">
+                  ✅ Connected · {testResult.latency}ms
+                </Badge>
+              ) : (
+                <Badge variant="destructive" className="gap-1">❌ {testResult.error?.slice(0, 60)}</Badge>
+              )
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground border-t pt-3 mt-1">
+            <span className="font-medium">Currently active in AI Post Generator:</span>{' '}
+            <span className="font-mono text-foreground">{savedAi?.provider || 'lovable'} · {savedAi?.model || 'default'}</span>
+          </div>
         </CardContent>
       </Card>
 
