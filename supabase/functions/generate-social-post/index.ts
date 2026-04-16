@@ -19,7 +19,7 @@ interface Body {
 const PLATFORM_RULES: Record<string, string> = {
   x: 'X (Twitter): MAX 270 chars total INCLUDING hashtags. Hook in first 7 words. Punchy, scroll-stopping. 1-3 hashtags max, integrated naturally. No emoji-spam (1-2 max).',
   facebook: 'Facebook: 80-300 words. Conversational, story-driven, like talking to a friend. Use line breaks for readability. Hashtags optional at the end (3-6). Emojis OK but tasteful.',
-  tiktok: 'TikTok photo post: 80-180 chars. Casual, Gen-Z friendly, hook in first line. 4-8 hashtags integrated naturally including 1-2 niche + 1-2 broad trending tags.',
+  linkedin: 'LinkedIn: 150-400 words. Professional but human voice. Lead with a strong insight or hook in line 1, then 2-4 short paragraphs (use blank lines). End with a question or call-to-action. 3-6 relevant business/industry hashtags at the end. Minimal emojis.',
 };
 
 type Variant = { description: string; hashtags: string[] };
