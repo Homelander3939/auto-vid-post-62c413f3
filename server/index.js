@@ -32,6 +32,18 @@ const { processTelegramAIResponse, streamLMStudio, LM_STUDIO_URL } = require('./
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
+const {
+  copyScheduledSelectionsToJob,
+  getBrowserProfileForAccount,
+  getJobAccountSelections,
+  getScheduledAccountSelections,
+  linkAccountToBrowserProfile,
+  listBrowserProfiles,
+  openBrowserProfileSession,
+  saveJobAccountSelections,
+  saveScheduledAccountSelections,
+  upsertBrowserProfile,
+} = require('./browserProfiles');
 
 const app = express();
 app.use(cors());
@@ -135,6 +147,64 @@ function getReadyPlatforms(settings, requestedPlatforms = []) {
   });
 }
 
+function normalizeAccountGroupKey(account = {}) {
+  const label = String(account.label || '').trim().toLowerCase();
+  if (label) return `label:${label}`;
+  const emailPrefix = String(account.email || '').trim().toLowerCase().split('@')[0];
+  return emailPrefix ? `email:${emailPrefix}` : '';
+}
+
+function getRelatedAccounts(accounts = [], seedAccount) {
+  if (!seedAccount) return [];
+  const key = normalizeAccountGroupKey(seedAccount);
+  if (!key) return [seedAccount];
+  return accounts.filter((account) => normalizeAccountGroupKey(account) === key);
+}
+
+function findLinkedSiblingBrowserProfile(account, accounts = []) {
+  const siblings = getRelatedAccounts(accounts, account);
+  for (const sibling of siblings) {
+    const profile = getBrowserProfileForAccount(sibling.id);
+    if (profile) return profile;
+  }
+  return null;
+}
+
+async function getAccountsByIds(accountIds = []) {
+  const uniqueIds = [...new Set(accountIds.filter(Boolean))];
+  if (uniqueIds.length === 0) return [];
+  const { data } = await supabase.from('platform_accounts').select('*').in('id', uniqueIds);
+  return data || [];
+}
+
+async function getAllPlatformAccounts() {
+  const { data } = await supabase.from('platform_accounts').select('*');
+  return data || [];
+}
+
+async function loadJobAccountContext(job) {
+  const selections = getJobAccountSelections(job.id);
+  const accountIds = new Set(Object.values(selections || {}).filter(Boolean));
+  if (job.account_id) accountIds.add(job.account_id);
+
+  const accounts = await getAccountsByIds([...accountIds]);
+  const accountsById = new Map(accounts.map((account) => [account.id, account]));
+  const normalizedSelections = { ...selections };
+
+  if (job.account_id) {
+    const legacyAccount = accountsById.get(job.account_id);
+    if (legacyAccount && !normalizedSelections[legacyAccount.platform]) {
+      normalizedSelections[legacyAccount.platform] = legacyAccount.id;
+    }
+  }
+
+  return {
+    selections: normalizedSelections,
+    accounts,
+    accountsById,
+  };
+}
+
 async function processJob(jobId, options = {}) {
   // Prevent duplicate processing
   if (processingJobs.has(jobId)) {
@@ -152,20 +222,7 @@ async function processJob(jobId, options = {}) {
 
     const settings = await getSettings();
 
-    // === RESOLVE ACCOUNT CREDENTIALS ===
-    // If job has account_id, look up platform_accounts for credentials
-    let accountCredentials = null;
-    if (job.account_id) {
-      const { data: account } = await supabase
-        .from('platform_accounts')
-        .select('*')
-        .eq('id', job.account_id)
-        .single();
-      if (account) {
-        accountCredentials = account;
-        console.log(`[Worker] Using account "${account.label}" (${account.platform}) for job ${jobId}`);
-      }
-    }
+    const accountContext = await loadJobAccountContext(job);
 
     const folderPathOverride = normalizeFolderPath(options.folderPath);
     const results = job.platform_results || [];
@@ -175,13 +232,11 @@ async function processJob(jobId, options = {}) {
     for (const platform of results) {
       if (platform.status !== 'pending') continue;
       
-      // Resolve credentials: account_id override > app_settings fallback
-      let ps;
-      if (accountCredentials && accountCredentials.platform === platform.name) {
-        ps = { email: accountCredentials.email, password: accountCredentials.password, enabled: accountCredentials.enabled };
-      } else {
-        ps = settings[platform.name];
-      }
+      const selectedAccountId = accountContext.selections[platform.name];
+      const selectedAccount = selectedAccountId ? accountContext.accountsById.get(selectedAccountId) : null;
+      const ps = selectedAccount
+        ? { email: selectedAccount.email, password: selectedAccount.password, enabled: selectedAccount.enabled }
+        : settings[platform.name];
       
       if (!ps?.enabled) {
         platform.status = 'error';
@@ -289,17 +344,26 @@ async function processJob(jobId, options = {}) {
 
       try {
         console.log(`[Worker] Uploading to ${platform.name}...`);
-        // Use account credentials if available for this platform, otherwise app_settings
-        // Pass accountId so uploaders use a separate browser profile for non-default accounts
-        const isAccountMatch = accountCredentials && accountCredentials.platform === platform.name;
-        const platformCreds = isAccountMatch
-          ? { email: accountCredentials.email, password: accountCredentials.password, enabled: true }
+        const selectedAccountId = accountContext.selections[platform.name];
+        const selectedAccount = selectedAccountId ? accountContext.accountsById.get(selectedAccountId) : null;
+        const platformCreds = selectedAccount
+          ? { email: selectedAccount.email, password: selectedAccount.password, enabled: true }
           : settings[platform.name];
-        // Only pass accountId for non-default accounts so the default profile stays untouched
-        const accountId = (isAccountMatch && !accountCredentials.is_default) ? accountCredentials.id : undefined;
+        const browserProfile = selectedAccount
+          ? getBrowserProfileForAccount(selectedAccount.id) || findLinkedSiblingBrowserProfile(selectedAccount, accountContext.accounts)
+          : null;
+        const accountId = selectedAccount && (!selectedAccount.is_default || browserProfile?.id)
+          ? selectedAccount.id
+          : undefined;
+
+        if (selectedAccount) {
+          console.log(`[Worker] Using account "${selectedAccount.label || selectedAccount.email}" for ${platform.name}${browserProfile?.id ? ` via shared profile ${browserProfile.id}` : ''}`);
+        }
+
         const result = await uploaders[platform.name](videoPath, metadata, {
           ...platformCreds,
           accountId,
+          browserProfileId: browserProfile?.id,
           telegram: settings.telegram,
           backend: settings.backend,
         });
@@ -388,6 +452,83 @@ app.post('/api/process-pending', async (req, res) => {
     res.json({ queued });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+});
+
+app.get('/api/browser-profiles', (req, res) => {
+  res.json(listBrowserProfiles());
+});
+
+app.get('/api/browser-profiles/account/:accountId', async (req, res) => {
+  try {
+    const accountId = String(req.params.accountId || '').trim();
+    if (!accountId) return res.status(400).json({ error: 'accountId is required' });
+
+    const accounts = await getAllPlatformAccounts();
+    const account = accounts.find((item) => item.id === accountId);
+    const profile = getBrowserProfileForAccount(accountId) || (account ? findLinkedSiblingBrowserProfile(account, accounts) : null);
+    res.json({ profile });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser-profiles/job-selections', (req, res) => {
+  try {
+    const { jobId, selections } = req.body || {};
+    if (!jobId) return res.status(400).json({ error: 'jobId is required' });
+    const saved = saveJobAccountSelections(jobId, selections || {});
+    res.json({ selections: saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser-profiles/scheduled-selections', (req, res) => {
+  try {
+    const { scheduledId, selections } = req.body || {};
+    if (!scheduledId) return res.status(400).json({ error: 'scheduledId is required' });
+    const saved = saveScheduledAccountSelections(scheduledId, selections || {});
+    res.json({ selections: saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser-profiles/open', async (req, res) => {
+  try {
+    const { accountId, label, platform, profileId } = req.body || {};
+    if (!platform || !['youtube', 'tiktok', 'instagram'].includes(platform)) {
+      return res.status(400).json({ error: 'Valid platform is required' });
+    }
+
+    const accounts = await getAllPlatformAccounts();
+    const account = accountId ? accounts.find((item) => item.id === String(accountId)) : null;
+    let profile = profileId
+      ? upsertBrowserProfile({ profileId: String(profileId), label: label || account?.label || 'Browser Profile' })
+      : account
+        ? getBrowserProfileForAccount(account.id) || findLinkedSiblingBrowserProfile(account, accounts)
+        : null;
+
+    if (!profile) {
+      profile = upsertBrowserProfile({
+        label: label || account?.label || account?.email || 'Browser Profile',
+      });
+    }
+
+    const linkedAccountIds = [];
+    if (account) {
+      const relatedAccounts = getRelatedAccounts(accounts, account);
+      for (const relatedAccount of relatedAccounts) {
+        linkAccountToBrowserProfile(relatedAccount.id, profile.id);
+        linkedAccountIds.push(relatedAccount.id);
+      }
+    }
+
+    await openBrowserProfileSession({ profileId: profile.id, platform });
+    res.json({ profile, linkedAccountIds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -586,6 +727,7 @@ async function processScheduledUploads() {
       }
 
       await supabase.from('scheduled_uploads').update({ upload_job_id: job.id }).eq('id', item.id);
+      copyScheduledSelectionsToJob(item.id, job.id);
       await processJob(job.id, { folderPath: folderPathForJob });
 
       const { data: processedJob } = await supabase
