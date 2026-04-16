@@ -19,6 +19,28 @@ export function cleanVideoTitle(filename: string): string {
  * Given arrays of video and text Files, match them by filename stem.
  * Returns pairs: { video, textFile? }[]
  */
+/**
+ * Extract trailing series number from a filename stem for sorting.
+ * e.g. "Roman_History_38_2026-04-13" → 38
+ */
+export function extractSeriesNumber(filename: string): number {
+  const stem = filename.replace(/\.[^.]+$/, '');
+  // Remove date/time patterns first to isolate the series number
+  const cleaned = stem
+    .replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}/g, '')
+    .replace(/[-_]\d{2}[-_]\d{2}[-_]\d{2}\b/g, '')
+    .replace(/[-_]\d{6,}/g, '');
+  const match = cleaned.match(/(\d+)\s*$/);
+  return match ? parseInt(match[1], 10) : Infinity;
+}
+
+/**
+ * Sort files by their series number (ascending, lowest first).
+ */
+export function sortFilesBySeriesNumber<T extends { name: string }>(files: T[]): T[] {
+  return [...files].sort((a, b) => extractSeriesNumber(a.name) - extractSeriesNumber(b.name));
+}
+
 export function matchVideoTextFiles(
   videoFiles: File[],
   textFiles: File[]
@@ -29,7 +51,8 @@ export function matchVideoTextFiles(
     textMap.set(stem, tf);
   }
 
-  return videoFiles.map((video) => {
+  const sorted = sortFilesBySeriesNumber(videoFiles);
+  return sorted.map((video) => {
     const stem = video.name.replace(/\.[^.]+$/, '').toLowerCase();
     return { video, textFile: textMap.get(stem) };
   });

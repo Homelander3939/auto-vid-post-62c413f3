@@ -3,6 +3,17 @@ const path = require('path');
 
 const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];
 
+/** Extract trailing series number from filename for sorting (e.g. "Roman_History_38_2026-04-13.mp4" → 38) */
+function extractSeriesNum(filename) {
+  const stem = filename.replace(/\.[^.]+$/, '');
+  const cleaned = stem
+    .replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}/g, '')
+    .replace(/[-_]\d{2}[-_]\d{2}[-_]\d{2}\b/g, '')
+    .replace(/[-_]\d{6,}/g, '');
+  const match = cleaned.match(/(\d+)\s*$/);
+  return match ? parseInt(match[1], 10) : Infinity;
+}
+
 function scanFolder(folderPath) {
   if (!folderPath || !fs.existsSync(folderPath)) {
     return { videoFile: null, textFile: null };
@@ -71,8 +82,13 @@ function scanAllFiles(folderPath) {
     });
   }
 
-  // Sort oldest first so they upload in order
-  pairs.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  // Sort by series number (lowest first), fallback to modification time
+  pairs.sort((a, b) => {
+    const numA = extractSeriesNum(a.videoFile);
+    const numB = extractSeriesNum(b.videoFile);
+    if (numA !== numB) return numA - numB;
+    return a.mtimeMs - b.mtimeMs;
+  });
   return pairs;
 }
 
