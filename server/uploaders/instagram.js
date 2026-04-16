@@ -1986,9 +1986,8 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     let captionSelectors = [];
     let captionTruncated = '';
 
-    if (metadata?.title || metadata?.description || (metadata?.tags && metadata.tags.length > 0)) {
+    if (metadata?.description || (metadata?.tags && metadata.tags.length > 0)) {
       const captionParts = [];
-      if (metadata.title) captionParts.push(metadata.title);
       if (metadata.description) captionParts.push(metadata.description);
       if (metadata.tags?.length) captionParts.push(metadata.tags.map(t => t.startsWith('#') ? t : '#' + t).join(' '));
       caption = captionParts.join('\n\n').trim();

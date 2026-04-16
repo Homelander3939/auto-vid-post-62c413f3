@@ -61,8 +61,8 @@ function buildGoal(platform, meta) {
     case 'tiktok':
       return (
         `On the TikTok Creator Center (tiktok.com/creator-center), ` +
-        `fill in the caption / description field with: "${title}` +
-        (description ? ` ${description.substring(0, 150)}` : '') +
+        `fill in the caption / description field with: "` +
+        (description ? `${description.substring(0, 150)}` : title) +
         `". ` +
         `Then click the Post button and wait until the success confirmation appears.`
       );
