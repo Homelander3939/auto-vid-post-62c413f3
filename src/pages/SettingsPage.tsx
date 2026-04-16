@@ -406,6 +406,9 @@ export default function SettingsPage() {
   const [researchTest, setResearchTest] = useState<ConnectionTestResult | null>(null);
   const [testingImage, setTestingImage] = useState(false);
   const [imageTest, setImageTest] = useState<ConnectionTestResult | null>(null);
+  const [imageModels, setImageModels] = useState<ImageModelOption[]>([]);
+  const [loadingImageModels, setLoadingImageModels] = useState(false);
+  const [imageModel, setImageModel] = useState<string>('');
 
   const handleTestResearch = async () => {
     setTestingResearch(true); setResearchTest(null);
