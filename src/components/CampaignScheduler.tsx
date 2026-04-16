@@ -550,6 +550,19 @@ export default function CampaignScheduler() {
                 </Button>
               ))}
             </div>
+            {/* Account pickers */}
+            {needsPicker && platforms.length > 0 && (
+              <div className="flex flex-wrap gap-3 pt-2">
+                {platforms.map((p) => (
+                  <AccountPicker
+                    key={p}
+                    platform={p}
+                    selectedAccountId={selectedAccounts[p]}
+                    onSelect={(id) => setSelectedAccounts((prev) => ({ ...prev, [p]: id }))}
+                  />
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Date/time */}
