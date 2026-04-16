@@ -3,6 +3,17 @@
 
 import { supabase } from '@/integrations/supabase/client';
 
+export interface PlatformAccount {
+  id: string;
+  platform: string;
+  label: string;
+  email: string;
+  password: string;
+  enabled: boolean;
+  is_default: boolean;
+  created_at: string;
+}
+
 export interface AppSettings {
   folderPath: string;
   uploadMode: 'local' | 'cloud';
