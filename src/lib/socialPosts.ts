@@ -50,10 +50,37 @@ export interface AISettings {
 export interface AgentSettings {
   researchProvider: string; // auto | brave | tavily | serper | firecrawl | local
   researchApiKey: string;
-  imageProvider: string;    // auto | unsplash | pexels | openai | lovable
+  imageProvider: string;    // auto | unsplash | pexels | openai | google | lovable
   imageApiKey: string;
+  imageModel: string;       // model id for the chosen image provider (e.g. "gemini-3-pro-image-preview")
   researchDepth: string;    // light | standard | deep
   localAgentUrl: string;
+}
+
+// Heuristic: detect provider from API key prefix.
+// Returns { research?, image? } — both can be set if the key is ambiguous.
+export function detectProviderFromKey(key: string): { research?: string; image?: string } {
+  const k = (key || '').trim();
+  if (!k) return {};
+  // Brave: BSA-prefixed (e.g. "BSAxxxxxxxx...")
+  if (/^BSA[A-Za-z0-9_-]{10,}$/.test(k)) return { research: 'brave' };
+  // Tavily: tvly- prefix
+  if (/^tvly-[A-Za-z0-9]{10,}$/i.test(k)) return { research: 'tavily' };
+  // Firecrawl: fc- prefix
+  if (/^fc-[A-Za-z0-9]{10,}$/i.test(k)) return { research: 'firecrawl' };
+  // Google AI Studio: AIza prefix (39 chars total typical)
+  if (/^AIza[A-Za-z0-9_-]{20,}$/.test(k)) return { image: 'google' }; // also valid for Gemini text — image is more useful
+  // OpenAI: sk- (legacy) or sk-proj-
+  if (/^sk-(proj-)?[A-Za-z0-9_-]{20,}$/.test(k)) return { image: 'openai' };
+  // Anthropic: sk-ant-
+  if (/^sk-ant-[A-Za-z0-9_-]{20,}$/.test(k)) return {};
+  // Serper: 64-char hex
+  if (/^[a-f0-9]{64}$/i.test(k)) return { research: 'serper' };
+  // Pexels: 56-char alphanumeric
+  if (/^[A-Za-z0-9]{50,60}$/.test(k) && !/^[a-f0-9]+$/i.test(k)) return { image: 'pexels' };
+  // Unsplash Access Key: 43 chars typically, mixed case + dashes
+  if (/^[A-Za-z0-9_-]{40,48}$/.test(k)) return { image: 'unsplash' };
+  return {};
 }
 
 // --- AI settings (extended app_settings columns) ---
@@ -83,6 +110,7 @@ export async function getAgentSettings(): Promise<AgentSettings> {
     researchApiKey: r.research_api_key || '',
     imageProvider: r.image_provider || 'auto',
     imageApiKey: r.image_api_key || '',
+    imageModel: r.image_model || '',
     researchDepth: r.research_depth || 'standard',
     localAgentUrl: r.local_agent_url || 'http://localhost:3001',
   };
@@ -94,6 +122,7 @@ export async function saveAgentSettings(s: AgentSettings): Promise<void> {
     research_api_key: s.researchApiKey,
     image_provider: s.imageProvider,
     image_api_key: s.imageApiKey,
+    image_model: s.imageModel || '',
     research_depth: s.researchDepth,
     local_agent_url: s.localAgentUrl,
   } as any).eq('id', 1);
@@ -329,9 +358,10 @@ export async function testAgentConnection(
   provider: string,
   apiKey: string,
   localUrl?: string,
+  model?: string,
 ): Promise<ConnectionTestResult> {
   const { data, error } = await supabase.functions.invoke('test-agent-connection', {
-    body: { kind, provider, apiKey, localUrl },
+    body: { kind, provider, apiKey, localUrl, model },
   });
   if (error) return { ok: false, error: error.message };
   return data as ConnectionTestResult;
