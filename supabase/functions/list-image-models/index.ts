@@ -27,8 +27,6 @@ Deno.serve(async (req) => {
       } else {
         const j = await r.json();
         const all = (j?.models || []) as any[];
-        // Image-capable: any model that supports generateContent AND looks like an image model.
-        // Catches gemini-*-image, gemini-3-pro-image-preview, gemini-3.1-flash-image-preview, imagen-*.
         const imgs = all.filter((m) => {
           const supportsGen =
             (m.supportedGenerationMethods || []).includes('generateContent') ||
@@ -52,10 +50,8 @@ Deno.serve(async (req) => {
             recommended: /gemini-3\.1-flash-image-preview|gemini-3-pro-image-preview/i.test(id),
           };
         });
-        // Recommended first, then alphabetical.
         models.sort((a, b) => (Number(b.recommended) - Number(a.recommended)) || a.label.localeCompare(b.label));
         if (models.length === 0) {
-          // Fallback to the well-known Nano Banana family even if discovery failed.
           models = [
             { id: 'gemini-3-pro-image-preview', label: 'Nano Banana Pro (Gemini 3 Pro Image, preview)', recommended: true },
             { id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2 (Gemini 3.1 Flash Image)' },
@@ -76,8 +72,58 @@ Deno.serve(async (req) => {
           recommended: /gpt-image-1/i.test(m.id),
         }));
       }
+    } else if (provider === 'nvidia' && apiKey) {
+      // NVIDIA NIM — image-capable models from build.nvidia.com
+      const r = await fetch('https://integrate.api.nvidia.com/v1/models', { headers: { Authorization: `Bearer ${apiKey}` } });
+      if (!r.ok) {
+        error = `NVIDIA ${r.status}: ${(await r.text()).slice(0, 200)}`;
+      } else {
+        const j = await r.json();
+        const all = (j?.data || []) as any[];
+        // NVIDIA hosts well-known image models: SDXL, SD3, FLUX, consistory, picasso families
+        const imgs = all.filter((m: any) =>
+          /flux|stable-diffusion|sdxl|sd3|picasso|consistory|kandinsky|edify-image/i.test(m.id || ''),
+        );
+        models = imgs.map((m: any) => ({
+          id: m.id,
+          label: m.id,
+          recommended: /flux\.1|sdxl-turbo|stable-diffusion-3/i.test(m.id),
+        }));
+        // Curated fallback (NVIDIA's catalog is huge; surface the popular image NIMs).
+        if (models.length === 0) {
+          models = [
+            { id: 'black-forest-labs/flux.1-schnell', label: 'FLUX.1 Schnell (fast)', recommended: true },
+            { id: 'black-forest-labs/flux.1-dev', label: 'FLUX.1 Dev (high quality)' },
+            { id: 'stabilityai/sdxl-turbo', label: 'SDXL Turbo' },
+            { id: 'stabilityai/stable-diffusion-3-medium', label: 'Stable Diffusion 3 Medium' },
+            { id: 'stabilityai/stable-diffusion-xl', label: 'Stable Diffusion XL' },
+          ];
+        }
+        models.sort((a, b) => (Number(b.recommended) - Number(a.recommended)) || a.label.localeCompare(b.label));
+      }
+    } else if (provider === 'xai' && apiKey) {
+      // xAI (Grok) — image-capable model family
+      const r = await fetch('https://api.x.ai/v1/models', { headers: { Authorization: `Bearer ${apiKey}` } });
+      if (!r.ok) {
+        error = `xAI ${r.status}: ${(await r.text()).slice(0, 200)}`;
+      } else {
+        const j = await r.json();
+        const all = (j?.data || []) as any[];
+        const imgs = all.filter((m: any) => /image/i.test(m.id || ''));
+        models = imgs.map((m: any) => ({
+          id: m.id,
+          label: m.id,
+          recommended: /grok-2-image/i.test(m.id),
+        }));
+        if (models.length === 0) {
+          models = [
+            { id: 'grok-2-image-1212', label: 'Grok 2 Image (Dec 2024)', recommended: true },
+            { id: 'grok-2-image', label: 'Grok 2 Image' },
+          ];
+        }
+        models.sort((a, b) => (Number(b.recommended) - Number(a.recommended)) || a.label.localeCompare(b.label));
+      }
     } else if (provider === 'unsplash' || provider === 'pexels') {
-      // Stock providers don't have "models" — surface a single canonical entry.
       models = [{ id: 'default', label: provider === 'unsplash' ? 'Unsplash search' : 'Pexels search', recommended: true }];
     } else {
       error = `Unsupported provider or missing API key: ${provider}`;
