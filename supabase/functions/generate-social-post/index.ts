@@ -789,11 +789,13 @@ Deno.serve(async (req) => {
               aiChain,
               richAIPrompt,
               (e, i) => {
+                const keyHint = e.apiKey ? `${e.apiKey.slice(0, 6)}…${e.apiKey.slice(-4)}` : 'no-key';
                 const label = e.label ? `${e.label} · ` : '';
-                send('tool', { kind: 'image', name: `${e.provider}${e.model ? ' · ' + e.model.split('/').pop() : ''}`, detail: `${label}attempt #${i + 1}` });
+                send('tool', { kind: 'image', name: `${e.provider}${e.model ? ' · ' + e.model.split('/').pop() : ''}`, detail: `${label}key ${keyHint} · attempt #${i + 1}` });
               },
               (e, i, reason) => {
-                send('step', { id: `image-try-${i}`, emoji: '↪️', label: `${e.provider}${e.model ? ` (${e.model.split('/').pop()})` : ''} failed — ${reason.slice(0, 80)}. Trying next key…`, status: 'error' });
+                const keyHint = e.apiKey ? `${e.apiKey.slice(0, 6)}…${e.apiKey.slice(-4)}` : 'no-key';
+                send('step', { id: `image-try-${i}`, emoji: '↪️', label: `${e.provider}/${e.model?.split('/').pop() || '?'} (${keyHint}) failed — ${reason.slice(0, 70)}. Trying next…`, status: 'error' });
               },
             );
             if (result.dataUrl) {
