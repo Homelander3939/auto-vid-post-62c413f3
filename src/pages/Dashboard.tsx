@@ -275,7 +275,8 @@ export default function Dashboard() {
           platforms: readyPlatforms,
         };
         const storagePath = await uploadVideoFile(videoFile);
-        const job = await createUploadJob(videoFile.name, storagePath, metadata, readyPlatforms);
+        const accountId = Object.values(selectedAccounts)[0];
+        const job = await createUploadJob(videoFile.name, storagePath, metadata, readyPlatforms, accountId);
 
         const uploadMode = settings?.uploadMode || 'local';
         if (uploadMode === 'local') {
