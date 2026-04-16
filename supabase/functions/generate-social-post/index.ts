@@ -510,6 +510,7 @@ Deno.serve(async (req) => {
   const researchKey = s.research_api_key || '';
   const imageProvider = s.image_provider || 'auto';
   const imageKey = s.image_api_key || '';
+  const imageModel = s.image_model || ''; // user's chosen image model (e.g. "gemini-3-pro-image-preview")
   const localUrl = s.local_agent_url || 'http://localhost:3001';
 
   const wantsStream = body.stream !== false;
@@ -633,9 +634,16 @@ Deno.serve(async (req) => {
           const aiProvider = imageProvider === 'openai' ? 'openai'
             : imageProvider === 'google' ? 'google'
             : 'lovable';
-          const aiName = aiProvider === 'openai' ? 'openai-dalle'
-            : aiProvider === 'google' ? 'google-nano-banana'
-            : 'lovable-ai';
+          // Default models per provider when the user hasn't picked one yet.
+          const defaultModelByProvider: Record<string, string> = {
+            openai: 'gpt-image-1',
+            google: 'gemini-3.1-flash-image-preview', // Nano Banana 2 — fast + high quality
+            lovable: 'google/gemini-3.1-flash-image-preview',
+          };
+          const chosenModel = imageModel || defaultModelByProvider[aiProvider];
+          const aiName = aiProvider === 'openai' ? `openai · ${chosenModel}`
+            : aiProvider === 'google' ? `google · ${chosenModel}`
+            : `lovable-ai · ${chosenModel.split('/').pop()}`;
           const aiKey = (aiProvider === 'openai' || aiProvider === 'google') ? imageKey : '';
 
           if (strategy === 'real_photo') {
@@ -644,11 +652,11 @@ Deno.serve(async (req) => {
             if (tryUnsplash && imageKey) { const r = await findUnsplashImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; send('tool', { kind: 'image', name: 'unsplash', detail: query }); } }
             if (!raw && tryPexels && imageKey) { const r = await findPexelsImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; send('tool', { kind: 'image', name: 'pexels', detail: query }); } }
             if (!raw) {
-              raw = await generateAIImage(aiProvider, aiKey, richAIPrompt);
+              raw = await generateAIImage(aiProvider, aiKey, richAIPrompt, chosenModel);
               if (raw) send('tool', { kind: 'image', name: aiName, detail: query });
             }
           } else {
-            raw = await generateAIImage(aiProvider, aiKey, richAIPrompt);
+            raw = await generateAIImage(aiProvider, aiKey, richAIPrompt, chosenModel);
             if (raw) send('tool', { kind: 'image', name: aiName, detail: query });
           }
 
