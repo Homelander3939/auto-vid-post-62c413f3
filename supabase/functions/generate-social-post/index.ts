@@ -459,6 +459,7 @@ Deno.serve(async (req) => {
         // ── 1. Connect ──
         send('step', { id: 'init', emoji: '🚀', label: `Connecting to ${provider}…`, status: 'active' });
         send('step', { id: 'init', emoji: '✅', label: `Connected · ${textModel}`, status: 'done' });
+        send('tool', { kind: 'llm', name: provider, detail: textModel });
 
         // ── 2. Plan ──
         send('step', { id: 'plan', emoji: '🧠', label: 'Planning research strategy…', status: 'active' });
@@ -481,6 +482,7 @@ Deno.serve(async (req) => {
           send('step', { id: stepId, emoji: '🔎', label: `Searching: "${q}"`, status: 'active' });
           try {
             const { sources, usedProvider } = await runSearch({ provider: researchProvider, key: researchKey, localUrl, query: q, count: 5 });
+            send('tool', { kind: 'research', name: usedProvider, detail: q });
             const fresh = sources.filter((src) => { if (!src.url || seen.has(src.url)) return false; seen.add(src.url); return true; });
             allSources.push(...fresh);
             send('step', { id: stepId, emoji: '🔎', label: `Found ${fresh.length} new sources via ${usedProvider}`, status: 'done' });
@@ -501,6 +503,7 @@ Deno.serve(async (req) => {
           const text = await scrapeUrl(src.url);
           if (text) {
             scraped.push({ source: src, text });
+            send('tool', { kind: 'scrape', name: 'fetch', detail: hostnameOf(src.url) });
             send('step', { id: stepId, emoji: '📖', label: `Read ${hostnameOf(src.url)} (${text.length} chars)`, status: 'done' });
           } else {
             send('step', { id: stepId, emoji: '⚠️', label: `Couldn't read ${hostnameOf(src.url)}`, status: 'error' });
@@ -530,6 +533,7 @@ Deno.serve(async (req) => {
               send('step', { id: stepId, emoji: '🔎', label: `Follow-up search: "${decision.followUpQuery}"`, status: 'active' });
               try {
                 const { sources, usedProvider } = await runSearch({ provider: researchProvider, key: researchKey, localUrl, query: decision.followUpQuery, count: 4 });
+                send('tool', { kind: 'research', name: usedProvider, detail: decision.followUpQuery });
                 const fresh = sources.filter((src) => { if (!src.url || seen.has(src.url)) return false; seen.add(src.url); return true; });
                 enrichedSources.push(...fresh);
                 send('step', { id: stepId, emoji: '🔎', label: `Found ${fresh.length} more via ${usedProvider}`, status: 'done' });
@@ -556,16 +560,19 @@ Deno.serve(async (req) => {
 
           // Decide actual source based on strategy + provider config
           if (strategy === 'real_photo') {
-            // image_provider: auto/unsplash/pexels/openai/lovable
             const tryUnsplash = imageProvider === 'unsplash' || (imageProvider === 'auto' && imageKey);
             const tryPexels = imageProvider === 'pexels';
-            if (tryUnsplash && imageKey) { const r = await findUnsplashImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; } }
-            if (!raw && tryPexels && imageKey) { const r = await findPexelsImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; } }
-            // No real-photo key? Fall back to AI generation.
-            if (!raw) raw = await generateAIImage(imageProvider === 'openai' ? 'openai' : 'lovable', imageProvider === 'openai' ? imageKey : '', query);
+            if (tryUnsplash && imageKey) { const r = await findUnsplashImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; send('tool', { kind: 'image', name: 'unsplash', detail: query }); } }
+            if (!raw && tryPexels && imageKey) { const r = await findPexelsImage(imageKey, query); if (r) { raw = r.url; credit = r.credit; send('tool', { kind: 'image', name: 'pexels', detail: query }); } }
+            if (!raw) {
+              const useOpenAI = imageProvider === 'openai';
+              raw = await generateAIImage(useOpenAI ? 'openai' : 'lovable', useOpenAI ? imageKey : '', query);
+              if (raw) send('tool', { kind: 'image', name: useOpenAI ? 'openai-dalle' : 'lovable-ai', detail: query });
+            }
           } else {
-            // generated
-            raw = await generateAIImage(imageProvider === 'openai' ? 'openai' : 'lovable', imageProvider === 'openai' ? imageKey : '', query);
+            const useOpenAI = imageProvider === 'openai';
+            raw = await generateAIImage(useOpenAI ? 'openai' : 'lovable', useOpenAI ? imageKey : '', query);
+            if (raw) send('tool', { kind: 'image', name: useOpenAI ? 'openai-dalle' : 'lovable-ai', detail: query });
           }
 
           if (!raw) { send('step', { id: 'image-plan', emoji: '⚠️', label: 'No image found/generated', status: 'error' }); return { url: null, path: null, strategy }; }

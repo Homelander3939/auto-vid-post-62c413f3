@@ -237,10 +237,17 @@ export interface AgentSource extends AISource {
   publishedAt?: string;
 }
 
+export interface AgentTool {
+  kind: 'research' | 'scrape' | 'image' | 'llm';
+  name: string;     // e.g. "brave", "local-browser", "unsplash", "lovable-ai"
+  detail?: string;  // e.g. query, url, model
+}
+
 export type AIStreamEvent =
   | { type: 'step'; id: string; emoji: string; label: string; status: 'active' | 'done' | 'error' }
   | { type: 'plan'; queries: string[]; imageStrategy: string; angle: string }
   | { type: 'source'; title: string; url: string; snippet?: string; favicon?: string; publishedAt?: string; note?: string }
+  | { type: 'tool'; kind: AgentTool['kind']; name: string; detail?: string }
   | { type: 'variant'; platform: string; description: string; hashtags: string[] }
   | { type: 'sources'; sources: AgentSource[] }
   | { type: 'image'; imageUrl: string; imagePath: string; credit?: string }
@@ -310,9 +317,22 @@ export async function listAIModels(provider: string, apiKey: string): Promise<AI
   return (data.models || []) as AIModel[];
 }
 
-export interface ConnectionTestResult { ok: boolean; error?: string; latency?: number; provider?: string; model?: string }
+export interface ConnectionTestResult { ok: boolean; error?: string; latency?: number; provider?: string; model?: string; sample?: string }
 export async function testAIConnection(provider: string, apiKey: string, model: string): Promise<ConnectionTestResult> {
   const { data, error } = await supabase.functions.invoke('test-ai-connection', { body: { provider, apiKey, model } });
+  if (error) return { ok: false, error: error.message };
+  return data as ConnectionTestResult;
+}
+
+export async function testAgentConnection(
+  kind: 'research' | 'image',
+  provider: string,
+  apiKey: string,
+  localUrl?: string,
+): Promise<ConnectionTestResult> {
+  const { data, error } = await supabase.functions.invoke('test-agent-connection', {
+    body: { kind, provider, apiKey, localUrl },
+  });
   if (error) return { ok: false, error: error.message };
   return data as ConnectionTestResult;
 }

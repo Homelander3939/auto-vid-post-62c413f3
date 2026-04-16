@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Sparkles, RefreshCw, Wand2, ExternalLink, CheckCircle2, AlertTriangle, Loader2, Cpu, Search, Image as ImageIcon } from 'lucide-react';
+import { Sparkles, RefreshCw, Wand2, ExternalLink, CheckCircle2, AlertTriangle, Loader2, Cpu, Search, Image as ImageIcon, Wrench, Globe, Monitor } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -14,6 +14,7 @@ import {
   getAISettings,
   type AIGenerateOutput,
   type AgentSource,
+  type AgentTool,
   type AIStreamEvent,
   type PlatformVariant,
 } from '@/lib/socialPosts';
@@ -41,6 +42,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
   const [steps, setSteps] = useState<Step[]>([]);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [liveSources, setLiveSources] = useState<AgentSource[]>([]);
+  const [tools, setTools] = useState<AgentTool[]>([]);
   const [variants, setVariants] = useState<Record<string, PlatformVariant>>({});
   const [sources, setSources] = useState<AgentSource[]>([]);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -68,7 +70,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
     if (platforms.length === 0) { toast({ title: 'Select at least one platform', variant: 'destructive' }); return; }
 
     setLoading(true);
-    setSteps([]); setPlan(null); setLiveSources([]); setVariants({}); setSources([]);
+    setSteps([]); setPlan(null); setLiveSources([]); setTools([]); setVariants({}); setSources([]);
     setImageUrl(null); setImagePath(null); setImageCredit(''); setMeta({});
 
     try {
@@ -78,6 +80,11 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
         else if (e.type === 'source') setLiveSources((s) => {
           if (s.find((x) => x.url === (e as any).url)) return s;
           return [...s, { title: (e as any).title, url: (e as any).url, snippet: (e as any).snippet, favicon: (e as any).favicon, publishedAt: (e as any).publishedAt }];
+        });
+        else if (e.type === 'tool') setTools((t) => {
+          const key = `${e.kind}:${e.name}:${e.detail || ''}`;
+          if (t.find((x) => `${x.kind}:${x.name}:${x.detail || ''}` === key)) return t;
+          return [...t, { kind: e.kind, name: e.name, detail: e.detail }];
         });
         else if (e.type === 'variant') setVariants((v) => ({ ...v, [e.platform]: { description: e.description, hashtags: e.hashtags } }));
         else if (e.type === 'sources') setSources(e.sources);
@@ -170,7 +177,32 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
           </div>
         )}
 
-        {/* Live agent timeline */}
+        {/* Tools used (live) */}
+        {tools.length > 0 && (
+          <div className="rounded-lg border bg-card/60 backdrop-blur p-3 space-y-2 animate-in fade-in slide-in-from-top-1 duration-300">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-1.5">
+              <Wrench className="w-3 h-3" /> Tools the agent is using ({tools.length})
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {tools.map((t, i) => {
+                const Icon = t.kind === 'research' ? Search : t.kind === 'scrape' ? Globe : t.kind === 'image' ? ImageIcon : Cpu;
+                const isLocal = t.name === 'local' || t.name === 'duckduckgo' || t.name === 'google-local';
+                return (
+                  <Badge key={i} variant="outline" className="text-[11px] gap-1 font-normal animate-in fade-in zoom-in-95 duration-300">
+                    <Icon className="w-3 h-3 text-primary" />
+                    <span className="font-medium">{t.kind}</span>
+                    <span className="text-muted-foreground">·</span>
+                    <span>{t.name}</span>
+                    {isLocal && <Monitor className="w-3 h-3 ml-0.5 text-amber-500" />}
+                    {t.detail && <span className="text-muted-foreground truncate max-w-[160px]">— {t.detail}</span>}
+                  </Badge>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+
         {(loading || steps.length > 0) && (
           <div className="rounded-xl border bg-gradient-to-br from-card to-card/40 backdrop-blur p-4 animate-in fade-in slide-in-from-top-2 duration-500">
             <div className="flex items-center gap-2 mb-3">
