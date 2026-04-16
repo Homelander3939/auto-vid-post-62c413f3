@@ -35,6 +35,8 @@ function hostOf(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
 }
 
+const ACTIVE_JOB_KEY = 'ai_active_generation_job';
+
 export default function AIPostComposer({ platforms, onUse }: Props) {
   const { toast } = useToast();
   const [prompt, setPrompt] = useState('');
@@ -51,6 +53,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
   const [imageCredit, setImageCredit] = useState<string>('');
   const [activeTab, setActiveTab] = useState<string>('');
   const [meta, setMeta] = useState<{ provider?: string; model?: string }>({});
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   const { data: aiSettings } = useQuery({ queryKey: ['ai_settings'], queryFn: getAISettings });
   const { data: agentSettings } = useQuery({ queryKey: ['agent_settings'], queryFn: getAgentSettings });
@@ -67,42 +70,95 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
     });
   };
 
+  const resetState = () => {
+    setSteps([]); setPlan(null); setLiveSources([]); setTools([]); setVariants({});
+    setSources([]); setImageUrl(null); setImagePath(null); setImageCredit(''); setMeta({});
+  };
+
+  // Consume a single AIStreamEvent — used both for live SSE and replay from generation_jobs.events
+  const consumeEvent = (e: AIStreamEvent) => {
+    if (e.type === 'job') { setActiveJobId(e.id); try { localStorage.setItem(ACTIVE_JOB_KEY, e.id); } catch {} }
+    else if (e.type === 'step') upsertStep({ id: e.id, emoji: e.emoji, label: e.label, status: e.status });
+    else if (e.type === 'plan') setPlan({ queries: e.queries, imageStrategy: e.imageStrategy, angle: e.angle });
+    else if (e.type === 'source') setLiveSources((s) => {
+      if (s.find((x) => x.url === (e as any).url)) return s;
+      return [...s, { title: (e as any).title, url: (e as any).url, snippet: (e as any).snippet, favicon: (e as any).favicon, publishedAt: (e as any).publishedAt }];
+    });
+    else if (e.type === 'tool') setTools((t) => {
+      const key = `${e.kind}:${e.name}:${e.detail || ''}`;
+      if (t.find((x) => `${x.kind}:${x.name}:${x.detail || ''}` === key)) return t;
+      return [...t, { kind: e.kind, name: e.name, detail: e.detail }];
+    });
+    else if (e.type === 'variant') setVariants((v) => ({ ...v, [e.platform]: { description: e.description, hashtags: e.hashtags } }));
+    else if (e.type === 'sources') setSources(e.sources);
+    else if (e.type === 'image') { setImageUrl(e.imageUrl); setImagePath(e.imagePath); setImageCredit((e as any).credit || ''); }
+    else if (e.type === 'done') {
+      setVariants(e.variants); setSources(e.sources);
+      if (e.imageUrl) { setImageUrl(e.imageUrl); setImagePath(e.imagePath); }
+      setMeta({ provider: e.provider, model: e.model });
+    }
+    else if (e.type === 'error') {
+      toast({ title: 'AI generation failed', description: e.error, variant: 'destructive' });
+    }
+  };
+
+  // Resume an in-progress / recently completed generation when returning to this page.
+  // Reads localStorage for the active job id, replays events, and polls until status is final.
+  useEffect(() => {
+    let cancelled = false;
+    let pollTimer: number | null = null;
+
+    const resume = async () => {
+      let jobId: string | null = null;
+      try { jobId = localStorage.getItem(ACTIVE_JOB_KEY); } catch {}
+      if (!jobId) return;
+      const { getGenerationJob } = await import('@/lib/socialPosts');
+      const replay = async () => {
+        const job = await getGenerationJob(jobId!);
+        if (!job || cancelled) return;
+        setPrompt(job.prompt || '');
+        setIncludeImage(job.include_image);
+        setActiveJobId(job.id);
+        resetState();
+        for (const ev of job.events || []) consumeEvent(ev as AIStreamEvent);
+        if (job.status === 'running') {
+          setLoading(true);
+          pollTimer = window.setTimeout(replay, 1500);
+        } else {
+          setLoading(false);
+          if (job.status === 'completed') {
+            try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+          } else if (job.status === 'failed' && job.error) {
+            toast({ title: 'Previous generation failed', description: job.error, variant: 'destructive' });
+            try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+          }
+        }
+      };
+      await replay();
+    };
+    resume();
+    return () => { cancelled = true; if (pollTimer) window.clearTimeout(pollTimer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleGenerate = async () => {
     if (!prompt.trim()) { toast({ title: 'Enter a prompt first', variant: 'destructive' }); return; }
     if (platforms.length === 0) { toast({ title: 'Select at least one platform', variant: 'destructive' }); return; }
 
     setLoading(true);
-    setSteps([]); setPlan(null); setLiveSources([]); setTools([]); setVariants({}); setSources([]);
-    setImageUrl(null); setImagePath(null); setImageCredit(''); setMeta({});
+    resetState();
+    try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+    setActiveJobId(null);
 
     try {
-      await generatePostStream({ prompt, platforms, includeImage }, (e: AIStreamEvent) => {
-        if (e.type === 'step') upsertStep({ id: e.id, emoji: e.emoji, label: e.label, status: e.status });
-        else if (e.type === 'plan') setPlan({ queries: e.queries, imageStrategy: e.imageStrategy, angle: e.angle });
-        else if (e.type === 'source') setLiveSources((s) => {
-          if (s.find((x) => x.url === (e as any).url)) return s;
-          return [...s, { title: (e as any).title, url: (e as any).url, snippet: (e as any).snippet, favicon: (e as any).favicon, publishedAt: (e as any).publishedAt }];
-        });
-        else if (e.type === 'tool') setTools((t) => {
-          const key = `${e.kind}:${e.name}:${e.detail || ''}`;
-          if (t.find((x) => `${x.kind}:${x.name}:${x.detail || ''}` === key)) return t;
-          return [...t, { kind: e.kind, name: e.name, detail: e.detail }];
-        });
-        else if (e.type === 'variant') setVariants((v) => ({ ...v, [e.platform]: { description: e.description, hashtags: e.hashtags } }));
-        else if (e.type === 'sources') setSources(e.sources);
-        else if (e.type === 'image') { setImageUrl(e.imageUrl); setImagePath(e.imagePath); setImageCredit((e as any).credit || ''); }
-        else if (e.type === 'done') {
-          setVariants(e.variants); setSources(e.sources);
-          if (e.imageUrl) { setImageUrl(e.imageUrl); setImagePath(e.imagePath); }
-          setMeta({ provider: e.provider, model: e.model });
-        }
-        else if (e.type === 'error') {
-          toast({ title: 'AI generation failed', description: e.error, variant: 'destructive' });
-        }
-      });
+      await generatePostStream({ prompt, platforms, includeImage }, consumeEvent);
     } catch (e: any) {
       toast({ title: 'AI generation failed', description: e.message, variant: 'destructive' });
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+      // Final sweep — clear active job marker once stream ends cleanly.
+      try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+    }
   };
 
   const useVariant = (platform: string) => {
