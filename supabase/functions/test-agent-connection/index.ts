@@ -89,6 +89,14 @@ async function probeImage(provider: string, apiKey: string): Promise<{ ok: boole
       const hasDalle = (j?.data || []).some((m: any) => /dall-e|gpt-image/i.test(m.id));
       return { ok: true, latency: Date.now() - t0, sample: hasDalle ? 'DALL-E / gpt-image available' : 'API key valid' };
     }
+    if (provider === 'google') {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
+      if (!r.ok) return { ok: false, latency: Date.now() - t0, error: `Google ${r.status}: ${(await r.text()).slice(0, 120)}` };
+      const j = await r.json();
+      const imageModels = (j?.models || []).filter((m: any) => /image/i.test(m.name) || (m.supportedGenerationMethods || []).some((x: string) => /generateContent/i.test(x)));
+      const sample = imageModels.find((m: any) => /gemini.*image|nano.*banana/i.test(m.name))?.name?.replace('models/', '');
+      return { ok: true, latency: Date.now() - t0, sample: sample ? `${sample} available` : `${imageModels.length} models` };
+    }
     if (provider === 'lovable') {
       const key = Deno.env.get('LOVABLE_API_KEY');
       if (!key) return { ok: false, latency: Date.now() - t0, error: 'LOVABLE_API_KEY not configured' };
