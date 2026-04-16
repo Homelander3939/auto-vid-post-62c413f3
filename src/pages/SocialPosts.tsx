@@ -86,54 +86,71 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
     toast({ title: 'AI content loaded', description: 'Each platform will use its own tailored caption.' });
   };
 
-  const handleSubmit = async (mode: 'now' | 'schedule') => {
+  // Returns true when every selected platform has at least one enabled account.
+  const allPlatformsHaveAccounts = () =>
+    selectedPlatforms.every((p) => (accountsByPlatform[p] || []).length > 0);
+
+  const [missingAccountsOpen, setMissingAccountsOpen] = useState(false);
+  const missingPlatforms = selectedPlatforms.filter((p) => (accountsByPlatform[p] || []).length === 0);
+
+  const persistPost = async (mode: 'now' | 'schedule' | 'draft') => {
+    let imagePath: string | null = aiImagePath;
+    if (imageFile) imagePath = await uploadSocialImage(imageFile);
+
+    const hashtags = hashtagsRaw
+      .split(/[\s,]+/).map((t) => t.replace(/^#/, '').trim()).filter(Boolean);
+
+    const post = await createSocialPost({
+      description,
+      imagePath,
+      hashtags,
+      platforms: selectedPlatforms,
+      accountSelections: mode === 'draft' ? {} : accountSelections,
+      scheduledAt: mode === 'schedule' ? new Date(scheduledAt).toISOString() : null,
+      aiPrompt,
+      aiSources,
+      platformVariants: Object.keys(platformVariants).length ? platformVariants : undefined,
+    });
+
+    // Force draft status when saving without accounts
+    if (mode === 'draft') {
+      try { await (await import('@/integrations/supabase/client')).supabase
+        .from('social_posts').update({ status: 'draft' } as any).eq('id', post.id); } catch {}
+    } else {
+      // Persist selections to local server too (matches video upload pattern)
+      try { await saveLocalJobAccountSelections(post.id, accountSelections); } catch {}
+    }
+
+    // Trigger immediate processing for "now"
+    if (mode === 'now') {
+      try {
+        await fetch(`http://localhost:3001/api/social-posts/process/${post.id}`, { method: 'POST' });
+      } catch {}
+    }
+    return post;
+  };
+
+  const handleSubmit = async (mode: 'now' | 'schedule' | 'draft') => {
     if (!description.trim()) { toast({ title: 'Description is required', variant: 'destructive' }); return; }
     if (selectedPlatforms.length === 0) { toast({ title: 'Pick at least one platform', variant: 'destructive' }); return; }
     if (mode === 'schedule' && !scheduledAt) { toast({ title: 'Pick a scheduled time', variant: 'destructive' }); return; }
 
-    // Validate accounts
-    for (const p of selectedPlatforms) {
-      if (!accountSelections[p]) {
-        const list = accountsByPlatform[p] || [];
-        if (list.length === 0) {
-          toast({ title: `No ${PLATFORM_LABELS[p]} account`, description: `Add one in Settings.`, variant: 'destructive' });
-          return;
+    // For "now"/"schedule", require accounts. If missing, surface the add-accounts dialog.
+    if (mode !== 'draft') {
+      if (!allPlatformsHaveAccounts()) { setMissingAccountsOpen(true); return; }
+      // Default-pick accounts when not yet chosen
+      for (const p of selectedPlatforms) {
+        if (!accountSelections[p]) {
+          const list = accountsByPlatform[p] || [];
+          accountSelections[p] = (list.find((a) => a.is_default) || list[0]).id;
         }
-        accountSelections[p] = (list.find((a) => a.is_default) || list[0]).id;
       }
     }
 
     setSubmitting(true);
     try {
-      let imagePath: string | null = aiImagePath;
-      if (imageFile) imagePath = await uploadSocialImage(imageFile);
-
-      const hashtags = hashtagsRaw
-        .split(/[\s,]+/).map((t) => t.replace(/^#/, '').trim()).filter(Boolean);
-
-      const post = await createSocialPost({
-        description,
-        imagePath,
-        hashtags,
-        platforms: selectedPlatforms,
-        accountSelections,
-        scheduledAt: mode === 'schedule' ? new Date(scheduledAt).toISOString() : null,
-        aiPrompt,
-        aiSources,
-        platformVariants: Object.keys(platformVariants).length ? platformVariants : undefined,
-      });
-
-      // Persist selections to local server too (matches video upload pattern)
-      try { await saveLocalJobAccountSelections(post.id, accountSelections); } catch {}
-
-      // Trigger immediate processing for "now"
-      if (mode === 'now') {
-        try {
-          await fetch(`http://localhost:3001/api/social-posts/process/${post.id}`, { method: 'POST' });
-        } catch {}
-      }
-
-      toast({ title: mode === 'now' ? 'Post queued' : 'Post scheduled' });
+      await persistPost(mode);
+      toast({ title: mode === 'now' ? 'Post queued' : mode === 'schedule' ? 'Post scheduled' : 'Saved as draft' });
       // Reset
       setDescription(''); setHashtagsRaw(''); setImageFile(null); setAiImagePath(null);
       if (imagePreview) URL.revokeObjectURL(imagePreview);
@@ -236,16 +253,40 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
             <Input type="datetime-local" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} />
           </div>
 
-          <div className="flex gap-2 pt-2">
+          <div className="flex gap-2 pt-2 flex-wrap">
             <Button onClick={() => handleSubmit('now')} disabled={submitting} className="gap-2">
               <Send className="w-4 h-4" /> Post Now
             </Button>
             <Button variant="outline" onClick={() => handleSubmit('schedule')} disabled={submitting || !scheduledAt} className="gap-2">
               <Calendar className="w-4 h-4" /> Schedule
             </Button>
+            <Button variant="secondary" onClick={() => handleSubmit('draft')} disabled={submitting} className="gap-2">
+              💾 Save as Draft
+            </Button>
           </div>
         </CardContent>
       </Card>
+
+      {/* Missing-accounts dialog: prompts user to add accounts before posting (or save as draft instead) */}
+      <AlertDialog open={missingAccountsOpen} onOpenChange={setMissingAccountsOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>No accounts for {missingPlatforms.map((p) => PLATFORM_LABELS[p]).join(', ')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              You need to add at least one account per platform before posting. You can save this post as a draft now and add accounts later, or jump to Settings to add them.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <Button variant="secondary" onClick={async () => { setMissingAccountsOpen(false); await handleSubmit('draft'); }}>
+              Save as draft
+            </Button>
+            <AlertDialogAction onClick={() => { setMissingAccountsOpen(false); window.location.href = '/settings'; }}>
+              Add accounts
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

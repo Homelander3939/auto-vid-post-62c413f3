@@ -778,7 +778,33 @@ Deno.serve(async (req) => {
         // ── 8. Wait for image and finish ──
         const imgResult = await imagePromise;
 
-        send('step', { id: 'done', emoji: '🎉', label: 'All done — review & post!', status: 'done' });
+        // ── 8b. Auto-save as draft so the post appears on /social even if the user navigates away.
+        // The Compose tab can re-load and edit it; on Post Now/Schedule it gets re-created or its
+        // status flipped to pending. This is the "every successful generation lands on Social Posts" UX.
+        try {
+          const primary = variants[body.platforms[0]] || Object.values(variants)[0];
+          if (primary) {
+            const platformResults = body.platforms.map((name) => ({ name, status: 'pending' as const }));
+            const { data: savedRow } = await supabase.from('social_posts').insert({
+              description: primary.description,
+              image_path: imgResult.path,
+              hashtags: primary.hashtags || [],
+              target_platforms: body.platforms,
+              account_selections: {},
+              scheduled_at: null,
+              ai_prompt: body.prompt,
+              ai_sources: finalSources,
+              status: 'draft',
+              platform_results: platformResults,
+              platform_variants: variants,
+            } as any).select('id').single();
+            if (savedRow?.id) send('saved', { id: savedRow.id, status: 'draft' });
+          }
+        } catch (e) {
+          console.error('auto-save draft failed', e);
+        }
+
+        send('step', { id: 'done', emoji: '🎉', label: 'All done — saved as draft on Social Posts!', status: 'done' });
         send('done', {
           variants, sources: finalSources,
           imageUrl: imgResult.url, imagePath: imgResult.path,

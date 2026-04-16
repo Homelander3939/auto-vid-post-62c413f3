@@ -14,6 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import SocialAccountCard from '@/components/SocialAccountCard';
+import ImageFallbackKeyRow from '@/components/ImageFallbackKeyRow';
 import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, testAgentConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, detectProviderFromKey, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption, type ImageKeyEntry } from '@/lib/socialPosts';
 import { Search as SearchIcon, Image as ImageIcon, Bot, Loader2, CheckCircle2, XCircle, ExternalLink } from 'lucide-react';
 
@@ -1070,86 +1071,19 @@ export default function SettingsPage() {
             </p>
             <div className="space-y-2">
               {agentSettings.imageKeys.map((k, idx) => (
-                <div key={k.id} className="rounded-lg border bg-card p-2.5 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline" className="text-[10px] font-mono shrink-0">#{idx + 1}</Badge>
-                    <Input
-                      value={k.label || ''}
-                      onChange={(e) => setAgentSettings((s) => ({
-                        ...s,
-                        imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, label: e.target.value } : x),
-                      }))}
-                      placeholder="Label (e.g. Personal Google, Work OpenAI)"
-                      className="h-8 text-xs flex-1"
-                    />
-                    <Switch
-                      checked={k.enabled !== false}
-                      onCheckedChange={(v) => setAgentSettings((s) => ({
-                        ...s,
-                        imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, enabled: v } : x),
-                      }))}
-                    />
-                    <Button
-                      type="button" variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive"
-                      onClick={() => setAgentSettings((s) => ({
-                        ...s,
-                        imageKeys: s.imageKeys.filter((_, i) => i !== idx),
-                      }))}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <Select value={k.provider} onValueChange={(v) => setAgentSettings((s) => ({
-                      ...s,
-                      imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, provider: v, model: '' } : x),
-                    }))}>
-                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="lovable">✨ Lovable AI</SelectItem>
-                        <SelectItem value="google">🍌 Google Gemini</SelectItem>
-                        <SelectItem value="openai">🎨 OpenAI</SelectItem>
-                        <SelectItem value="nvidia">🟢 NVIDIA NIM</SelectItem>
-                        <SelectItem value="xai">⚡ xAI Grok</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Input
-                      value={k.model || ''}
-                      onChange={(e) => setAgentSettings((s) => ({
-                        ...s,
-                        imageKeys: s.imageKeys.map((x, i) => i === idx ? { ...x, model: e.target.value } : x),
-                      }))}
-                      placeholder={
-                        k.provider === 'google' ? 'gemini-3.1-flash-image-preview' :
-                        k.provider === 'openai' ? 'gpt-image-1' :
-                        k.provider === 'nvidia' ? 'black-forest-labs/flux.1-schnell' :
-                        k.provider === 'xai' ? 'grok-2-image-1212' :
-                        'google/gemini-2.5-flash-image'
-                      }
-                      className="h-8 text-xs font-mono"
-                    />
-                  </div>
-                  {k.provider !== 'lovable' && (
-                    <PasswordInput
-                      value={k.apiKey}
-                      onChange={(v) => setAgentSettings((s) => {
-                        const nextKeys = s.imageKeys.map((x, i) => {
-                          if (i !== idx) return x;
-                          // Auto-detect provider from key prefix
-                          const det = detectProviderFromKey(v);
-                          return { ...x, apiKey: v, provider: det.image || x.provider };
-                        });
-                        return { ...s, imageKeys: nextKeys };
-                      })}
-                      placeholder={
-                        k.provider === 'google' ? 'AIza…' :
-                        k.provider === 'nvidia' ? 'nvapi-…' :
-                        k.provider === 'xai' ? 'xai-…' :
-                        'sk-…'
-                      }
-                    />
-                  )}
-                </div>
+                <ImageFallbackKeyRow
+                  key={k.id}
+                  index={idx}
+                  entry={k}
+                  onChange={(next) => setAgentSettings((s) => ({
+                    ...s,
+                    imageKeys: s.imageKeys.map((x, i) => i === idx ? next : x),
+                  }))}
+                  onRemove={() => setAgentSettings((s) => ({
+                    ...s,
+                    imageKeys: s.imageKeys.filter((_, i) => i !== idx),
+                  }))}
+                />
               ))}
               {agentSettings.imageKeys.length < 10 && (
                 <Button
