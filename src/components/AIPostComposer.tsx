@@ -216,7 +216,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
                     </div>
                     {s.status === 'active' && (
                       <div className="mt-1.5 h-0.5 w-full bg-muted rounded-full overflow-hidden">
-                        <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-primary to-transparent animate-[shimmer_1.4s_ease-in-out_infinite]" />
+                        <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-primary to-transparent animate-shimmer" />
                       </div>
                     )}
                   </div>
