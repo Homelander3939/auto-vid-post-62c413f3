@@ -32,10 +32,9 @@ interface Msg {
   images?: { url: string }[];
 }
 
-/* ── Stream helper — routes to local server LM Studio instead of cloud ── */
+/* ── Stream helper — routes to cloud ai-chat edge function (Lovable AI Gateway) ── */
 
-const LOCAL_SERVER = 'http://localhost:3001';
-const CHAT_URL = `${LOCAL_SERVER}/api/ai-chat`;
+const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`;
 
 async function streamChat({
   messages,
@@ -52,6 +51,7 @@ async function streamChat({
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
     },
     body: JSON.stringify({ messages }),
   });
