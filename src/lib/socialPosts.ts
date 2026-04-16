@@ -22,6 +22,8 @@ export interface SocialPostResult {
   error?: string;
 }
 
+export interface PlatformVariant { description: string; hashtags: string[] }
+
 export interface SocialPost {
   id: string;
   description: string;
@@ -34,6 +36,7 @@ export interface SocialPost {
   ai_prompt: string | null;
   ai_sources: any[];
   platform_results: SocialPostResult[];
+  platform_variants: Record<string, PlatformVariant>;
   created_at: string;
   completed_at: string | null;
 }
@@ -126,6 +129,7 @@ export async function listSocialPosts(): Promise<SocialPost[]> {
     account_selections: row.account_selections || {},
     ai_sources: row.ai_sources || [],
     platform_results: row.platform_results || [],
+    platform_variants: row.platform_variants || {},
   })) as SocialPost[];
 }
 
@@ -138,6 +142,7 @@ export async function createSocialPost(input: {
   scheduledAt?: string | null;
   aiPrompt?: string | null;
   aiSources?: any[];
+  platformVariants?: Record<string, PlatformVariant>;
 }): Promise<SocialPost> {
   const platformResults: SocialPostResult[] = input.platforms.map((name) => ({ name, status: 'pending' }));
   const status = input.scheduledAt ? 'scheduled' : 'pending';
@@ -152,6 +157,7 @@ export async function createSocialPost(input: {
     ai_sources: input.aiSources || [],
     status,
     platform_results: platformResults,
+    platform_variants: input.platformVariants || {},
   };
   const { data, error } = await (supabase as any).from('social_posts').insert(payload).select().single();
   if (error || !data) throw new Error(error?.message || 'Failed to create post');
@@ -178,16 +184,77 @@ export interface AIGenerateInput {
   includeImage: boolean;
 }
 
+export interface AISource { title: string; url: string; note?: string }
+
 export interface AIGenerateOutput {
   description: string;
   hashtags: string[];
+  variants: Record<string, PlatformVariant>;
   imageUrl: string | null;
   imagePath: string | null;
-  sources: Array<{ title?: string; url?: string }>;
+  sources: AISource[];
+  provider?: string;
+  model?: string;
 }
 
+export type AIStreamEvent =
+  | { type: 'step'; id: string; emoji: string; label: string; status: 'active' | 'done' | 'error' }
+  | { type: 'variant'; platform: string; description: string; hashtags: string[] }
+  | { type: 'sources'; sources: AISource[] }
+  | { type: 'image'; imageUrl: string; imagePath: string }
+  | { type: 'done'; variants: Record<string, PlatformVariant>; sources: AISource[]; imageUrl: string | null; imagePath: string | null; provider?: string; model?: string }
+  | { type: 'error'; error: string };
+
+// Streaming generation via SSE — calls the edge function and emits parsed events as they arrive.
+export async function generatePostStream(
+  input: AIGenerateInput,
+  onEvent: (e: AIStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-social-post`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+    },
+    body: JSON.stringify({ ...input, stream: true }),
+    signal,
+  });
+  if (!resp.ok || !resp.body) {
+    let msg = `Stream failed (${resp.status})`;
+    try { const j = await resp.json(); msg = j.error || msg; } catch {}
+    throw new Error(msg);
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let currentEvent = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      let line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+      if (line.endsWith('\r')) line = line.slice(0, -1);
+      if (!line) { currentEvent = ''; continue; }
+      if (line.startsWith('event: ')) { currentEvent = line.slice(7).trim(); continue; }
+      if (line.startsWith('data: ')) {
+        const payload = line.slice(6);
+        try {
+          const parsed = JSON.parse(payload);
+          onEvent({ type: currentEvent as any, ...parsed });
+        } catch { /* ignore parse errors */ }
+      }
+    }
+  }
+}
+
+// Non-streaming fallback (kept for backward compat).
 export async function generatePostWithAI(input: AIGenerateInput): Promise<AIGenerateOutput> {
-  const { data, error } = await supabase.functions.invoke('generate-social-post', { body: input });
+  const { data, error } = await supabase.functions.invoke('generate-social-post', { body: { ...input, stream: false } });
   if (error) throw new Error(error.message || 'AI generation failed');
   if (!data || data.error) throw new Error(data?.error || 'AI generation failed');
   return data as AIGenerateOutput;
@@ -200,3 +267,11 @@ export async function listAIModels(provider: string, apiKey: string): Promise<AI
   if (!data || data.error) throw new Error(data?.error || 'Failed to list models');
   return (data.models || []) as AIModel[];
 }
+
+export interface ConnectionTestResult { ok: boolean; error?: string; latency?: number; provider?: string; model?: string }
+export async function testAIConnection(provider: string, apiKey: string, model: string): Promise<ConnectionTestResult> {
+  const { data, error } = await supabase.functions.invoke('test-ai-connection', { body: { provider, apiKey, model } });
+  if (error) return { ok: false, error: error.message };
+  return data as ConnectionTestResult;
+}
+
