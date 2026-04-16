@@ -388,17 +388,32 @@ function writeSchema(platforms: string[]) {
   };
 }
 
-function planPrompt() {
-  return `You are an autonomous research+social-media agent. Given a user goal, plan how to fulfill it:
-- Decide if web research is needed (almost always YES if the topic is news, trends, products, current events).
-- Generate 2-4 SHARP, SPECIFIC search queries (not vague). Use date qualifiers like "2025", "this week", "latest" when freshness matters.
-- Decide image strategy:
-  • "real_photo" — for news, real events, products, places, real people. Use 2-5 word stock photo query.
-  • "generated" — for abstract concepts, illustrations, "imagine if" posts. Provide a vivid AI image prompt.
-  • "none" — if no image is needed.
-- Identify the angle/hook the post should take.
+function nowContext(): string {
+  const now = new Date();
+  const iso = now.toISOString();
+  const human = now.toUTCString();
+  const date = iso.slice(0, 10);
+  return `CURRENT DATE/TIME (UTC): ${human} (ISO ${iso}).
+Today's date is ${date}. The current year is ${now.getUTCFullYear()}.
+You ARE running inside an autonomous agent that HAS live internet access via web-search tools and a local browser.
+Never refuse with "I don't have real-time data" — the orchestrator runs the searches FOR you and feeds the results back. Your job is to plan what to search and then USE the returned facts.`;
+}
 
-Return via the plan tool.`;
+function planPrompt() {
+  return `You are an autonomous research+social-media agent (OpenClaw-style). Plan how to fulfill the user goal.
+
+${nowContext()}
+
+PLANNING RULES:
+- needsResearch: TRUE for any topic that benefits from current information (news, trends, products, events, prices, releases, "latest", "recent", time-bounded asks like "last 24 hours"/"this week"). Default to TRUE unless the prompt is purely creative/timeless.
+- queries: 2-4 SHARP, SPECIFIC search queries. Embed the CURRENT YEAR and time qualifiers ("${new Date().getUTCFullYear()}", "this week", "today", explicit month names) when freshness matters. Vary angles (broad → narrow, different keywords).
+- imageStrategy:
+  • "real_photo" — news, real events, products, places, real people. Use 2-5 word stock photo query.
+  • "generated" — abstract concepts, illustrations, "imagine if" posts. Provide a vivid, concrete AI image prompt (subject + setting + style + lighting, no text overlays).
+  • "none" — only if user explicitly says no image.
+- angle: the editorial hook (curiosity, contrast, FOMO, contrarian take, surprising stat).
+
+Return via the plan tool. Do NOT refuse — planning is always possible.`;
 }
 
 function replanPrompt(originalGoal: string, sources: Source[]) {
