@@ -389,6 +389,8 @@ export default function SettingsPage() {
   const [aiModels, setAiModels] = useState<AIModel[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
 
   const loadModels = async (provider: string, apiKey: string) => {
     setLoadingModels(true);
@@ -401,6 +403,22 @@ export default function SettingsPage() {
       setAiModels([]);
     } finally {
       setLoadingModels(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const r = await testAIConnection(aiSettings.provider, aiSettings.apiKey, aiSettings.model);
+      setTestResult(r);
+      if (r.ok) toast({ title: '✅ Connected', description: `${r.model} responded in ${r.latency}ms` });
+      else toast({ title: 'Connection failed', description: r.error, variant: 'destructive' });
+    } catch (e: any) {
+      setTestResult({ ok: false, error: e.message });
+      toast({ title: 'Test failed', description: e.message, variant: 'destructive' });
+    } finally {
+      setTesting(false);
     }
   };
 
