@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Sparkles, RefreshCw, Wand2, ExternalLink, CheckCircle2, AlertTriangle, Loader2, Cpu, Search, Image as ImageIcon } from 'lucide-react';
+import { Sparkles, RefreshCw, Wand2, ExternalLink, CheckCircle2, AlertTriangle, Loader2, Cpu, Search, Image as ImageIcon, Wrench, Globe, Monitor } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -14,6 +14,7 @@ import {
   getAISettings,
   type AIGenerateOutput,
   type AgentSource,
+  type AgentTool,
   type AIStreamEvent,
   type PlatformVariant,
 } from '@/lib/socialPosts';
