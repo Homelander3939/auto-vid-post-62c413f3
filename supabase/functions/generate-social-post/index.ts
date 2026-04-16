@@ -56,16 +56,20 @@ Deno.serve(async (req) => {
 
     let endpoint = LOVABLE_GATEWAY;
     let textModel = configuredModel;
+    let googleMode = false;
     if (useCustom) {
       if (provider === 'openai') {
         endpoint = 'https://api.openai.com/v1/chat/completions';
-        if (!textModel.startsWith('gpt-')) textModel = 'gpt-4o-mini';
       } else if (provider === 'openrouter') {
         endpoint = 'https://openrouter.ai/api/v1/chat/completions';
       } else if (provider === 'anthropic') {
-        // Anthropic has a different shape; for simplicity we proxy through OpenAI-compat via OpenRouter style
+        // Proxy via OpenRouter for OpenAI-compat shape (tool calling supported)
         endpoint = 'https://openrouter.ai/api/v1/chat/completions';
-        if (!textModel.includes('claude')) textModel = 'anthropic/claude-3.5-sonnet';
+        if (!textModel.startsWith('anthropic/')) textModel = `anthropic/${textModel}`;
+      } else if (provider === 'nvidia') {
+        endpoint = 'https://integrate.api.nvidia.com/v1/chat/completions';
+      } else if (provider === 'google') {
+        googleMode = true;
       }
     }
 
