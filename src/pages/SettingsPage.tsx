@@ -959,6 +959,8 @@ export default function SettingsPage() {
                   <SelectItem value="pexels">🎞️ Pexels (real photos, free)</SelectItem>
                   <SelectItem value="google">🍌 Google Gemini (Nano Banana)</SelectItem>
                   <SelectItem value="openai">🎨 OpenAI DALL-E / gpt-image</SelectItem>
+                  <SelectItem value="nvidia">🟢 NVIDIA NIM (FLUX, SDXL, SD3)</SelectItem>
+                  <SelectItem value="xai">⚡ xAI Grok (Grok 2 Image)</SelectItem>
                   <SelectItem value="lovable">✨ Lovable AI (Nano Banana, included)</SelectItem>
                 </SelectContent>
               </Select>
