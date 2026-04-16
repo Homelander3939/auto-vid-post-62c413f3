@@ -819,26 +819,36 @@ export default function SettingsPage() {
         <CardContent className="space-y-5">
           {/* Research provider */}
           <div className="space-y-3">
-            <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <SearchIcon className="w-3.5 h-3.5" /> Research provider
-            </Label>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <SearchIcon className="w-3.5 h-3.5" /> Research provider
+              </Label>
+              {researchTest && (
+                researchTest.ok
+                  ? <Badge className="gap-1 bg-emerald-500/15 text-emerald-700 border-emerald-500/30 hover:bg-emerald-500/15">
+                      <CheckCircle2 className="w-3 h-3" /> Connected · {researchTest.latency}ms
+                    </Badge>
+                  : <Badge variant="destructive" className="gap-1"><XCircle className="w-3 h-3" /> {researchTest.error?.slice(0, 50)}</Badge>
+              )}
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Select value={agentSettings.researchProvider} onValueChange={(v) => setAgentSettings((s) => ({ ...s, researchProvider: v }))}>
+              <Select value={agentSettings.researchProvider} onValueChange={(v) => { setAgentSettings((s) => ({ ...s, researchProvider: v })); setResearchTest(null); }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="auto">Auto (key if set, else local browser)</SelectItem>
-                  <SelectItem value="brave">Brave Search API</SelectItem>
-                  <SelectItem value="tavily">Tavily</SelectItem>
-                  <SelectItem value="serper">Serper (Google)</SelectItem>
-                  <SelectItem value="firecrawl">Firecrawl Search</SelectItem>
-                  <SelectItem value="local">Local browser only (DuckDuckGo + Google)</SelectItem>
+                  <SelectItem value="auto">⚡ Auto — key if set, else local browser</SelectItem>
+                  <SelectItem value="brave">🦁 Brave Search API (2k free / month)</SelectItem>
+                  <SelectItem value="tavily">🌊 Tavily — best for AI agents (1k free)</SelectItem>
+                  <SelectItem value="serper">🔍 Serper (Google, 2.5k free)</SelectItem>
+                  <SelectItem value="firecrawl">🔥 Firecrawl Search</SelectItem>
+                  <SelectItem value="local">💻 Local browser only (DuckDuckGo + Google)</SelectItem>
                 </SelectContent>
               </Select>
-              {agentSettings.researchProvider !== 'local' && agentSettings.researchProvider !== 'auto' && (
+              {agentSettings.researchProvider !== 'local' && (
                 <PasswordInput
                   value={agentSettings.researchApiKey}
-                  onChange={(v) => setAgentSettings((s) => ({ ...s, researchApiKey: v }))}
+                  onChange={(v) => { setAgentSettings((s) => ({ ...s, researchApiKey: v })); setResearchTest(null); }}
                   placeholder={
+                    agentSettings.researchProvider === 'auto' ? 'Optional: any search API key' :
                     agentSettings.researchProvider === 'brave' ? 'BSA...' :
                     agentSettings.researchProvider === 'tavily' ? 'tvly-...' :
                     agentSettings.researchProvider === 'serper' ? 'serper key' :
@@ -846,61 +856,106 @@ export default function SettingsPage() {
                   }
                 />
               )}
-              {agentSettings.researchProvider === 'auto' && (
-                <PasswordInput
-                  value={agentSettings.researchApiKey}
-                  onChange={(v) => setAgentSettings((s) => ({ ...s, researchApiKey: v }))}
-                  placeholder="Optional: any search API key (Brave/Tavily/Serper/Firecrawl)"
-                />
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                type="button" size="sm" variant="outline"
+                onClick={handleTestResearch}
+                disabled={testingResearch || (agentSettings.researchProvider !== 'local' && agentSettings.researchProvider !== 'auto' && !agentSettings.researchApiKey)}
+                className="gap-1.5 h-8"
+              >
+                {testingResearch ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : '🔌'} Test connection
+              </Button>
+              {researchTest?.ok && researchTest.sample && (
+                <span className="text-[11px] text-muted-foreground italic truncate max-w-[280px]">
+                  → "{researchTest.sample}"
+                </span>
+              )}
+              {agentSettings.researchProvider !== 'local' && agentSettings.researchProvider !== 'auto' && (
+                <a href={
+                  agentSettings.researchProvider === 'brave' ? 'https://api.search.brave.com/app/keys' :
+                  agentSettings.researchProvider === 'tavily' ? 'https://app.tavily.com/' :
+                  agentSettings.researchProvider === 'serper' ? 'https://serper.dev/' :
+                  'https://www.firecrawl.dev/app/api-keys'
+                } target="_blank" rel="noreferrer" className="text-[11px] text-primary hover:underline inline-flex items-center gap-1 ml-auto">
+                  Get key <ExternalLink className="w-3 h-3" />
+                </a>
               )}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              {agentSettings.researchProvider === 'brave' && 'Get a key at api.search.brave.com — 2k free queries/month.'}
-              {agentSettings.researchProvider === 'tavily' && 'Get a key at tavily.com — best for AI agents, 1k free/month.'}
-              {agentSettings.researchProvider === 'serper' && 'Get a key at serper.dev — Google results, 2.5k free.'}
-              {agentSettings.researchProvider === 'firecrawl' && 'Get a key at firecrawl.dev — search + scrape combined.'}
-              {agentSettings.researchProvider === 'local' && 'Uses your local Playwright browser. Requires the local server running on the URL below.'}
-              {agentSettings.researchProvider === 'auto' && 'Will use your search API key if provided, otherwise falls back to the local browser.'}
+              {agentSettings.researchProvider === 'brave' && 'Brave Search API — fast, privacy-focused, generous free tier.'}
+              {agentSettings.researchProvider === 'tavily' && 'Tavily is purpose-built for AI agents — returns clean, ranked results.'}
+              {agentSettings.researchProvider === 'serper' && 'Serper returns real Google results, including news + images.'}
+              {agentSettings.researchProvider === 'firecrawl' && 'Firecrawl combines search + scrape in one call.'}
+              {agentSettings.researchProvider === 'local' && 'Uses your local Playwright browser to scrape DuckDuckGo (Google fallback). Requires the local server running.'}
+              {agentSettings.researchProvider === 'auto' && 'Smart default — uses your search API key if provided, otherwise falls back to the local browser.'}
             </p>
           </div>
 
           {/* Image provider */}
           <div className="space-y-3 border-t pt-4">
-            <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <ImageIcon className="w-3.5 h-3.5" /> Image provider
-            </Label>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <ImageIcon className="w-3.5 h-3.5" /> Image provider
+              </Label>
+              {imageTest && (
+                imageTest.ok
+                  ? <Badge className="gap-1 bg-emerald-500/15 text-emerald-700 border-emerald-500/30 hover:bg-emerald-500/15">
+                      <CheckCircle2 className="w-3 h-3" /> Connected · {imageTest.latency}ms
+                    </Badge>
+                  : <Badge variant="destructive" className="gap-1"><XCircle className="w-3 h-3" /> {imageTest.error?.slice(0, 50)}</Badge>
+              )}
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Select value={agentSettings.imageProvider} onValueChange={(v) => setAgentSettings((s) => ({ ...s, imageProvider: v }))}>
+              <Select value={agentSettings.imageProvider} onValueChange={(v) => { setAgentSettings((s) => ({ ...s, imageProvider: v })); setImageTest(null); }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="auto">Auto (agent decides: real photo vs generated)</SelectItem>
-                  <SelectItem value="unsplash">Unsplash (real photos)</SelectItem>
-                  <SelectItem value="pexels">Pexels (real photos)</SelectItem>
-                  <SelectItem value="openai">OpenAI DALL-E (generated)</SelectItem>
-                  <SelectItem value="lovable">Lovable AI image (generated)</SelectItem>
+                  <SelectItem value="auto">⚡ Auto — agent picks photo vs generated</SelectItem>
+                  <SelectItem value="unsplash">📷 Unsplash (real photos, free)</SelectItem>
+                  <SelectItem value="pexels">🎞️ Pexels (real photos, free)</SelectItem>
+                  <SelectItem value="openai">🎨 OpenAI DALL-E / gpt-image</SelectItem>
+                  <SelectItem value="lovable">✨ Lovable AI (Nano Banana, included)</SelectItem>
                 </SelectContent>
               </Select>
-              {agentSettings.imageProvider !== 'lovable' && agentSettings.imageProvider !== 'auto' && (
+              {agentSettings.imageProvider !== 'lovable' && (
                 <PasswordInput
                   value={agentSettings.imageApiKey}
-                  onChange={(v) => setAgentSettings((s) => ({ ...s, imageApiKey: v }))}
+                  onChange={(v) => { setAgentSettings((s) => ({ ...s, imageApiKey: v })); setImageTest(null); }}
                   placeholder={
+                    agentSettings.imageProvider === 'auto' ? 'Optional: Unsplash/Pexels/OpenAI key' :
                     agentSettings.imageProvider === 'unsplash' ? 'Unsplash Access Key' :
                     agentSettings.imageProvider === 'pexels' ? 'Pexels API Key' :
                     'sk-...'
                   }
                 />
               )}
-              {agentSettings.imageProvider === 'auto' && (
-                <PasswordInput
-                  value={agentSettings.imageApiKey}
-                  onChange={(v) => setAgentSettings((s) => ({ ...s, imageApiKey: v }))}
-                  placeholder="Optional: Unsplash/Pexels/OpenAI key (else uses Lovable AI)"
-                />
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                type="button" size="sm" variant="outline"
+                onClick={handleTestImage}
+                disabled={testingImage || (agentSettings.imageProvider !== 'lovable' && agentSettings.imageProvider !== 'auto' && !agentSettings.imageApiKey)}
+                className="gap-1.5 h-8"
+              >
+                {testingImage ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : '🔌'} Test connection
+              </Button>
+              {imageTest?.ok && imageTest.sample && (
+                <span className="text-[11px] text-muted-foreground italic truncate max-w-[280px]">
+                  → {imageTest.sample}
+                </span>
+              )}
+              {agentSettings.imageProvider !== 'lovable' && agentSettings.imageProvider !== 'auto' && (
+                <a href={
+                  agentSettings.imageProvider === 'unsplash' ? 'https://unsplash.com/oauth/applications' :
+                  agentSettings.imageProvider === 'pexels' ? 'https://www.pexels.com/api/' :
+                  'https://platform.openai.com/api-keys'
+                } target="_blank" rel="noreferrer" className="text-[11px] text-primary hover:underline inline-flex items-center gap-1 ml-auto">
+                  Get key <ExternalLink className="w-3 h-3" />
+                </a>
               )}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              In Auto mode the agent picks real photos for news/events and generated images for abstract/conceptual prompts. Without any key it falls back to Lovable AI image generation.
+              In Auto mode the agent picks real photos for news/events and generated images for abstract/conceptual prompts. Without any key it falls back to Lovable AI image generation (Nano Banana).
             </p>
           </div>
 
