@@ -372,15 +372,35 @@ export default function SettingsPage() {
     queryFn: getPlatformAccounts,
   });
 
+  const { data: socialAccounts = [] } = useQuery({
+    queryKey: ['social_accounts'],
+    queryFn: getSocialAccounts,
+  });
+
+  const { data: savedAi } = useQuery({
+    queryKey: ['ai_settings'],
+    queryFn: getAISettings,
+  });
+
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [saving, setSaving] = useState(false);
+  const [aiSettings, setAiSettings] = useState<AISettings>({ provider: 'lovable', apiKey: '', model: 'google/gemini-3-flash-preview' });
+  const [savingAI, setSavingAI] = useState(false);
 
   useEffect(() => {
     if (savedSettings) setSettings(savedSettings);
   }, [savedSettings]);
 
+  useEffect(() => {
+    if (savedAi) setAiSettings(savedAi);
+  }, [savedAi]);
+
   const refreshAccounts = () => {
     queryClient.invalidateQueries({ queryKey: ['platform_accounts'] });
+  };
+
+  const refreshSocialAccounts = () => {
+    queryClient.invalidateQueries({ queryKey: ['social_accounts'] });
   };
 
   const handleSave = async () => {
@@ -393,6 +413,19 @@ export default function SettingsPage() {
       toast({ title: 'Error saving', description: err.message, variant: 'destructive' });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveAI = async () => {
+    setSavingAI(true);
+    try {
+      await saveAISettings(aiSettings);
+      queryClient.invalidateQueries({ queryKey: ['ai_settings'] });
+      toast({ title: 'AI settings saved' });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    } finally {
+      setSavingAI(false);
     }
   };
 
