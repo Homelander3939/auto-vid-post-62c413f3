@@ -443,6 +443,25 @@ export default function SettingsPage() {
     } finally { setTestingImage(false); }
   };
 
+  const handleLoadImageModels = async () => {
+    setLoadingImageModels(true);
+    try {
+      const provider = agentSettings.imageProvider === 'auto' ? 'lovable' : agentSettings.imageProvider;
+      const { models, error } = await listImageModels(provider, agentSettings.imageApiKey);
+      if (error) {
+        toast({ title: 'Could not list models', description: error, variant: 'destructive' });
+        setImageModels([]);
+      } else {
+        setImageModels(models);
+        const recommended = models.find((m) => m.recommended) || models[0];
+        if (recommended && !imageModel) setImageModel(recommended.id);
+        toast({ title: '✅ Models loaded', description: `${models.length} image model${models.length === 1 ? '' : 's'} available` });
+      }
+    } catch (e: any) {
+      toast({ title: 'Failed', description: e.message, variant: 'destructive' });
+    } finally { setLoadingImageModels(false); }
+  };
+
   const loadModels = async (provider: string, apiKey: string) => {
     setLoadingModels(true);
     setModelsError(null);
