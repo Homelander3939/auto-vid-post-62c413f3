@@ -224,21 +224,28 @@ async function findPexelsImage(key: string, query: string): Promise<{ url: strin
   } catch { return null; }
 }
 
-async function generateAIImage(provider: string, key: string, prompt: string, model?: string): Promise<string | null> {
-  // Returns a data URL or null
+// Quota/rate-limit detection — used by the multi-key fallback chain.
+function isQuotaError(status: number, errText: string): boolean {
+  if (status === 429 || status === 402 || status === 403) return true;
+  const t = (errText || '').toLowerCase();
+  return /quota|rate.?limit|exceed|insufficient|billing|payment|too.many.requests/.test(t);
+}
+
+interface AIImageResult { dataUrl: string | null; error?: string; status?: number }
+
+async function generateAIImage(provider: string, key: string, prompt: string, model?: string): Promise<AIImageResult> {
   try {
     if (provider === 'openai' && key) {
       const r = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: model || 'gpt-image-1', prompt, size: '1024x1024', n: 1 }),
       });
-      if (!r.ok) return null;
+      if (!r.ok) return { dataUrl: null, error: (await r.text()).slice(0, 200), status: r.status };
       const d = await r.json();
       const b64 = d?.data?.[0]?.b64_json;
-      return b64 ? `data:image/png;base64,${b64}` : (d?.data?.[0]?.url || null);
+      return { dataUrl: b64 ? `data:image/png;base64,${b64}` : (d?.data?.[0]?.url || null) };
     }
     if (provider === 'google' && key) {
-      // Google Generative Language API — Gemini image (Nano Banana family)
       const m = (model || 'gemini-2.5-flash-image').replace(/^models\//, '');
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(key)}`;
       const r = await fetch(url, {
@@ -248,17 +255,43 @@ async function generateAIImage(provider: string, key: string, prompt: string, mo
           generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
         }),
       });
-      if (!r.ok) return null;
+      if (!r.ok) return { dataUrl: null, error: (await r.text()).slice(0, 200), status: r.status };
       const d = await r.json();
       const parts = d?.candidates?.[0]?.content?.parts || [];
       const inline = parts.find((p: any) => p?.inlineData?.data || p?.inline_data?.data);
       const data = inline?.inlineData?.data || inline?.inline_data?.data;
       const mime = inline?.inlineData?.mimeType || inline?.inline_data?.mime_type || 'image/png';
-      return data ? `data:${mime};base64,${data}` : null;
+      return { dataUrl: data ? `data:${mime};base64,${data}` : null };
     }
-    // Default: Lovable AI Gateway (Gemini image — Nano Banana, included)
+    if (provider === 'nvidia' && key) {
+      const m = model || 'black-forest-labs/flux.1-schnell';
+      const r = await fetch('https://integrate.api.nvidia.com/v1/images/generations', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ model: m, prompt: prompt.slice(0, 1500), n: 1 }),
+      });
+      if (!r.ok) return { dataUrl: null, error: (await r.text()).slice(0, 200), status: r.status };
+      const d = await r.json();
+      const b64 = d?.data?.[0]?.b64_json || d?.artifacts?.[0]?.base64;
+      const url = d?.data?.[0]?.url;
+      return { dataUrl: b64 ? `data:image/png;base64,${b64}` : (url || null) };
+    }
+    if (provider === 'xai' && key) {
+      const m = model || 'grok-2-image-1212';
+      const r = await fetch('https://api.x.ai/v1/images/generations', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: m, prompt: prompt.slice(0, 1500), n: 1, response_format: 'b64_json' }),
+      });
+      if (!r.ok) return { dataUrl: null, error: (await r.text()).slice(0, 200), status: r.status };
+      const d = await r.json();
+      const b64 = d?.data?.[0]?.b64_json;
+      const url = d?.data?.[0]?.url;
+      return { dataUrl: b64 ? `data:image/png;base64,${b64}` : (url || null) };
+    }
+    // Lovable AI Gateway (default — Nano Banana family, key auto-injected)
     const lk = Deno.env.get('LOVABLE_API_KEY');
-    if (!lk) return null;
+    if (!lk) return { dataUrl: null, error: 'LOVABLE_API_KEY not configured' };
     const r = await fetch(LOVABLE_GATEWAY, {
       method: 'POST', headers: { Authorization: `Bearer ${lk}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -267,10 +300,34 @@ async function generateAIImage(provider: string, key: string, prompt: string, mo
         modalities: ['image', 'text'],
       }),
     });
-    if (!r.ok) return null;
+    if (!r.ok) return { dataUrl: null, error: (await r.text()).slice(0, 200), status: r.status };
     const d = await r.json();
-    return d?.choices?.[0]?.message?.images?.[0]?.image_url?.url || null;
-  } catch { return null; }
+    return { dataUrl: d?.choices?.[0]?.message?.images?.[0]?.image_url?.url || null };
+  } catch (e: any) {
+    return { dataUrl: null, error: e?.message || 'unknown error' };
+  }
+}
+
+// Try a chain of {provider, key, model} entries in order; rotate to next on quota/rate errors.
+interface ImageKeyEntry { provider: string; apiKey: string; model: string; label?: string }
+async function generateWithFallbackChain(
+  chain: ImageKeyEntry[],
+  prompt: string,
+  onAttempt: (entry: ImageKeyEntry, idx: number) => void,
+  onFail: (entry: ImageKeyEntry, idx: number, reason: string) => void,
+): Promise<{ dataUrl: string | null; usedEntry?: ImageKeyEntry; usedIndex?: number }> {
+  for (let i = 0; i < chain.length; i++) {
+    const e = chain[i];
+    onAttempt(e, i);
+    const res = await generateAIImage(e.provider, e.apiKey, prompt, e.model);
+    if (res.dataUrl) return { dataUrl: res.dataUrl, usedEntry: e, usedIndex: i };
+    const reason = res.error || 'no image returned';
+    onFail(e, i, `${res.status || ''} ${reason}`.trim());
+    // If it's NOT a quota/rate error, still continue — the next key/provider may succeed.
+    // (We log the reason either way so the user can see what happened.)
+    void isQuotaError(res.status || 0, reason);
+  }
+  return { dataUrl: null };
 }
 
 async function uploadImageToBucket(supabase: any, urlOrDataUrl: string): Promise<{ url: string; path: string } | null> {
@@ -510,7 +567,9 @@ Deno.serve(async (req) => {
   const researchKey = s.research_api_key || '';
   const imageProvider = s.image_provider || 'auto';
   const imageKey = s.image_api_key || '';
-  const imageModel = s.image_model || ''; // user's chosen image model (e.g. "gemini-3-pro-image-preview")
+  const imageModel = s.image_model || '';
+  const imageKeysChain: { id?: string; provider: string; apiKey: string; model: string; label?: string; enabled?: boolean }[] =
+    Array.isArray(s.image_keys) ? s.image_keys : [];
   const localUrl = s.local_agent_url || 'http://localhost:3001';
 
   const wantsStream = body.stream !== false;
