@@ -509,6 +509,79 @@ export default function SettingsPage() {
         />
       ))}
 
+      {/* Social Post Accounts */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 pt-2">
+          <Wand2 className="w-4 h-4 text-primary" />
+          <h2 className="text-lg font-semibold">Social Post Accounts</h2>
+          <Badge variant="secondary" className="text-[10px]">For text/image posts</Badge>
+        </div>
+        <p className="text-sm text-muted-foreground -mt-2">
+          Configure X, TikTok, and Facebook accounts for the AI-powered post manager. Each account uses its own saved Chrome profile.
+        </p>
+        {SOCIAL_PLATFORMS.map((p) => (
+          <SocialAccountCard
+            key={p}
+            platform={p}
+            accounts={socialAccounts}
+            onRefresh={refreshSocialAccounts}
+            localMode={!isCloud}
+          />
+        ))}
+      </div>
+
+      {/* AI Provider */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Wand2 className="w-4 h-4 text-primary" />
+            AI Post Generator
+          </CardTitle>
+          <CardDescription>
+            Powers the AI Post Generator. Default uses Lovable AI Gateway (no key needed). Add your own provider key to override.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label className="text-xs">Provider</Label>
+              <Select value={aiSettings.provider} onValueChange={(v) => setAiSettings((s) => ({ ...s, provider: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="lovable">Lovable AI (default)</SelectItem>
+                  <SelectItem value="openai">OpenAI</SelectItem>
+                  <SelectItem value="openrouter">OpenRouter</SelectItem>
+                  <SelectItem value="anthropic">Anthropic</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Model</Label>
+              <Input
+                value={aiSettings.model}
+                onChange={(e) => setAiSettings((s) => ({ ...s, model: e.target.value }))}
+                placeholder="google/gemini-3-flash-preview"
+              />
+            </div>
+          </div>
+          {aiSettings.provider !== 'lovable' && (
+            <div className="space-y-2">
+              <Label className="text-xs">API Key</Label>
+              <PasswordInput
+                value={aiSettings.apiKey}
+                onChange={(v) => setAiSettings((s) => ({ ...s, apiKey: v }))}
+                placeholder="sk-..."
+              />
+            </div>
+          )}
+          <Button size="sm" onClick={handleSaveAI} disabled={savingAI} className="gap-1.5">
+            <Check className="w-3.5 h-3.5" />
+            {savingAI ? 'Saving…' : 'Save AI Settings'}
+          </Button>
+        </CardContent>
+      </Card>
+
+
       {/* Telegram */}
       <Card>
         <CardHeader>
