@@ -748,9 +748,8 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     await waitForVideoProcessing(page, 240);
 
     // ===== PHASE 3: FILL CAPTION =====
-    if (metadata?.title || metadata?.description || (metadata?.tags && metadata.tags.length > 0)) {
+    if (metadata?.description || (metadata?.tags && metadata.tags.length > 0)) {
       const captionParts = [];
-      if (metadata.title) captionParts.push(metadata.title);
       if (metadata.description) captionParts.push(metadata.description);
       if (metadata.tags?.length) captionParts.push(metadata.tags.map(t => t.startsWith('#') ? t : '#' + t).join(' '));
       const caption = captionParts.join('\n\n').trim();

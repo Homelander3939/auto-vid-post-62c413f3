@@ -61,8 +61,8 @@ function buildGoal(platform, meta) {
     case 'tiktok':
       return (
         `On the TikTok Creator Center (tiktok.com/creator-center), ` +
-        `fill in the caption / description field with: "${title}` +
-        (description ? ` ${description.substring(0, 150)}` : '') +
+        `fill in the caption / description field with: "` +
+        (description ? `${description.substring(0, 150)}` : title) +
         `". ` +
         `Then click the Post button and wait until the success confirmation appears.`
       );
@@ -71,8 +71,8 @@ function buildGoal(platform, meta) {
       return (
         `On Instagram (instagram.com), complete the new-post flow: ` +
         `click through the crop / trim screens by clicking Next, ` +
-        `then fill in the caption with: "${title}` +
-        (description ? ` ${description.substring(0, 150)}` : '') +
+        `then fill in the caption with: "` +
+        (description ? `${description.substring(0, 150)}` : title) +
         `". ` +
         `Finally click Share and wait until the success message appears.`
       );
