@@ -10,6 +10,7 @@ interface Body {
   provider: string;
   apiKey?: string;
   localUrl?: string;
+  model?: string; // for image: actually invoke this model with a tiny generation call
 }
 
 async function probeResearch(provider: string, apiKey: string, localUrl: string): Promise<{ ok: boolean; sample?: string; latency: number; error?: string }> {
@@ -65,7 +66,10 @@ async function probeResearch(provider: string, apiKey: string, localUrl: string)
   }
 }
 
-async function probeImage(provider: string, apiKey: string): Promise<{ ok: boolean; sample?: string; latency: number; error?: string }> {
+// Tiny prompt for the live image generation probe — kept short to minimise cost/latency.
+const TINY_IMG_PROMPT = 'a tiny red dot on white background';
+
+async function probeImage(provider: string, apiKey: string, model?: string): Promise<{ ok: boolean; sample?: string; latency: number; error?: string; model?: string }> {
   const t0 = Date.now();
   try {
     if (provider === 'unsplash') {
@@ -73,16 +77,26 @@ async function probeImage(provider: string, apiKey: string): Promise<{ ok: boole
       if (!r.ok) return { ok: false, latency: Date.now() - t0, error: `Unsplash ${r.status}: ${(await r.text()).slice(0, 120)}` };
       const j = await r.json();
       const url = j?.results?.[0]?.urls?.thumb;
-      return { ok: true, latency: Date.now() - t0, sample: url ? `${j.total} photos available` : 'OK' };
+      return { ok: true, latency: Date.now() - t0, sample: url ? `${j.total} photos available` : 'OK', model: 'unsplash-search' };
     }
     if (provider === 'pexels') {
       const r = await fetch('https://api.pexels.com/v1/search?query=sunset&per_page=1', { headers: { Authorization: apiKey } });
       if (!r.ok) return { ok: false, latency: Date.now() - t0, error: `Pexels ${r.status}: ${(await r.text()).slice(0, 120)}` };
       const j = await r.json();
-      return { ok: true, latency: Date.now() - t0, sample: `${j.total_results} photos available` };
+      return { ok: true, latency: Date.now() - t0, sample: `${j.total_results} photos available`, model: 'pexels-search' };
     }
     if (provider === 'openai') {
-      // Cheap probe: list models (DALL-E availability check)
+      // If a model was chosen, do a real (small) generation call so the user sees that model works on this key.
+      if (model) {
+        const r = await fetch('https://api.openai.com/v1/images/generations', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, prompt: TINY_IMG_PROMPT, size: '1024x1024', n: 1 }),
+        });
+        if (!r.ok) return { ok: false, latency: Date.now() - t0, error: `OpenAI ${model}: ${r.status} ${(await r.text()).slice(0, 140)}` };
+        return { ok: true, latency: Date.now() - t0, sample: `${model} generated 1 image`, model };
+      }
+      // Otherwise fall back to listing models.
       const r = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${apiKey}` } });
       if (!r.ok) return { ok: false, latency: Date.now() - t0, error: `OpenAI ${r.status}: ${(await r.text()).slice(0, 120)}` };
       const j = await r.json();
@@ -90,24 +104,58 @@ async function probeImage(provider: string, apiKey: string): Promise<{ ok: boole
       return { ok: true, latency: Date.now() - t0, sample: hasDalle ? 'DALL-E / gpt-image available' : 'API key valid' };
     }
     if (provider === 'google') {
+      // Real generation call against the chosen model — proves the key + model combination really works.
+      if (model) {
+        const m = model.replace(/^models\//, '');
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: TINY_IMG_PROMPT }] }],
+            generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+          }),
+        });
+        const j = await r.json().catch(() => ({} as any));
+        if (!r.ok) {
+          const msg = j?.error?.message || JSON.stringify(j).slice(0, 200);
+          return { ok: false, latency: Date.now() - t0, error: `Google ${m}: ${r.status} ${msg.slice(0, 180)}` };
+        }
+        const parts = j?.candidates?.[0]?.content?.parts || [];
+        const hasImg = parts.some((p: any) => p?.inlineData?.data || p?.inline_data?.data);
+        if (!hasImg) {
+          // The model accepted but returned no image — usually means model doesn't actually support image gen.
+          return { ok: false, latency: Date.now() - t0, error: `Google ${m}: 200 but no image returned — model likely doesn't support image generation. Pick a Nano Banana model.`, model: m };
+        }
+        return { ok: true, latency: Date.now() - t0, sample: `${m} returned a real image · ${parts.length} part(s)`, model: m };
+      }
+      // No model — just check key.
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
       if (!r.ok) return { ok: false, latency: Date.now() - t0, error: `Google ${r.status}: ${(await r.text()).slice(0, 120)}` };
       const j = await r.json();
-      const imageModels = (j?.models || []).filter((m: any) => /image/i.test(m.name) || (m.supportedGenerationMethods || []).some((x: string) => /generateContent/i.test(x)));
-      const sample = imageModels.find((m: any) => /gemini.*image|nano.*banana/i.test(m.name))?.name?.replace('models/', '');
-      return { ok: true, latency: Date.now() - t0, sample: sample ? `${sample} available` : `${imageModels.length} models` };
+      const imageModels = (j?.models || []).filter((mm: any) => /image/i.test(mm.name));
+      const sample = imageModels.find((mm: any) => /gemini.*image|nano.*banana/i.test(mm.name))?.name?.replace('models/', '');
+      return { ok: true, latency: Date.now() - t0, sample: sample ? `${sample} available` : `${imageModels.length} models`, model: sample };
     }
     if (provider === 'lovable') {
       const key = Deno.env.get('LOVABLE_API_KEY');
       if (!key) return { ok: false, latency: Date.now() - t0, error: 'LOVABLE_API_KEY not configured' };
-      // Light probe — just check the gateway accepts our key with a tiny chat call.
+      const m = model || 'google/gemini-2.5-flash-image';
+      // Real generation call — confirm the chosen Nano Banana variant works.
       const r = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
         method: 'POST',
         headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'google/gemini-3-flash-preview', messages: [{ role: 'user', content: 'ok' }], max_tokens: 1 }),
+        body: JSON.stringify({
+          model: m,
+          messages: [{ role: 'user', content: TINY_IMG_PROMPT }],
+          modalities: ['image', 'text'],
+        }),
       });
-      if (!r.ok) return { ok: false, latency: Date.now() - t0, error: `Lovable AI ${r.status}` };
-      return { ok: true, latency: Date.now() - t0, sample: 'Lovable AI image generation ready' };
+      const j = await r.json().catch(() => ({} as any));
+      if (!r.ok) return { ok: false, latency: Date.now() - t0, error: `Lovable AI ${m}: ${r.status} ${(j?.error || JSON.stringify(j)).toString().slice(0, 160)}`, model: m };
+      const img = j?.choices?.[0]?.message?.images?.[0]?.image_url?.url;
+      if (!img) return { ok: false, latency: Date.now() - t0, error: `Lovable AI ${m}: no image returned`, model: m };
+      return { ok: true, latency: Date.now() - t0, sample: `${m} returned a real image`, model: m };
     }
     return { ok: false, latency: Date.now() - t0, error: `Unknown image provider: ${provider}` };
   } catch (e: any) {
@@ -118,7 +166,7 @@ async function probeImage(provider: string, apiKey: string): Promise<{ ok: boole
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
   try {
-    const { kind, provider, apiKey, localUrl } = (await req.json()) as Body;
+    const { kind, provider, apiKey, localUrl, model } = (await req.json()) as Body;
     if (!kind || !provider) {
       return new Response(JSON.stringify({ ok: false, error: 'kind and provider required' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -132,7 +180,7 @@ Deno.serve(async (req) => {
     }
     const result = kind === 'research'
       ? await probeResearch(provider, apiKey || '', localUrl || '')
-      : await probeImage(provider, apiKey || '');
+      : await probeImage(provider, apiKey || '', model);
     return new Response(JSON.stringify({ ...result, provider }), {
       status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
