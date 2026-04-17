@@ -1343,6 +1343,7 @@ Deno.serve(async (req) => {
               postId: savedPostId,
               imageCredit: imgResult.credit,
               sourceImageCredit: imgResult.sourceImageCredit,
+            });
             const detailMessages = buildGenerationDetailMessages({
               variants,
               platforms: body.platforms,
