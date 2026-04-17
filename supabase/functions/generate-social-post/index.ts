@@ -1080,6 +1080,47 @@ Deno.serve(async (req) => {
         };
         send('done', finalResult);
 
+        // ── 8c. Telegram preview — mirrors the video-upload notification flow.
+        // Sends the rendered image + every per-platform variant + key sources so
+        // the user can review, give feedback, or skip without opening the app.
+        try {
+          const tgEnabled = !!s.telegram_enabled;
+          const tgChatRaw = String(s.telegram_chat_id || '').trim();
+          const tgChatId = tgChatRaw && Number.isFinite(Number(tgChatRaw)) ? Number(tgChatRaw) : null;
+          const tgKey = Deno.env.get('TELEGRAM_API_KEY');
+          const lvKey = Deno.env.get('LOVABLE_API_KEY');
+          if (tgEnabled && tgChatId && tgKey && lvKey) {
+            send('step', { id: 'telegram', emoji: '✈️', label: 'Sending preview to Telegram…', status: 'active' });
+            const primary = variants[body.platforms[0]] || Object.values(variants)[0] || { description: '', hashtags: [] };
+            const caption = buildGenerationCaption({
+              prompt: body.prompt,
+              primaryDescription: primary.description,
+              primaryHashtags: primary.hashtags || [],
+              variants,
+              platforms: body.platforms,
+              sources: finalSources,
+              postId: savedPostId,
+              imageCredit: imgResult.credit,
+            });
+            const tg = await sendTelegramGenerationPreview({
+              supabase,
+              lovableApiKey: lvKey,
+              telegramApiKey: tgKey,
+              chatId: tgChatId,
+              imagePath: imgResult.path,
+              caption,
+            });
+            send('step', {
+              id: 'telegram',
+              emoji: tg.ok ? '✈️' : '⚠️',
+              label: tg.ok ? 'Preview sent to Telegram' : `Telegram failed: ${(tg.error || '').slice(0, 80)}`,
+              status: tg.ok ? 'done' : 'error',
+            });
+          }
+        } catch (e) {
+          console.error('telegram preview failed', e);
+        }
+
         if (jobId) {
           await flushEvents();
           await supabase.from('generation_jobs').update({
