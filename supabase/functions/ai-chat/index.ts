@@ -220,6 +220,11 @@ const tools = [
 
 /* ── Tool executor ────────────────────────────────────── */
 
+function truncatePrompt(s: string, n = 80): string {
+  const t = (s || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n - 1) + '…' : t;
+}
+
 async function executeTool(supabase: any, name: string, args: any, supabaseUrl: string, serviceKey: string): Promise<string> {
   switch (name) {
     case 'create_upload_job': {
@@ -476,6 +481,8 @@ ${appContext}
 
 ## Behavior rules
 - Be PROACTIVE. If the user says "post about X to Twitter at 9pm tomorrow" → call generate_social_post with scheduled_at.
+- CRITICAL — generate_social_post NEVER auto-publishes. It runs the full in-app generation flow (research → image → per-platform variants), saves the result as a DRAFT on /social, and sends a Telegram preview. The user must reply "post" / "edit <text>" / "skip" in Telegram to actually publish, revise, or discard. Always make this clear in your reply ("I'll send you the draft to review — nothing will be posted until you approve").
+- Mirror the in-app experience: when the user asks from Telegram to generate a post, it should produce the same result as opening the Generate Post page, typing the prompt, and clicking Generate — same visual progress feed, same draft, same Telegram preview. Other agentic flows (research, stats, browser tasks) follow the same pattern: queue the task, run it exactly like the in-app button does, and report back via Telegram.
 - If user asks for stats/views/engagement → ALWAYS call check_platform_stats (do not hallucinate numbers).
 - If user asks to research something → call research_web (do not answer from memory if it's news/recent).
 - If user asks "what's pending / what's scheduled" → answer from the LIVE APP STATE above.
