@@ -220,6 +220,11 @@ const tools = [
 
 /* ── Tool executor ────────────────────────────────────── */
 
+function truncatePrompt(s: string, n = 80): string {
+  const t = (s || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n - 1) + '…' : t;
+}
+
 async function executeTool(supabase: any, name: string, args: any, supabaseUrl: string, serviceKey: string): Promise<string> {
   switch (name) {
     case 'create_upload_job': {
@@ -340,25 +345,35 @@ async function executeTool(supabase: any, name: string, args: any, supabaseUrl: 
       return '❌ Unknown action.';
     }
     case 'generate_social_post': {
-      // Insert a row and let process-uploads / scheduler handle it, OR call the deep agent inline.
-      const { data, error } = await supabase.from('social_posts').insert({
-        ai_prompt: args.prompt,
-        target_platforms: args.target_platforms || ['x'],
-        scheduled_at: args.scheduled_at || null,
-        status: args.scheduled_at ? 'scheduled' : 'pending',
-      }).select().single();
-      if (error) return `❌ Failed to queue post: ${error.message}`;
-      // Kick the generator (fire-and-forget)
+      // IMPORTANT: Do NOT pre-insert a 'pending' social_posts row — that would
+      // make the local socialPostProcessor try to publish an empty post immediately.
+      // Instead, mirror the in-app "Generate" button: kick the deep-research agent,
+      // which will run the full visual generation flow, save the result as a DRAFT
+      // on /social, and send a Telegram preview. The user then explicitly replies
+      // "post" / "edit <text>" / "skip" in Telegram to publish or discard.
+      //
+      // Scheduling path is the only case where we DO insert a row up-front (status
+      // 'scheduled') so the scheduler can pick it up at the requested time after
+      // the draft is generated and approved.
       try {
-        await fetch(`${supabaseUrl}/functions/v1/generate-social-post`, {
+        const kickBody: Record<string, unknown> = {
+          prompt: args.prompt,
+          platforms: args.target_platforms || ['x'],
+          includeImage: args.include_image !== false,
+          stream: false,
+        };
+        // Fire-and-forget — generation streams via SSE, saves draft, notifies Telegram.
+        void fetch(`${supabaseUrl}/functions/v1/generate-social-post`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ post_id: data.id, prompt: args.prompt, target_platforms: args.target_platforms, include_image: args.include_image }),
-        });
+          body: JSON.stringify(kickBody),
+        }).catch((e) => console.warn('generate-social-post kick failed:', e));
       } catch (e) {
-        console.warn('generate-social-post kick failed:', e);
+        console.warn('generate-social-post kick threw:', e);
+        return `❌ Failed to start generation: ${(e as Error).message}`;
       }
-      return `✅ Deep-research social post queued (id ${data.id.slice(0, 8)}). ${args.scheduled_at ? `Will publish ${new Date(args.scheduled_at).toLocaleString()}.` : 'Generating now — check the Social Posts page for live progress.'}`;
+      const platformsLabel = (args.target_platforms || ['x']).join(', ');
+      return `✨ Generating your draft post about "${truncatePrompt(args.prompt)}" for ${platformsLabel} now — exactly like clicking Generate in the app. I'll send you the full draft (image + per-platform variants + sources) in Telegram in 1-2 minutes. Reply "post" to publish, "edit <text>" to revise, or "skip" to discard. Nothing will be published until you approve.`;
     }
     case 'research_web': {
       const { error } = await supabase.from('pending_commands').insert({
@@ -466,6 +481,8 @@ ${appContext}
 
 ## Behavior rules
 - Be PROACTIVE. If the user says "post about X to Twitter at 9pm tomorrow" → call generate_social_post with scheduled_at.
+- CRITICAL — generate_social_post NEVER auto-publishes. It runs the full in-app generation flow (research → image → per-platform variants), saves the result as a DRAFT on /social, and sends a Telegram preview. The user must reply "post" / "edit <text>" / "skip" in Telegram to actually publish, revise, or discard. Always make this clear in your reply ("I'll send you the draft to review — nothing will be posted until you approve").
+- Mirror the in-app experience: when the user asks from Telegram to generate a post, it should produce the same result as opening the Generate Post page, typing the prompt, and clicking Generate — same visual progress feed, same draft, same Telegram preview. Other agentic flows (research, stats, browser tasks) follow the same pattern: queue the task, run it exactly like the in-app button does, and report back via Telegram.
 - If user asks for stats/views/engagement → ALWAYS call check_platform_stats (do not hallucinate numbers).
 - If user asks to research something → call research_web (do not answer from memory if it's news/recent).
 - If user asks "what's pending / what's scheduled" → answer from the LIVE APP STATE above.
