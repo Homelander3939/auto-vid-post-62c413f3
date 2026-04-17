@@ -1343,6 +1343,11 @@ Deno.serve(async (req) => {
               postId: savedPostId,
               imageCredit: imgResult.credit,
               sourceImageCredit: imgResult.sourceImageCredit,
+            const detailMessages = buildGenerationDetailMessages({
+              variants,
+              platforms: body.platforms,
+              sources: finalSources,
+              postId: savedPostId,
             });
             const tg = await sendTelegramGenerationPreview({
               supabase,
@@ -1351,6 +1356,7 @@ Deno.serve(async (req) => {
               chatId: tgChatId,
               imagePaths: [imgResult.sourceImagePath, imgResult.path].filter(Boolean) as string[],
               caption,
+              detailMessages,
             });
             send('step', {
               id: 'telegram',
