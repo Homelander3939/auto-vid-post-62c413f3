@@ -1025,7 +1025,47 @@ Deno.serve(async (req) => {
             }
           }
 
-          if (!raw) { send('step', { id: 'image-plan', emoji: '⚠️', label: 'No image found/generated (all keys exhausted)', status: 'error' }); return { url: null, path: null, strategy }; }
+          // Final fallback: ask the local browser worker to scrape an image from the web
+          // (DuckDuckGo Images → Bing Images). The worker polls pending_commands every 5s.
+          if (!raw) {
+            send('step', { id: 'image-local', emoji: '🌐', label: `All AI providers failed — asking local browser to find a "${query.slice(0, 40)}" image…`, status: 'active' });
+            try {
+              const { data: cmd } = await supabase.from('pending_commands').insert({
+                command: 'image_search',
+                args: { query, count: 5 },
+                status: 'pending',
+              }).select('id').single();
+              if (cmd?.id) {
+                const deadline = Date.now() + 25_000;
+                let imgUrl: string | null = null;
+                while (Date.now() < deadline) {
+                  await new Promise((r) => setTimeout(r, 1500));
+                  const { data: row } = await supabase.from('pending_commands')
+                    .select('status,result').eq('id', cmd.id).maybeSingle();
+                  if (row?.status === 'completed' && row.result) {
+                    try {
+                      const parsed = JSON.parse(row.result);
+                      const first = (parsed.images || [])[0];
+                      imgUrl = typeof first === 'string' ? first : (first?.url || null);
+                    } catch { /* ignore */ }
+                    break;
+                  }
+                  if (row?.status === 'failed') break;
+                }
+                if (imgUrl) {
+                  raw = imgUrl;
+                  credit = 'Local browser scrape';
+                  send('step', { id: 'image-local', emoji: '🌐', label: 'Local browser found an image ✓', status: 'done' });
+                } else {
+                  send('step', { id: 'image-local', emoji: '⚠️', label: 'Local browser did not respond in 25s (is the worker running?)', status: 'error' });
+                }
+              }
+            } catch (e: any) {
+              send('step', { id: 'image-local', emoji: '⚠️', label: `Local browser fallback failed: ${e?.message?.slice(0, 80) || 'unknown'}`, status: 'error' });
+            }
+          }
+
+          if (!raw) { send('step', { id: 'image-plan', emoji: '⚠️', label: 'No image found/generated (all sources exhausted)', status: 'error' }); return { url: null, path: null, strategy }; }
           send('step', { id: 'image-plan', emoji: '🎨', label: `Image acquired (${strategy === 'real_photo' ? 'real photo' : 'AI generated'})`, status: 'done' });
           send('step', { id: 'image-upload', emoji: '⬆️', label: 'Uploading to media library…', status: 'active' });
           const stored = await uploadImageToBucket(supabase, raw);
