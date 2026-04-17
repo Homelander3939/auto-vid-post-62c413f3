@@ -514,6 +514,89 @@ async function scrapeWithLocalBrowser(query, count, { headless = false } = {}) {
   }
 }
 
+async function searchImagesFromSourcePages(urls = [], count = 3) {
+  const targets = [...new Set((Array.isArray(urls) ? urls : []).filter(Boolean))].slice(0, 4);
+  if (targets.length === 0) return { provider: 'source-pages', images: [] };
+
+  const context = await launchPersistentSocial('research', {});
+  try {
+    const page = await context.newPage();
+    const images = [];
+
+    for (const targetUrl of targets) {
+      if (images.length >= count) break;
+      try {
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.waitForTimeout(1200);
+
+        const found = await page.evaluate(({ max, pageUrl }) => {
+          const pushUnique = (list, item) => {
+            if (!item?.url) return;
+            if (list.some((entry) => entry.url === item.url)) return;
+            list.push(item);
+          };
+
+          const absolutize = (value) => {
+            if (!value) return '';
+            try { return new URL(value, pageUrl).toString(); } catch { return ''; }
+          };
+
+          const isUsable = (value) => {
+            const url = String(value || '').trim();
+            if (!/^https?:/i.test(url)) return false;
+            if (/sprite|icon|logo|avatar|1x1|blank|emoji/i.test(url)) return false;
+            return true;
+          };
+
+          const out = [];
+
+          const ogImage = document.querySelector('meta[property="og:image"], meta[name="og:image"], meta[name="twitter:image"], meta[property="twitter:image"]')?.getAttribute('content');
+          const ogAlt = document.querySelector('meta[property="og:image:alt"], meta[name="twitter:image:alt"]')?.getAttribute('content') || '';
+          const ogUrl = absolutize(ogImage);
+          if (isUsable(ogUrl)) {
+            pushUnique(out, { url: ogUrl, source: 'source-page-meta', pageUrl, title: document.title || '', alt: ogAlt || '' });
+          }
+
+          document.querySelectorAll('article img, main img, figure img, img').forEach((img) => {
+            if (out.length >= max) return;
+            const width = Number(img.getAttribute('width') || img.naturalWidth || img.clientWidth || 0);
+            const height = Number(img.getAttribute('height') || img.naturalHeight || img.clientHeight || 0);
+            if (width < 220 || height < 180) return;
+
+            const candidate = absolutize(
+              img.getAttribute('src') ||
+              img.getAttribute('data-src') ||
+              img.getAttribute('data-lazy-src') ||
+              img.currentSrc ||
+              ''
+            );
+            if (!isUsable(candidate)) return;
+
+            const alt = (img.getAttribute('alt') || '').trim();
+            pushUnique(out, {
+              url: candidate,
+              source: 'source-page-dom',
+              pageUrl,
+              title: document.title || '',
+              alt,
+            });
+          });
+
+          return out.slice(0, max);
+        }, { max: Math.max(1, count - images.length), pageUrl: targetUrl });
+
+        images.push(...found.filter((item) => item?.url));
+      } catch (e) {
+        console.warn(`[Image] Source page scan failed for ${targetUrl}:`, e.message);
+      }
+    }
+
+    return { provider: 'source-pages', images: images.slice(0, count) };
+  } finally {
+    await safeCloseSocial(context);
+  }
+}
+
 app.post('/api/research/search', async (req, res) => {
   const { query, count = 6 } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query required' });
@@ -556,8 +639,15 @@ app.post('/api/research/search', async (req, res) => {
 // Image search via local browser — DuckDuckGo Images (no captchas) → Bing Images fallback.
 // Used by the cloud agent when stock providers (Unsplash/Pexels) are not configured.
 app.post('/api/research/image-search', async (req, res) => {
-  const { query, count = 5 } = req.body || {};
+  const { query, count = 5, urls = [] } = req.body || {};
   if (!query || typeof query !== 'string') return res.status(400).json({ error: 'query required' });
+
+  try {
+    const sourcePageResults = await searchImagesFromSourcePages(urls, count);
+    if (sourcePageResults.images.length) return res.json(sourcePageResults);
+  } catch (e) {
+    console.warn('[Image] Source-page image search failed:', e.message);
+  }
 
   const context = await launchPersistentSocial('research', {});
   try {
@@ -1212,11 +1302,12 @@ async function processPendingCommands() {
           } else if (cmd.command === 'image_search') {
             const query = cmd.args?.query || '';
             const count = Number(cmd.args?.count) || 5;
-            console.log(`[Commands] image_search: "${query}" (count=${count})`);
+            const urls = Array.isArray(cmd.args?.urls) ? cmd.args.urls.filter(Boolean) : [];
+            console.log(`[Commands] image_search: "${query}" (count=${count}, urls=${urls.length})`);
             try {
               const r = await fetch(`http://localhost:${PORT}/api/research/image-search`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query, count }),
+                body: JSON.stringify({ query, count, urls }),
               });
               const data = await r.json().catch(() => ({}));
               await supabase.from('pending_commands').update({
