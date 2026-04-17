@@ -7,6 +7,33 @@ const corsHeaders = {
 interface Body { provider: string; apiKey?: string }
 interface Model { id: string; label: string; recommended?: boolean }
 
+const GOOGLE_IMAGE_MODEL_PREFERENCE = [
+  'gemini-3.1-flash-image-preview',
+  'gemini-3-pro-image-preview',
+  'gemini-2.5-flash-image',
+];
+
+function normalizeGoogleImageModel(model?: string): string {
+  return (model || '').replace(/^models\//, '').trim();
+}
+
+function isGoogleAIStudioImageModel(meta: any): boolean {
+  const id = normalizeGoogleImageModel(meta?.name || '');
+  return (
+    !!id &&
+    (meta?.supportedGenerationMethods || []).includes('generateContent') &&
+    (/gemini.*image/i.test(id) ||
+      /gemini.*image/i.test(meta?.displayName || '') ||
+      /nano.?banana/i.test(meta?.displayName || '') ||
+      /generates? images?/i.test(meta?.description || ''))
+  );
+}
+
+function modelRank(id: string): number {
+  const idx = GOOGLE_IMAGE_MODEL_PREFERENCE.indexOf(id);
+  return idx === -1 ? 999 : idx;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
   try {
@@ -27,34 +54,24 @@ Deno.serve(async (req) => {
       } else {
         const j = await r.json();
         const all = (j?.models || []) as any[];
-        const imgs = all.filter((m) => {
-          const supportsGen =
-            (m.supportedGenerationMethods || []).includes('generateContent') ||
-            (m.supportedActions || []).includes('predict');
-          const looksImage =
-            /image|imagen|nano.banana/i.test(m.name) ||
-            /image|nano.banana/i.test(m.displayName || '') ||
-            /image generation|generates? images?/i.test(m.description || '');
-          return supportsGen && looksImage;
-        });
+        const imgs = all.filter(isGoogleAIStudioImageModel);
         models = imgs.map((m) => {
-          const id = m.name.replace(/^models\//, '');
+          const id = normalizeGoogleImageModel(m.name);
           let label = m.displayName || id;
           if (/gemini-3-pro-image-preview/i.test(id)) label = 'Nano Banana Pro (Gemini 3 Pro Image, preview)';
           else if (/gemini-3\.1-flash-image-preview/i.test(id)) label = 'Nano Banana 2 (Gemini 3.1 Flash Image)';
           else if (/gemini-2\.5-flash-image/i.test(id)) label = 'Nano Banana (Gemini 2.5 Flash Image)';
-          else if (/imagen/i.test(id)) label = `Imagen — ${id}`;
           return {
             id,
             label,
             recommended: /gemini-3\.1-flash-image-preview|gemini-3-pro-image-preview/i.test(id),
           };
         });
-        models.sort((a, b) => (Number(b.recommended) - Number(a.recommended)) || a.label.localeCompare(b.label));
+        models.sort((a, b) => modelRank(a.id) - modelRank(b.id) || a.label.localeCompare(b.label));
         if (models.length === 0) {
           models = [
-            { id: 'gemini-3-pro-image-preview', label: 'Nano Banana Pro (Gemini 3 Pro Image, preview)', recommended: true },
-            { id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2 (Gemini 3.1 Flash Image)' },
+            { id: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2 (Gemini 3.1 Flash Image)', recommended: true },
+            { id: 'gemini-3-pro-image-preview', label: 'Nano Banana Pro (Gemini 3 Pro Image, preview)' },
             { id: 'gemini-2.5-flash-image', label: 'Nano Banana (Gemini 2.5 Flash Image)' },
           ];
         }
