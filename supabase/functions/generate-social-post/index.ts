@@ -8,6 +8,7 @@ const corsHeaders = {
 };
 
 const LOVABLE_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
+const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 
 interface Body {
   prompt: string;
@@ -49,6 +50,151 @@ function trimSnippet(s: string, n = 280): string {
   if (!s) return '';
   const t = s.replace(/\s+/g, ' ').trim();
   return t.length > n ? t.slice(0, n) + '…' : t;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Telegram notify — mirrors the video-upload notification pattern
+// so the user gets a generated-post preview (image + description +
+// hashtags + sources + per-platform variants) right in Telegram.
+// ─────────────────────────────────────────────────────────────
+async function fetchImageBase64(supabase: any, imagePath: string | null): Promise<{ base64: string; mime: string } | null> {
+  if (!imagePath) return null;
+  try {
+    const { data, error } = await supabase.storage.from('social-media').download(imagePath);
+    if (error || !data) return null;
+    const buf = new Uint8Array(await data.arrayBuffer());
+    let bin = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < buf.length; i += chunk) bin += String.fromCharCode(...buf.subarray(i, i + chunk));
+    return { base64: btoa(bin), mime: (data as any).type || 'image/png' };
+  } catch { return null; }
+}
+
+function escapeHtml(s: string): string {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function buildGenerationCaption(input: {
+  prompt: string;
+  primaryDescription: string;
+  primaryHashtags: string[];
+  variants: Variants;
+  platforms: string[];
+  sources: Source[];
+  postId: string | null;
+  imageCredit?: string;
+}): string {
+  const { prompt, primaryDescription, primaryHashtags, variants, platforms, sources, postId, imageCredit } = input;
+  const head = `✨ <b>New AI post generated</b>\nPrompt: <i>${escapeHtml(prompt.slice(0, 180))}</i>`;
+
+  const variantLines: string[] = [];
+  for (const p of platforms) {
+    const v = variants[p];
+    if (!v) continue;
+    const desc = escapeHtml(v.description.slice(0, 700));
+    const tags = (v.hashtags || []).slice(0, 8).map((t) => `#${t.replace(/^#/, '')}`).join(' ');
+    variantLines.push(`\n— <b>${p.toUpperCase()}</b> —\n${desc}${tags ? `\n${escapeHtml(tags)}` : ''}`);
+  }
+
+  const srcLines = sources.slice(0, 3)
+    .map((s, i) => `  ${i + 1}. <a href="${escapeHtml(s.url)}">${escapeHtml((s.title || s.url).slice(0, 70))}</a>`)
+    .join('\n');
+
+  const footer = [
+    imageCredit ? `🎨 ${escapeHtml(imageCredit)}` : '',
+    postId ? `📝 Post ID: <code>${postId}</code>` : '',
+    sources.length ? `🔎 Sources:\n${srcLines}` : '',
+    `\nReply with <b>post</b> to publish, <b>edit &lt;text&gt;</b> to revise, or <b>skip</b> to keep as draft.`,
+  ].filter(Boolean).join('\n');
+
+  // Telegram caption hard limit is 1024 chars; sendMessage allows 4096.
+  const full = [head, ...variantLines, footer].join('\n');
+  return full;
+}
+
+async function sendTelegramGenerationPreview(opts: {
+  supabase: any;
+  lovableApiKey: string;
+  telegramApiKey: string;
+  chatId: number;
+  imagePath: string | null;
+  caption: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const { supabase, lovableApiKey, telegramApiKey, chatId, imagePath, caption } = opts;
+  try {
+    const photo = imagePath ? await fetchImageBase64(supabase, imagePath) : null;
+    // Caption with photo is capped at 1024 chars — split: short caption + full text follow-up.
+    if (photo) {
+      const captionShort = caption.length > 950 ? caption.slice(0, 950) + '…' : caption;
+      const boundary = `----lovable-${crypto.randomUUID()}`;
+      const enc = new TextEncoder();
+      const bytes = Uint8Array.from(atob(photo.base64), (c) => c.charCodeAt(0));
+      const parts: Uint8Array[] = [];
+      parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`));
+      parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${captionShort}\r\n`));
+      parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="parse_mode"\r\n\r\nHTML\r\n`));
+      parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="post.png"\r\nContent-Type: ${photo.mime || 'image/png'}\r\n\r\n`));
+      parts.push(bytes);
+      parts.push(enc.encode(`\r\n--${boundary}--\r\n`));
+      const totalLen = parts.reduce((s, p) => s + p.length, 0);
+      const body = new Uint8Array(totalLen);
+      let off = 0;
+      for (const p of parts) { body.set(p, off); off += p.length; }
+      const r = await fetch(`${TELEGRAM_GATEWAY}/sendPhoto`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${lovableApiKey}`,
+          'X-Connection-Api-Key': telegramApiKey,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j?.ok === false) {
+        return { ok: false, error: `sendPhoto ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
+      }
+      // If the original caption was truncated, follow up with the full text via sendMessage.
+      if (caption.length > 950) {
+        await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${lovableApiKey}`,
+            'X-Connection-Api-Key': telegramApiKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: caption,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+          }),
+        }).catch(() => {});
+      }
+      return { ok: true };
+    }
+    // No image — text only.
+    const r = await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${lovableApiKey}`,
+        'X-Connection-Api-Key': telegramApiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: caption,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+      }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j?.ok === false) {
+      return { ok: false, error: `sendMessage ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
+    }
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'unknown' };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
