@@ -44,6 +44,8 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
   const [aiPrompt, setAiPrompt] = useState<string | null>(null);
   const [aiSources, setAiSources] = useState<any[]>([]);
   const [platformVariants, setPlatformVariants] = useState<Record<string, { description: string; hashtags: string[] }>>({});
+  // Which platform's variant is currently shown in the preview switcher.
+  const [previewPlatform, setPreviewPlatform] = useState<string>('x');
 
   const accountsByPlatform = useMemo(() => {
     const map: Record<string, SocialAccount[]> = {};
