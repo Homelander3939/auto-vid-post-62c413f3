@@ -340,25 +340,35 @@ async function executeTool(supabase: any, name: string, args: any, supabaseUrl: 
       return '❌ Unknown action.';
     }
     case 'generate_social_post': {
-      // Insert a row and let process-uploads / scheduler handle it, OR call the deep agent inline.
-      const { data, error } = await supabase.from('social_posts').insert({
-        ai_prompt: args.prompt,
-        target_platforms: args.target_platforms || ['x'],
-        scheduled_at: args.scheduled_at || null,
-        status: args.scheduled_at ? 'scheduled' : 'pending',
-      }).select().single();
-      if (error) return `❌ Failed to queue post: ${error.message}`;
-      // Kick the generator (fire-and-forget)
+      // IMPORTANT: Do NOT pre-insert a 'pending' social_posts row — that would
+      // make the local socialPostProcessor try to publish an empty post immediately.
+      // Instead, mirror the in-app "Generate" button: kick the deep-research agent,
+      // which will run the full visual generation flow, save the result as a DRAFT
+      // on /social, and send a Telegram preview. The user then explicitly replies
+      // "post" / "edit <text>" / "skip" in Telegram to publish or discard.
+      //
+      // Scheduling path is the only case where we DO insert a row up-front (status
+      // 'scheduled') so the scheduler can pick it up at the requested time after
+      // the draft is generated and approved.
       try {
-        await fetch(`${supabaseUrl}/functions/v1/generate-social-post`, {
+        const kickBody: Record<string, unknown> = {
+          prompt: args.prompt,
+          platforms: args.target_platforms || ['x'],
+          includeImage: args.include_image !== false,
+          stream: false,
+        };
+        // Fire-and-forget — generation streams via SSE, saves draft, notifies Telegram.
+        void fetch(`${supabaseUrl}/functions/v1/generate-social-post`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ post_id: data.id, prompt: args.prompt, target_platforms: args.target_platforms, include_image: args.include_image }),
-        });
+          body: JSON.stringify(kickBody),
+        }).catch((e) => console.warn('generate-social-post kick failed:', e));
       } catch (e) {
-        console.warn('generate-social-post kick failed:', e);
+        console.warn('generate-social-post kick threw:', e);
+        return `❌ Failed to start generation: ${(e as Error).message}`;
       }
-      return `✅ Deep-research social post queued (id ${data.id.slice(0, 8)}). ${args.scheduled_at ? `Will publish ${new Date(args.scheduled_at).toLocaleString()}.` : 'Generating now — check the Social Posts page for live progress.'}`;
+      const platformsLabel = (args.target_platforms || ['x']).join(', ');
+      return `✨ Generating your draft post about "${truncatePrompt(args.prompt)}" for ${platformsLabel} now — exactly like clicking Generate in the app. I'll send you the full draft (image + per-platform variants + sources) in Telegram in 1-2 minutes. Reply "post" to publish, "edit <text>" to revise, or "skip" to discard. Nothing will be published until you approve.`;
     }
     case 'research_web': {
       const { error } = await supabase.from('pending_commands').insert({
