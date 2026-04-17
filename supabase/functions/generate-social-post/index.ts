@@ -322,26 +322,45 @@ async function generateAIImage(provider: string, key: string, prompt: string, mo
           generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
         }),
       });
-      if (!r.ok) return { dataUrl: null, error: (await r.text()).slice(0, 200), status: r.status };
+      if (!r.ok) {
+        const errTxt = (await r.text()).slice(0, 300);
+        return { dataUrl: null, error: `Google ${m} ${r.status}: ${errTxt}`, status: r.status };
+      }
       const d = await r.json();
       const parts = d?.candidates?.[0]?.content?.parts || [];
       const inline = parts.find((p: any) => p?.inlineData?.data || p?.inline_data?.data);
       const data = inline?.inlineData?.data || inline?.inline_data?.data;
       const mime = inline?.inlineData?.mimeType || inline?.inline_data?.mime_type || 'image/png';
-      return { dataUrl: data ? `data:${mime};base64,${data}` : null };
+      if (!data) {
+        const finishReason = d?.candidates?.[0]?.finishReason || 'unknown';
+        const safety = JSON.stringify(d?.candidates?.[0]?.safetyRatings || []).slice(0, 150);
+        return { dataUrl: null, error: `Google ${m}: no image (finish=${finishReason}, safety=${safety})` };
+      }
+      return { dataUrl: `data:${mime};base64,${data}` };
     }
     if (provider === 'nvidia' && key) {
+      // NVIDIA NIM uses model-specific invoke URLs under ai.api.nvidia.com/v1/genai
+      // for image models like FLUX/SDXL. The OpenAI-compatible /v1/images/generations
+      // endpoint does NOT exist on integrate.api.nvidia.com — that's only for chat.
       const m = model || 'black-forest-labs/flux.1-schnell';
-      const r = await fetch('https://integrate.api.nvidia.com/v1/images/generations', {
+      const url = `https://ai.api.nvidia.com/v1/genai/${m}`;
+      const r = await fetch(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ model: m, prompt: prompt.slice(0, 1500), n: 1 }),
+        body: JSON.stringify({
+          prompt: prompt.slice(0, 1500),
+          width: 1024, height: 1024, samples: 1, steps: 4, seed: 0,
+          cfg_scale: 3.5,
+        }),
       });
-      if (!r.ok) return { dataUrl: null, error: (await r.text()).slice(0, 200), status: r.status };
+      if (!r.ok) {
+        return { dataUrl: null, error: `NVIDIA ${r.status}: ${(await r.text()).slice(0, 200)}`, status: r.status };
+      }
       const d = await r.json();
-      const b64 = d?.data?.[0]?.b64_json || d?.artifacts?.[0]?.base64;
-      const url = d?.data?.[0]?.url;
-      return { dataUrl: b64 ? `data:image/png;base64,${b64}` : (url || null) };
+      const b64 = d?.image || d?.artifacts?.[0]?.base64 || d?.data?.[0]?.b64_json || d?.images?.[0];
+      const u = d?.data?.[0]?.url;
+      if (!b64 && !u) return { dataUrl: null, error: `NVIDIA: no image in response (keys: ${Object.keys(d).join(',')})`, status: 200 };
+      return { dataUrl: b64 ? `data:image/png;base64,${b64}` : (u || null) };
     }
     if (provider === 'xai' && key) {
       const m = model || 'grok-2-image-1212';
