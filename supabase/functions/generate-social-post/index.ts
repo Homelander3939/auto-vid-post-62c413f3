@@ -52,6 +52,11 @@ function trimSnippet(s: string, n = 280): string {
   return t.length > n ? t.slice(0, n) + '…' : t;
 }
 
+function truncateText(s: string, n: number): string {
+  const t = (s || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, Math.max(1, n - 1)).trimEnd() + '…' : t;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Telegram notify — mirrors the video-upload notification pattern
 // so the user gets a generated-post preview (image + description +
@@ -83,33 +88,73 @@ function buildGenerationCaption(input: {
   sources: Source[];
   postId: string | null;
   imageCredit?: string;
+  sourceImageCredit?: string;
 }): string {
-  const { prompt, primaryDescription, primaryHashtags, variants, platforms, sources, postId, imageCredit } = input;
-  const head = `✨ <b>New AI post generated</b>\nPrompt: <i>${escapeHtml(prompt.slice(0, 180))}</i>`;
+  const { prompt, variants, platforms, sources, postId, imageCredit, sourceImageCredit } = input;
 
-  const variantLines: string[] = [];
-  for (const p of platforms) {
-    const v = variants[p];
-    if (!v) continue;
-    const desc = escapeHtml(v.description.slice(0, 700));
-    const tags = (v.hashtags || []).slice(0, 8).map((t) => `#${t.replace(/^#/, '')}`).join(' ');
-    variantLines.push(`\n— <b>${p.toUpperCase()}</b> —\n${desc}${tags ? `\n${escapeHtml(tags)}` : ''}`);
+  const compose = (opts: { promptLen: number; descLen: number; maxPlatforms: number; maxSources: number; maxTags: number }) => {
+    const head = `✨ <b>New AI post generated</b>\nPrompt: ${escapeHtml(truncateText(prompt, opts.promptLen))}`;
+
+    const variantLines = platforms.slice(0, opts.maxPlatforms).map((platform) => {
+      const variant = variants[platform];
+      if (!variant) return '';
+      const desc = escapeHtml(truncateText(variant.description || '', opts.descLen));
+      const tags = (variant.hashtags || [])
+        .slice(0, opts.maxTags)
+        .map((tag) => `#${tag.replace(/^#/, '')}`)
+        .join(' ');
+      return `— <b>${platform.toUpperCase()}</b> —\n${desc}${tags ? `\n${escapeHtml(tags)}` : ''}`;
+    }).filter(Boolean);
+
+    const sourceLines = sources.slice(0, opts.maxSources)
+      .map((source, index) => `${index + 1}. <a href="${escapeHtml(source.url)}">${escapeHtml(truncateText(source.title || hostnameOf(source.url), 42))}</a>`)
+      .join('\n');
+
+    const footer = [
+      imageCredit ? `🎨 ${escapeHtml(truncateText(imageCredit, 70))}` : '',
+      sourceImageCredit ? `🖼️ ${escapeHtml(truncateText(sourceImageCredit, 70))}` : '',
+      postId ? `📝 Post ID: <code>${postId}</code>` : '',
+      sourceLines ? `🔎 Sources:\n${sourceLines}` : '',
+      `Reply: <b>post</b> / <b>edit &lt;text&gt;</b> / <b>skip</b>`,
+    ].filter(Boolean).join('\n');
+
+    return [head, ...variantLines, footer].filter(Boolean).join('\n\n');
+  };
+
+  const attempts = [
+    { promptLen: 120, descLen: 170, maxPlatforms: 3, maxSources: 2, maxTags: 4 },
+    { promptLen: 90, descLen: 120, maxPlatforms: 3, maxSources: 2, maxTags: 3 },
+    { promptLen: 72, descLen: 90, maxPlatforms: 2, maxSources: 1, maxTags: 2 },
+  ];
+
+  for (const attempt of attempts) {
+    const caption = compose(attempt);
+    if (caption.length <= 1024) return caption;
   }
 
-  const srcLines = sources.slice(0, 3)
-    .map((s, i) => `  ${i + 1}. <a href="${escapeHtml(s.url)}">${escapeHtml((s.title || s.url).slice(0, 70))}</a>`)
-    .join('\n');
+  return compose({ promptLen: 56, descLen: 72, maxPlatforms: 2, maxSources: 1, maxTags: 2 }).slice(0, 1020) + '…';
+}
 
-  const footer = [
-    imageCredit ? `🎨 ${escapeHtml(imageCredit)}` : '',
-    postId ? `📝 Post ID: <code>${postId}</code>` : '',
-    sources.length ? `🔎 Sources:\n${srcLines}` : '',
-    `\nReply with <b>post</b> to publish, <b>edit &lt;text&gt;</b> to revise, or <b>skip</b> to keep as draft.`,
-  ].filter(Boolean).join('\n');
+type TelegramPreviewImage = { path: string; base64: string; mime: string };
 
-  // Telegram caption hard limit is 1024 chars; sendMessage allows 4096.
-  const full = [head, ...variantLines, footer].join('\n');
-  return full;
+function buildTelegramMultipart(parts: Uint8Array[]): Uint8Array {
+  const totalLen = parts.reduce((sum, part) => sum + part.length, 0);
+  const body = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const part of parts) {
+    body.set(part, offset);
+    offset += part.length;
+  }
+  return body;
+}
+
+async function loadTelegramPreviewImages(supabase: any, imagePaths: string[]): Promise<TelegramPreviewImage[]> {
+  const uniquePaths = [...new Set((imagePaths || []).filter(Boolean))].slice(0, 2);
+  const loaded = await Promise.all(uniquePaths.map(async (path) => {
+    const photo = await fetchImageBase64(supabase, path);
+    return photo ? { path, base64: photo.base64, mime: photo.mime || 'image/png' } : null;
+  }));
+  return loaded.filter(Boolean) as TelegramPreviewImage[];
 }
 
 async function sendTelegramGenerationPreview(opts: {
@@ -117,14 +162,54 @@ async function sendTelegramGenerationPreview(opts: {
   lovableApiKey: string;
   telegramApiKey: string;
   chatId: number;
-  imagePath: string | null;
+  imagePaths: string[];
   caption: string;
 }): Promise<{ ok: boolean; error?: string }> {
-  const { supabase, lovableApiKey, telegramApiKey, chatId, imagePath, caption } = opts;
+  const { supabase, lovableApiKey, telegramApiKey, chatId, imagePaths, caption } = opts;
   try {
-    const photo = imagePath ? await fetchImageBase64(supabase, imagePath) : null;
-    // Caption with photo is capped at 1024 chars — split: short caption + full text follow-up.
-    if (photo) {
+    const photos = await loadTelegramPreviewImages(supabase, imagePaths);
+    if (photos.length > 1) {
+      const boundary = `----lovable-${crypto.randomUUID()}`;
+      const enc = new TextEncoder();
+      const parts: Uint8Array[] = [];
+      const media = photos.map((photo, index) => {
+        const ext = photo.mime.split('/')[1]?.split(';')[0] || 'png';
+        return index === 0
+          ? { type: 'photo', media: `attach://preview_${index}.${ext}`, caption, parse_mode: 'HTML' }
+          : { type: 'photo', media: `attach://preview_${index}.${ext}` };
+      });
+
+      parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`));
+      parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="media"\r\n\r\n${JSON.stringify(media)}\r\n`));
+
+      for (let index = 0; index < photos.length; index++) {
+        const photo = photos[index];
+        const ext = photo.mime.split('/')[1]?.split(';')[0] || 'png';
+        const bytes = Uint8Array.from(atob(photo.base64), (c) => c.charCodeAt(0));
+        parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="preview_${index}.${ext}"; filename="preview_${index}.${ext}"\r\nContent-Type: ${photo.mime || 'image/png'}\r\n\r\n`));
+        parts.push(bytes);
+        parts.push(enc.encode(`\r\n`));
+      }
+      parts.push(enc.encode(`--${boundary}--\r\n`));
+
+      const r = await fetch(`${TELEGRAM_GATEWAY}/sendMediaGroup`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${lovableApiKey}`,
+          'X-Connection-Api-Key': telegramApiKey,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        },
+        body: buildTelegramMultipart(parts),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j?.ok === false) {
+        return { ok: false, error: `sendMediaGroup ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
+      }
+      return { ok: true };
+    }
+
+    if (photos.length === 1) {
+      const photo = photos[0];
       const captionShort = caption.length > 950 ? caption.slice(0, 950) + '…' : caption;
       const boundary = `----lovable-${crypto.randomUUID()}`;
       const enc = new TextEncoder();
@@ -147,32 +232,15 @@ async function sendTelegramGenerationPreview(opts: {
           'X-Connection-Api-Key': telegramApiKey,
           'Content-Type': `multipart/form-data; boundary=${boundary}`,
         },
-        body,
+        body: buildTelegramMultipart(parts),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j?.ok === false) {
         return { ok: false, error: `sendPhoto ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
       }
-      // If the original caption was truncated, follow up with the full text via sendMessage.
-      if (caption.length > 950) {
-        await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${lovableApiKey}`,
-            'X-Connection-Api-Key': telegramApiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: caption,
-            parse_mode: 'HTML',
-            disable_web_page_preview: true,
-          }),
-        }).catch(() => {});
-      }
       return { ok: true };
     }
-    // No image — text only.
+
     const r = await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
       method: 'POST',
       headers: {
@@ -288,6 +356,47 @@ async function searchLocalViaCommand(supabase: any, query: string, count = 6, ti
     if (row.status === 'failed') throw new Error(row.result || 'Local research failed');
   }
   throw new Error('Local research timed out (worker offline?)');
+}
+
+type LocalImageCandidate = { url: string; source?: string; pageUrl?: string; title?: string; alt?: string };
+
+async function searchLocalImagesViaCommand(
+  supabase: any,
+  query: string,
+  sourceUrls: string[] = [],
+  count = 5,
+  timeoutMs = 25000,
+): Promise<{ provider: string; images: LocalImageCandidate[] }> {
+  const urls = [...new Set((sourceUrls || []).filter(Boolean))].slice(0, 4);
+  const { data: inserted, error } = await supabase
+    .from('pending_commands')
+    .insert({ command: 'image_search', args: { query, count, urls } })
+    .select('id')
+    .single();
+  if (error || !inserted?.id) throw new Error(`Could not queue local image search: ${error?.message || 'unknown'}`);
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const { data: row } = await supabase
+      .from('pending_commands')
+      .select('status, result')
+      .eq('id', inserted.id)
+      .single();
+    if (!row) continue;
+    if (row.status === 'completed') {
+      try {
+        const parsed = JSON.parse(row.result || '{}');
+        const images = Array.isArray(parsed?.images) ? parsed.images : [];
+        return { provider: parsed?.provider || 'none', images };
+      } catch {
+        return { provider: 'none', images: [] };
+      }
+    }
+    if (row.status === 'failed') throw new Error(row.result || 'Local image search failed');
+  }
+
+  throw new Error('Local image search timed out (worker offline?)');
 }
 
 async function runSearch(opts: {
@@ -958,7 +1067,15 @@ Deno.serve(async (req) => {
         }
 
         // ── 6. Image (parallel with writing) ──
-        const imagePromise: Promise<{ url: string | null; path: string | null; credit?: string; strategy: string }> = (async () => {
+        const imagePromise: Promise<{
+          url: string | null;
+          path: string | null;
+          credit?: string;
+          strategy: string;
+          sourceImageUrl?: string | null;
+          sourceImagePath?: string | null;
+          sourceImageCredit?: string;
+        }> = (async () => {
           if (!body.includeImage || plan.imageStrategy === 'none') return { url: null, path: null, strategy: 'none' };
           const strategy = plan.imageStrategy;
           const query = plan.imageQuery || body.prompt;
@@ -972,6 +1089,45 @@ Deno.serve(async (req) => {
           send('step', { id: 'image-plan', emoji: '🎨', label: `Strategy: ${strategy === 'real_photo' ? 'finding real photo' : 'generating with AI'} — "${query.slice(0, 60)}"`, status: 'active' });
           let raw: string | null = null;
           let credit = '';
+          let preparedImage: { url: string; path: string } | null = null;
+          let sourceImageUrl: string | null = null;
+          let sourceImagePath: string | null = null;
+          let sourceImageCredit = '';
+
+          if (enrichedSources.length) {
+            send('step', { id: 'image-source', emoji: '🖼️', label: 'Checking researched source pages for a relevant image…', status: 'active' });
+            try {
+              const sourceSearch = await searchLocalImagesViaCommand(
+                supabase,
+                query,
+                enrichedSources.slice(0, 3).map((source) => source.url),
+                4,
+                25000,
+              );
+              const firstSourceImage = sourceSearch.images[0];
+              const sourceUrl = typeof firstSourceImage === 'string' ? firstSourceImage : (firstSourceImage?.url || null);
+              if (sourceUrl) {
+                const storedSource = await uploadImageToBucket(supabase, sourceUrl);
+                if (storedSource) {
+                  sourceImageUrl = storedSource.url;
+                  sourceImagePath = storedSource.path;
+                  sourceImageCredit = `Source image from ${hostnameOf((firstSourceImage as LocalImageCandidate)?.pageUrl || enrichedSources[0]?.url || sourceUrl)}`;
+                  if (strategy === 'real_photo') {
+                    raw = storedSource.url;
+                    preparedImage = storedSource;
+                    credit = sourceImageCredit;
+                  }
+                  send('step', { id: 'image-source', emoji: '🖼️', label: `Found source image via ${sourceSearch.provider}`, status: 'done' });
+                } else {
+                  send('step', { id: 'image-source', emoji: '⚠️', label: 'Found a source image but could not store it', status: 'error' });
+                }
+              } else {
+                send('step', { id: 'image-source', emoji: '⚠️', label: 'No usable image found on researched source pages', status: 'error' });
+              }
+            } catch (e: any) {
+              send('step', { id: 'image-source', emoji: '⚠️', label: `Source-image search failed: ${e?.message?.slice(0, 80) || 'unknown'}`, status: 'error' });
+            }
+          }
 
           // Build the AI fallback chain. The user-saved `image_keys` array (up to 10) wins;
           // we append the legacy primary entry, then `lovable` as the always-on safety net.
@@ -1030,49 +1186,36 @@ Deno.serve(async (req) => {
           if (!raw) {
             send('step', { id: 'image-local', emoji: '🌐', label: `All AI providers failed — asking local browser to find a "${query.slice(0, 40)}" image…`, status: 'active' });
             try {
-              const { data: cmd } = await supabase.from('pending_commands').insert({
-                command: 'image_search',
-                args: { query, count: 5 },
-                status: 'pending',
-              }).select('id').single();
-              if (cmd?.id) {
-                const deadline = Date.now() + 25_000;
-                let imgUrl: string | null = null;
-                while (Date.now() < deadline) {
-                  await new Promise((r) => setTimeout(r, 1500));
-                  const { data: row } = await supabase.from('pending_commands')
-                    .select('status,result').eq('id', cmd.id).maybeSingle();
-                  if (row?.status === 'completed' && row.result) {
-                    try {
-                      const parsed = JSON.parse(row.result);
-                      const first = (parsed.images || [])[0];
-                      imgUrl = typeof first === 'string' ? first : (first?.url || null);
-                    } catch { /* ignore */ }
-                    break;
-                  }
-                  if (row?.status === 'failed') break;
-                }
-                if (imgUrl) {
-                  raw = imgUrl;
-                  credit = 'Local browser scrape';
-                  send('step', { id: 'image-local', emoji: '🌐', label: 'Local browser found an image ✓', status: 'done' });
-                } else {
-                  send('step', { id: 'image-local', emoji: '⚠️', label: 'Local browser did not respond in 25s (is the worker running?)', status: 'error' });
-                }
+              const localSearch = await searchLocalImagesViaCommand(supabase, query, [], 5, 25000);
+              const first = localSearch.images[0];
+              const imgUrl = typeof first === 'string' ? first : (first?.url || null);
+              if (imgUrl) {
+                raw = imgUrl;
+                credit = localSearch.provider === 'source-pages'
+                  ? `Source image from ${hostnameOf((first as LocalImageCandidate)?.pageUrl || imgUrl)}`
+                  : 'Local browser scrape';
+                send('step', { id: 'image-local', emoji: '🌐', label: `Local browser found an image via ${localSearch.provider} ✓`, status: 'done' });
+              } else {
+                send('step', { id: 'image-local', emoji: '⚠️', label: 'Local browser did not return any usable image', status: 'error' });
               }
             } catch (e: any) {
               send('step', { id: 'image-local', emoji: '⚠️', label: `Local browser fallback failed: ${e?.message?.slice(0, 80) || 'unknown'}`, status: 'error' });
             }
           }
 
-          if (!raw) { send('step', { id: 'image-plan', emoji: '⚠️', label: 'No image found/generated (all sources exhausted)', status: 'error' }); return { url: null, path: null, strategy }; }
+          if (!raw) {
+            send('step', { id: 'image-plan', emoji: '⚠️', label: 'No image found/generated (all sources exhausted)', status: 'error' });
+            return { url: null, path: null, strategy, sourceImageUrl, sourceImagePath, sourceImageCredit };
+          }
           send('step', { id: 'image-plan', emoji: '🎨', label: `Image acquired (${strategy === 'real_photo' ? 'real photo' : 'AI generated'})`, status: 'done' });
-          send('step', { id: 'image-upload', emoji: '⬆️', label: 'Uploading to media library…', status: 'active' });
-          const stored = await uploadImageToBucket(supabase, raw);
+          const stored = preparedImage || await (async () => {
+            send('step', { id: 'image-upload', emoji: '⬆️', label: 'Uploading to media library…', status: 'active' });
+            return uploadImageToBucket(supabase, raw as string);
+          })();
           if (!stored) { send('step', { id: 'image-upload', emoji: '⚠️', label: 'Upload failed', status: 'error' }); return { url: null, path: null, strategy }; }
           send('step', { id: 'image-upload', emoji: '🖼️', label: 'Image ready', status: 'done' });
           send('image', { imageUrl: stored.url, imagePath: stored.path, credit });
-          return { url: stored.url, path: stored.path, credit, strategy };
+          return { url: stored.url, path: stored.path, credit, strategy, sourceImageUrl, sourceImagePath, sourceImageCredit };
         })();
 
         // ── 7. Write platform-tailored variants (with real facts) ──
@@ -1135,6 +1278,8 @@ Deno.serve(async (req) => {
         const finalResult = {
           variants, sources: finalSources,
           imageUrl: imgResult.url, imagePath: imgResult.path,
+          sourceImageUrl: imgResult.sourceImageUrl,
+          sourceImagePath: imgResult.sourceImagePath,
           provider, model: textModel,
         };
         send('done', finalResult);
@@ -1160,13 +1305,14 @@ Deno.serve(async (req) => {
               sources: finalSources,
               postId: savedPostId,
               imageCredit: imgResult.credit,
+              sourceImageCredit: imgResult.sourceImageCredit,
             });
             const tg = await sendTelegramGenerationPreview({
               supabase,
               lovableApiKey: lvKey,
               telegramApiKey: tgKey,
               chatId: tgChatId,
-              imagePath: imgResult.path,
+              imagePaths: [imgResult.sourceImagePath, imgResult.path].filter(Boolean) as string[],
               caption,
             });
             send('step', {
