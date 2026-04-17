@@ -298,26 +298,6 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
               </div>
             );
           })}
-            </div>
-          </div>
-
-          {selectedPlatforms.map((p) => {
-            const list = accountsByPlatform[p] || [];
-            if (list.length <= 1) return null;
-            return (
-              <div key={p} className="space-y-1.5">
-                <Label className="text-xs capitalize">{PLATFORM_LABELS[p]} Account</Label>
-                <Select value={accountSelections[p] || ''} onValueChange={(v) => setAccountSelections((s) => ({ ...s, [p]: v }))}>
-                  <SelectTrigger className="h-9"><SelectValue placeholder="Select account" /></SelectTrigger>
-                  <SelectContent>
-                    {list.map((a) => (
-                      <SelectItem key={a.id} value={a.id}>{a.label || a.email}{a.is_default ? ' ★' : ''}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            );
-          })}
 
           <div className="space-y-2">
             <Label>Description</Label>
