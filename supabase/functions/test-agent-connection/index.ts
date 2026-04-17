@@ -13,6 +13,38 @@ interface Body {
   model?: string; // for image: actually invoke this model with a tiny generation call
 }
 
+function normalizeGoogleImageModel(model?: string): string {
+  return (model || '').replace(/^models\//, '').trim();
+}
+
+function isGoogleAIStudioImageModel(meta: any): boolean {
+  const id = normalizeGoogleImageModel(meta?.name || meta || '');
+  return (
+    !!id &&
+    (/^gemini-.*image/i.test(id) ||
+      /gemini.*image/i.test(meta?.displayName || '') ||
+      /nano.?banana/i.test(meta?.displayName || '') ||
+      /generates? images?/i.test(meta?.description || ''))
+  );
+}
+
+async function listGoogleAIStudioImageModels(apiKey: string): Promise<string[]> {
+  try {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
+    if (!r.ok) return [];
+    const j = await r.json();
+    const all = (j?.models || []) as any[];
+    return Array.from(new Set(
+      all
+        .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .filter(isGoogleAIStudioImageModel)
+        .map((m) => normalizeGoogleImageModel(m.name)),
+    ));
+  } catch {
+    return [];
+  }
+}
+
 async function probeResearch(provider: string, apiKey: string, localUrl: string): Promise<{ ok: boolean; sample?: string; latency: number; error?: string }> {
   const t0 = Date.now();
   const q = 'lovable cloud';
@@ -106,7 +138,16 @@ async function probeImage(provider: string, apiKey: string, model?: string): Pro
     if (provider === 'google') {
       // Real generation call against the chosen model — proves the key + model combination really works.
       if (model) {
-        const m = model.replace(/^models\//, '');
+        const m = normalizeGoogleImageModel(model);
+        const available = await listGoogleAIStudioImageModels(apiKey);
+        if (!available.includes(m)) {
+          return {
+            ok: false,
+            latency: Date.now() - t0,
+            error: `Google ${m}: not available for this key in this app. Use one of: ${(available.slice(0, 3).join(', ') || 'gemini-3.1-flash-image-preview, gemini-3-pro-image-preview, gemini-2.5-flash-image')}`,
+            model: m,
+          };
+        }
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(apiKey)}`;
         const r = await fetch(url, {
           method: 'POST',
@@ -133,8 +174,8 @@ async function probeImage(provider: string, apiKey: string, model?: string): Pro
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
       if (!r.ok) return { ok: false, latency: Date.now() - t0, error: `Google ${r.status}: ${(await r.text()).slice(0, 120)}` };
       const j = await r.json();
-      const imageModels = (j?.models || []).filter((mm: any) => /image/i.test(mm.name));
-      const sample = imageModels.find((mm: any) => /gemini.*image|nano.*banana/i.test(mm.name))?.name?.replace('models/', '');
+       const imageModels = (j?.models || []).filter((mm: any) => (mm.supportedGenerationMethods || []).includes('generateContent') && isGoogleAIStudioImageModel(mm));
+       const sample = imageModels.find((mm: any) => /gemini.*image|nano.*banana/i.test(mm.name || mm.displayName || ''))?.name?.replace('models/', '');
       return { ok: true, latency: Date.now() - t0, sample: sample ? `${sample} available` : `${imageModels.length} models`, model: sample };
     }
     if (provider === 'nvidia') {

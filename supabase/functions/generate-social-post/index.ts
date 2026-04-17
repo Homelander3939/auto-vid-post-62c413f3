@@ -231,6 +231,66 @@ function isQuotaError(status: number, errText: string): boolean {
   return /quota|rate.?limit|exceed|insufficient|billing|payment|too.many.requests/.test(t);
 }
 
+const GOOGLE_IMAGE_MODEL_PREFERENCE = [
+  'gemini-3.1-flash-image-preview',
+  'gemini-3-pro-image-preview',
+  'gemini-2.5-flash-image',
+];
+
+function normalizeGoogleImageModel(model?: string): string {
+  return (model || '').replace(/^models\//, '').trim();
+}
+
+function isGoogleAIStudioImageModel(model?: string): boolean {
+  const m = normalizeGoogleImageModel(model).toLowerCase();
+  return /^gemini-.*image/.test(m) || /nano.?banana/.test(m);
+}
+
+function dedupeGoogleImageModels(models: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of models) {
+    const model = normalizeGoogleImageModel(raw);
+    if (!model || seen.has(model) || !isGoogleAIStudioImageModel(model)) continue;
+    seen.add(model);
+    out.push(model);
+  }
+  return out;
+}
+
+async function listGoogleAIStudioImageModels(apiKey: string): Promise<string[]> {
+  try {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
+    if (!r.ok) return [];
+    const j = await r.json();
+    const all = (j?.models || []) as any[];
+    return dedupeGoogleImageModels(
+      all
+        .filter((m) => {
+          const supportsGenerateContent = (m.supportedGenerationMethods || []).includes('generateContent');
+          const looksImageCapable =
+            /gemini.*image/i.test(m.name || '') ||
+            /gemini.*image/i.test(m.displayName || '') ||
+            /nano.?banana/i.test(m.displayName || '') ||
+            /generates? images?/i.test(m.description || '');
+          return supportsGenerateContent && looksImageCapable;
+        })
+        .map((m) => normalizeGoogleImageModel(m.name)),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function buildGoogleImageAttemptOrder(configuredModel?: string, discoveredModels: string[] = []): string[] {
+  const preferred = normalizeGoogleImageModel(configuredModel);
+  return dedupeGoogleImageModels([
+    preferred,
+    ...GOOGLE_IMAGE_MODEL_PREFERENCE,
+    ...discoveredModels,
+  ]);
+}
+
 interface AIImageResult { dataUrl: string | null; error?: string; status?: number }
 
 async function generateAIImage(provider: string, key: string, prompt: string, model?: string): Promise<AIImageResult> {
@@ -246,7 +306,14 @@ async function generateAIImage(provider: string, key: string, prompt: string, mo
       return { dataUrl: b64 ? `data:image/png;base64,${b64}` : (d?.data?.[0]?.url || null) };
     }
     if (provider === 'google' && key) {
-      const m = (model || 'gemini-2.5-flash-image').replace(/^models\//, '');
+      const m = normalizeGoogleImageModel(model) || 'gemini-2.5-flash-image';
+      if (!isGoogleAIStudioImageModel(m)) {
+        return {
+          dataUrl: null,
+          error: `${m} is not a supported Google AI Studio image model in this app. Use a Gemini image model instead.`,
+          status: 400,
+        };
+      }
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(key)}`;
       const r = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -309,17 +376,6 @@ async function generateAIImage(provider: string, key: string, prompt: string, mo
 }
 
 // Try a chain of {provider, key, model} entries in order; rotate to next on quota/rate errors.
-// For Google, automatically expand each entry into multiple model attempts because the
-// `gemini-2.5-flash-image` free tier has very strict per-project quota — we try the
-// configured model first, then fall back to other Google image models on the same key.
-const GOOGLE_IMAGE_MODEL_CHAIN = [
-  'gemini-2.5-flash-image',
-  'gemini-2.5-flash-image-preview',
-  'gemini-3.1-flash-image-preview',
-  'imagen-3.0-fast-generate-001',
-  'imagen-3.0-generate-002',
-];
-
 interface ImageKeyEntry { provider: string; apiKey: string; model: string; label?: string }
 async function generateWithFallbackChain(
   chain: ImageKeyEntry[],
@@ -327,23 +383,23 @@ async function generateWithFallbackChain(
   onAttempt: (entry: ImageKeyEntry, idx: number) => void,
   onFail: (entry: ImageKeyEntry, idx: number, reason: string) => void,
 ): Promise<{ dataUrl: string | null; usedEntry?: ImageKeyEntry; usedIndex?: number }> {
-  // Expand entries: for Google entries, queue alt model attempts after the configured one.
-  const expanded: ImageKeyEntry[] = [];
+  // Try every configured key/model first; only then add Google alternates.
+  const primary: ImageKeyEntry[] = [];
+  const alternates: ImageKeyEntry[] = [];
   for (const e of chain) {
     if (e.provider === 'google' && e.apiKey) {
-      const seen = new Set<string>();
-      const first = (e.model || 'gemini-2.5-flash-image').replace(/^models\//, '');
-      seen.add(first);
-      expanded.push({ ...e, model: first });
-      for (const alt of GOOGLE_IMAGE_MODEL_CHAIN) {
-        if (seen.has(alt)) continue;
-        seen.add(alt);
-        expanded.push({ ...e, model: alt, label: `${e.label || 'google'} → ${alt}` });
+      const discovered = await listGoogleAIStudioImageModels(e.apiKey);
+      const ordered = buildGoogleImageAttemptOrder(e.model, discovered);
+      const first = ordered[0] || GOOGLE_IMAGE_MODEL_PREFERENCE[0];
+      primary.push({ ...e, model: first });
+      for (const alt of ordered.slice(1)) {
+        alternates.push({ ...e, model: alt, label: `${e.label || 'google'} → ${alt}` });
       }
     } else {
-      expanded.push(e);
+      primary.push(e);
     }
   }
+  const expanded = [...primary, ...alternates];
   for (let i = 0; i < expanded.length; i++) {
     const e = expanded[i];
     onAttempt(e, i);
