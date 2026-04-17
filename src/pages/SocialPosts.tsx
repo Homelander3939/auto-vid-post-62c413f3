@@ -202,17 +202,102 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
                     key={p}
                     type="button"
                     onClick={() => togglePlatform(p)}
-                    disabled={!hasAccounts}
                     className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
                       active ? 'bg-primary text-primary-foreground border-primary'
-                        : hasAccounts ? 'bg-secondary text-foreground hover:bg-secondary/80 border-border'
-                        : 'opacity-50 cursor-not-allowed border-border'
+                        : 'bg-secondary text-foreground hover:bg-secondary/80 border-border'
                     }`}
+                    title={!hasAccounts ? 'Preview only — add an account in Settings to post' : ''}
                   >
-                    {PLATFORM_LABELS[p]}{!hasAccounts && ' (no accounts)'}
+                    {PLATFORM_LABELS[p]}{!hasAccounts && ' (preview only)'}
                   </button>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Per-platform preview switcher — appears once AI variants are loaded.
+              Lets the user flip through X / LinkedIn / Facebook captions, see the same image,
+              and post just that one platform with a single click. */}
+          {Object.keys(platformVariants).length > 0 && (
+            <Card className="border-primary/30 bg-primary/5">
+              <CardContent className="p-4 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-primary" /> Per-platform preview
+                  </Label>
+                </div>
+                <Tabs value={previewPlatform} onValueChange={switchPreview}>
+                  <TabsList className="h-8">
+                    {SOCIAL_PLATFORMS.map((p) => (
+                      <TabsTrigger key={p} value={p} className="text-xs h-6 px-2.5">
+                        {PLATFORM_LABELS[p]}
+                        {platformVariants[p] && <CheckCircle2 className="w-3 h-3 ml-1 text-emerald-500" />}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                  {SOCIAL_PLATFORMS.map((p) => {
+                    const v = platformVariants[p];
+                    const hasAccounts = (accountsByPlatform[p] || []).length > 0;
+                    return (
+                      <TabsContent key={p} value={p} className="mt-3 space-y-3">
+                        {!v ? (
+                          <p className="text-sm text-muted-foreground">No variant generated for {PLATFORM_LABELS[p]}.</p>
+                        ) : (
+                          <>
+                            <div className="rounded-lg border bg-card p-3 space-y-2">
+                              {imagePreview && (
+                                <img src={imagePreview} alt="" className="rounded max-h-48 object-cover w-full" />
+                              )}
+                              <p className="text-sm whitespace-pre-wrap leading-relaxed">{v.description}</p>
+                              {v.hashtags.length > 0 && (
+                                <p className="text-sm text-primary">{v.hashtags.map((h) => `#${h}`).join(' ')}</p>
+                              )}
+                            </div>
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <span className="text-[11px] text-muted-foreground">
+                                {v.description.length} chars · loaded into editor below
+                              </span>
+                              <Button
+                                size="sm"
+                                onClick={async () => {
+                                  switchPreview(p);
+                                  setSelectedPlatforms([p]);
+                                  if (!hasAccounts) { setMissingAccountsOpen(true); return; }
+                                  setTimeout(() => handleSubmit('now'), 50);
+                                }}
+                                disabled={submitting}
+                                className="gap-1.5 h-8 text-xs"
+                              >
+                                <Send className="w-3.5 h-3.5" /> Post this {PLATFORM_LABELS[p]} version
+                              </Button>
+                            </div>
+                          </>
+                        )}
+                      </TabsContent>
+                    );
+                  })}
+                </Tabs>
+              </CardContent>
+            </Card>
+          )}
+
+          {selectedPlatforms.map((p) => {
+            const list = accountsByPlatform[p] || [];
+            if (list.length <= 1) return null;
+            return (
+              <div key={p} className="space-y-1.5">
+                <Label className="text-xs capitalize">{PLATFORM_LABELS[p]} Account</Label>
+                <Select value={accountSelections[p] || ''} onValueChange={(v) => setAccountSelections((s) => ({ ...s, [p]: v }))}>
+                  <SelectTrigger className="h-9"><SelectValue placeholder="Select account" /></SelectTrigger>
+                  <SelectContent>
+                    {list.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>{a.label || a.email}{a.is_default ? ' ★' : ''}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            );
+          })}
             </div>
           </div>
 
