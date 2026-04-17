@@ -85,7 +85,24 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
       if (imagePreview) URL.revokeObjectURL(imagePreview);
       setImagePreview(out.imageUrl);
     }
-    toast({ title: 'AI content loaded', description: 'Each platform will use its own tailored caption.' });
+    // Auto-select all platforms with a generated variant so the user can flip through them.
+    const variantPlatforms = Object.keys(out.variants || {});
+    if (variantPlatforms.length) {
+      setSelectedPlatforms(variantPlatforms);
+      setPreviewPlatform(variantPlatforms[0]);
+    }
+    toast({ title: 'AI content loaded', description: 'Switch tabs below to preview each platform — click "Post this one" to publish.' });
+  };
+
+  // Switch the preview to a different platform — also flips the main description/hashtags
+  // to that variant so editing + Post Now will use the right text.
+  const switchPreview = (p: string) => {
+    setPreviewPlatform(p);
+    const v = platformVariants[p];
+    if (v) {
+      setDescription(v.description);
+      setHashtagsRaw(v.hashtags.join(' '));
+    }
   };
 
   // Returns true when every selected platform has at least one enabled account.
