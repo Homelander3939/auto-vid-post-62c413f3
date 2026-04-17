@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { Send, Calendar, Trash2, RefreshCw, Image as ImageIcon, X, Clock, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { Send, Calendar, Trash2, RefreshCw, Image as ImageIcon, X, Clock, CheckCircle2, AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import {
   getSocialAccounts,
   listSocialPosts,
@@ -28,7 +28,7 @@ import AIPostComposer from '@/components/AIPostComposer';
 import { saveLocalJobAccountSelections } from '@/lib/localBrowserProfiles';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 
-const PLATFORM_LABELS: Record<string, string> = { x: 'X', tiktok: 'TikTok', facebook: 'Facebook' };
+const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
 
 function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCreated: () => void }) {
   const { toast } = useToast();
@@ -44,6 +44,8 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
   const [aiPrompt, setAiPrompt] = useState<string | null>(null);
   const [aiSources, setAiSources] = useState<any[]>([]);
   const [platformVariants, setPlatformVariants] = useState<Record<string, { description: string; hashtags: string[] }>>({});
+  // Which platform's variant is currently shown in the preview switcher.
+  const [previewPlatform, setPreviewPlatform] = useState<string>('x');
 
   const accountsByPlatform = useMemo(() => {
     const map: Record<string, SocialAccount[]> = {};
@@ -83,7 +85,24 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
       if (imagePreview) URL.revokeObjectURL(imagePreview);
       setImagePreview(out.imageUrl);
     }
-    toast({ title: 'AI content loaded', description: 'Each platform will use its own tailored caption.' });
+    // Auto-select all platforms with a generated variant so the user can flip through them.
+    const variantPlatforms = Object.keys(out.variants || {});
+    if (variantPlatforms.length) {
+      setSelectedPlatforms(variantPlatforms);
+      setPreviewPlatform(variantPlatforms[0]);
+    }
+    toast({ title: 'AI content loaded', description: 'Switch tabs below to preview each platform — click "Post this one" to publish.' });
+  };
+
+  // Switch the preview to a different platform — also flips the main description/hashtags
+  // to that variant so editing + Post Now will use the right text.
+  const switchPreview = (p: string) => {
+    setPreviewPlatform(p);
+    const v = platformVariants[p];
+    if (v) {
+      setDescription(v.description);
+      setHashtagsRaw(v.hashtags.join(' '));
+    }
   };
 
   // Returns true when every selected platform has at least one enabled account.
@@ -183,17 +202,102 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
                     key={p}
                     type="button"
                     onClick={() => togglePlatform(p)}
-                    disabled={!hasAccounts}
                     className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
                       active ? 'bg-primary text-primary-foreground border-primary'
-                        : hasAccounts ? 'bg-secondary text-foreground hover:bg-secondary/80 border-border'
-                        : 'opacity-50 cursor-not-allowed border-border'
+                        : 'bg-secondary text-foreground hover:bg-secondary/80 border-border'
                     }`}
+                    title={!hasAccounts ? 'Preview only — add an account in Settings to post' : ''}
                   >
-                    {PLATFORM_LABELS[p]}{!hasAccounts && ' (no accounts)'}
+                    {PLATFORM_LABELS[p]}{!hasAccounts && ' (preview only)'}
                   </button>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Per-platform preview switcher — appears once AI variants are loaded.
+              Lets the user flip through X / LinkedIn / Facebook captions, see the same image,
+              and post just that one platform with a single click. */}
+          {Object.keys(platformVariants).length > 0 && (
+            <Card className="border-primary/30 bg-primary/5">
+              <CardContent className="p-4 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-primary" /> Per-platform preview
+                  </Label>
+                </div>
+                <Tabs value={previewPlatform} onValueChange={switchPreview}>
+                  <TabsList className="h-8">
+                    {SOCIAL_PLATFORMS.map((p) => (
+                      <TabsTrigger key={p} value={p} className="text-xs h-6 px-2.5">
+                        {PLATFORM_LABELS[p]}
+                        {platformVariants[p] && <CheckCircle2 className="w-3 h-3 ml-1 text-emerald-500" />}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                  {SOCIAL_PLATFORMS.map((p) => {
+                    const v = platformVariants[p];
+                    const hasAccounts = (accountsByPlatform[p] || []).length > 0;
+                    return (
+                      <TabsContent key={p} value={p} className="mt-3 space-y-3">
+                        {!v ? (
+                          <p className="text-sm text-muted-foreground">No variant generated for {PLATFORM_LABELS[p]}.</p>
+                        ) : (
+                          <>
+                            <div className="rounded-lg border bg-card p-3 space-y-2">
+                              {imagePreview && (
+                                <img src={imagePreview} alt="" className="rounded max-h-48 object-cover w-full" />
+                              )}
+                              <p className="text-sm whitespace-pre-wrap leading-relaxed">{v.description}</p>
+                              {v.hashtags.length > 0 && (
+                                <p className="text-sm text-primary">{v.hashtags.map((h) => `#${h}`).join(' ')}</p>
+                              )}
+                            </div>
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <span className="text-[11px] text-muted-foreground">
+                                {v.description.length} chars · loaded into editor below
+                              </span>
+                              <Button
+                                size="sm"
+                                onClick={async () => {
+                                  switchPreview(p);
+                                  setSelectedPlatforms([p]);
+                                  if (!hasAccounts) { setMissingAccountsOpen(true); return; }
+                                  setTimeout(() => handleSubmit('now'), 50);
+                                }}
+                                disabled={submitting}
+                                className="gap-1.5 h-8 text-xs"
+                              >
+                                <Send className="w-3.5 h-3.5" /> Post this {PLATFORM_LABELS[p]} version
+                              </Button>
+                            </div>
+                          </>
+                        )}
+                      </TabsContent>
+                    );
+                  })}
+                </Tabs>
+              </CardContent>
+            </Card>
+          )}
+
+          {selectedPlatforms.map((p) => {
+            const list = accountsByPlatform[p] || [];
+            if (list.length <= 1) return null;
+            return (
+              <div key={p} className="space-y-1.5">
+                <Label className="text-xs capitalize">{PLATFORM_LABELS[p]} Account</Label>
+                <Select value={accountSelections[p] || ''} onValueChange={(v) => setAccountSelections((s) => ({ ...s, [p]: v }))}>
+                  <SelectTrigger className="h-9"><SelectValue placeholder="Select account" /></SelectTrigger>
+                  <SelectContent>
+                    {list.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>{a.label || a.email}{a.is_default ? ' ★' : ''}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            );
+          })}
             </div>
           </div>
 
@@ -402,7 +506,7 @@ export default function SocialPostsPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Social Posts</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Compose, schedule, and AI-generate posts for X, TikTok, and Facebook.
+          Compose, schedule, and AI-generate posts for X, LinkedIn, and Facebook.
         </p>
       </div>
 

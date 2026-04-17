@@ -690,7 +690,7 @@ export default function SettingsPage() {
           <Badge variant="secondary" className="text-[10px]">For text/image posts</Badge>
         </div>
         <p className="text-sm text-muted-foreground -mt-2">
-          Configure X, TikTok, and Facebook accounts for the AI-powered post manager. Each account uses its own saved Chrome profile.
+          Configure X, LinkedIn, and Facebook accounts for the AI-powered post manager. Each account uses its own saved Chrome profile.
         </p>
         {SOCIAL_PLATFORMS.map((p) => (
           <SocialAccountCard

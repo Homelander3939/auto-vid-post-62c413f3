@@ -20,8 +20,8 @@ import {
   type PlatformVariant,
 } from '@/lib/socialPosts';
 
-const PLATFORM_LABELS: Record<string, string> = { x: 'X', tiktok: 'TikTok', facebook: 'Facebook' };
-const PLATFORM_LIMITS: Record<string, number> = { x: 280, tiktok: 180, facebook: 2200 };
+const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
+const PLATFORM_LIMITS: Record<string, number> = { x: 280, linkedin: 3000, facebook: 2200 };
 
 interface Step { id: string; emoji: string; label: string; status: 'active' | 'done' | 'error' }
 interface Plan { queries: string[]; imageStrategy: string; angle: string }

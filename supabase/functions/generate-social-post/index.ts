@@ -19,7 +19,7 @@ interface Body {
 const PLATFORM_RULES: Record<string, string> = {
   x: 'X (Twitter): MAX 270 chars total INCLUDING hashtags. Hook in first 7 words. Punchy, scroll-stopping. 1-3 hashtags max, integrated naturally. No emoji-spam (1-2 max).',
   facebook: 'Facebook: 80-300 words. Conversational, story-driven, like talking to a friend. Use line breaks for readability. Hashtags optional at the end (3-6). Emojis OK but tasteful.',
-  tiktok: 'TikTok photo post: 80-180 chars. Casual, Gen-Z friendly, hook in first line. 4-8 hashtags integrated naturally including 1-2 niche + 1-2 broad trending tags.',
+  linkedin: 'LinkedIn: 150-400 words. Professional but human voice. Lead with a strong insight or hook in line 1, then 2-4 short paragraphs (use blank lines). End with a question or call-to-action. 3-6 relevant business/industry hashtags at the end. Minimal emojis.',
 };
 
 type Variant = { description: string; hashtags: string[] };
@@ -309,6 +309,17 @@ async function generateAIImage(provider: string, key: string, prompt: string, mo
 }
 
 // Try a chain of {provider, key, model} entries in order; rotate to next on quota/rate errors.
+// For Google, automatically expand each entry into multiple model attempts because the
+// `gemini-2.5-flash-image` free tier has very strict per-project quota — we try the
+// configured model first, then fall back to other Google image models on the same key.
+const GOOGLE_IMAGE_MODEL_CHAIN = [
+  'gemini-2.5-flash-image',
+  'gemini-2.5-flash-image-preview',
+  'gemini-3.1-flash-image-preview',
+  'imagen-3.0-fast-generate-001',
+  'imagen-3.0-generate-002',
+];
+
 interface ImageKeyEntry { provider: string; apiKey: string; model: string; label?: string }
 async function generateWithFallbackChain(
   chain: ImageKeyEntry[],
@@ -316,15 +327,30 @@ async function generateWithFallbackChain(
   onAttempt: (entry: ImageKeyEntry, idx: number) => void,
   onFail: (entry: ImageKeyEntry, idx: number, reason: string) => void,
 ): Promise<{ dataUrl: string | null; usedEntry?: ImageKeyEntry; usedIndex?: number }> {
-  for (let i = 0; i < chain.length; i++) {
-    const e = chain[i];
+  // Expand entries: for Google entries, queue alt model attempts after the configured one.
+  const expanded: ImageKeyEntry[] = [];
+  for (const e of chain) {
+    if (e.provider === 'google' && e.apiKey) {
+      const seen = new Set<string>();
+      const first = (e.model || 'gemini-2.5-flash-image').replace(/^models\//, '');
+      seen.add(first);
+      expanded.push({ ...e, model: first });
+      for (const alt of GOOGLE_IMAGE_MODEL_CHAIN) {
+        if (seen.has(alt)) continue;
+        seen.add(alt);
+        expanded.push({ ...e, model: alt, label: `${e.label || 'google'} → ${alt}` });
+      }
+    } else {
+      expanded.push(e);
+    }
+  }
+  for (let i = 0; i < expanded.length; i++) {
+    const e = expanded[i];
     onAttempt(e, i);
     const res = await generateAIImage(e.provider, e.apiKey, prompt, e.model);
     if (res.dataUrl) return { dataUrl: res.dataUrl, usedEntry: e, usedIndex: i };
     const reason = res.error || 'no image returned';
     onFail(e, i, `${res.status || ''} ${reason}`.trim());
-    // If it's NOT a quota/rate error, still continue — the next key/provider may succeed.
-    // (We log the reason either way so the user can see what happened.)
     void isQuotaError(res.status || 0, reason);
   }
   return { dataUrl: null };
@@ -763,11 +789,13 @@ Deno.serve(async (req) => {
               aiChain,
               richAIPrompt,
               (e, i) => {
+                const keyHint = e.apiKey ? `${e.apiKey.slice(0, 6)}…${e.apiKey.slice(-4)}` : 'no-key';
                 const label = e.label ? `${e.label} · ` : '';
-                send('tool', { kind: 'image', name: `${e.provider}${e.model ? ' · ' + e.model.split('/').pop() : ''}`, detail: `${label}attempt #${i + 1}` });
+                send('tool', { kind: 'image', name: `${e.provider}${e.model ? ' · ' + e.model.split('/').pop() : ''}`, detail: `${label}key ${keyHint} · attempt #${i + 1}` });
               },
               (e, i, reason) => {
-                send('step', { id: `image-try-${i}`, emoji: '↪️', label: `${e.provider}${e.model ? ` (${e.model.split('/').pop()})` : ''} failed — ${reason.slice(0, 80)}. Trying next key…`, status: 'error' });
+                const keyHint = e.apiKey ? `${e.apiKey.slice(0, 6)}…${e.apiKey.slice(-4)}` : 'no-key';
+                send('step', { id: `image-try-${i}`, emoji: '↪️', label: `${e.provider}/${e.model?.split('/').pop() || '?'} (${keyHint}) failed — ${reason.slice(0, 70)}. Trying next…`, status: 'error' });
               },
             );
             if (result.dataUrl) {

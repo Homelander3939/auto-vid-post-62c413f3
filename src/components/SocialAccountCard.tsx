@@ -25,7 +25,7 @@ function PasswordInput({ value, onChange, placeholder }: { value: string; onChan
 
 const PLATFORM_META: Record<string, { title: string; desc: string }> = {
   x: { title: 'X (Twitter)', desc: 'X.com login — browser opens x.com/compose' },
-  tiktok: { title: 'TikTok (Photo Posts)', desc: 'TikTok Studio photo posting' },
+  linkedin: { title: 'LinkedIn', desc: 'LinkedIn.com login — browser opens linkedin.com/feed' },
   facebook: { title: 'Facebook', desc: 'Facebook.com login — browser opens facebook.com' },
 };
 
