@@ -522,6 +522,7 @@ async function searchImagesFromSourcePages(urls = [], count = 3) {
   try {
     const page = await context.newPage();
     const images = [];
+    const screenshotFallbacks = [];
 
     for (const targetUrl of targets) {
       if (images.length >= count) break;
@@ -585,16 +586,47 @@ async function searchImagesFromSourcePages(urls = [], count = 3) {
           return out.slice(0, max);
         }, { max: Math.max(1, count - images.length), pageUrl: targetUrl });
 
-        images.push(...found.filter((item) => item?.url));
+        if (found.length) {
+          images.push(...found.filter((item) => item?.url));
+          continue;
+        }
+
+        // ── SCREENSHOT FALLBACK ──
+        // If a source page exposed no usable image (paywall / aggressive lazy-loading /
+        // pure text article), capture the viewport itself as a data: URL so the cloud
+        // edge function can still attach something visual to the post.
+        try {
+          const buf = await page.screenshot({ type: 'jpeg', quality: 80, fullPage: false });
+          if (buf && buf.length) {
+            const dataUrl = `data:image/jpeg;base64,${Buffer.from(buf).toString('base64')}`;
+            const titleText = await page.title().catch(() => '');
+            screenshotFallbacks.push({
+              url: dataUrl,
+              source: 'source-page-screenshot',
+              pageUrl: targetUrl,
+              title: titleText || hostnameOf(targetUrl) || targetUrl,
+              alt: `Screenshot of ${targetUrl}`,
+            });
+            console.log(`[Image] Captured screenshot fallback for ${targetUrl} (${buf.length} bytes)`);
+          }
+        } catch (e) {
+          console.warn(`[Image] Screenshot fallback failed for ${targetUrl}:`, e.message);
+        }
       } catch (e) {
         console.warn(`[Image] Source page scan failed for ${targetUrl}:`, e.message);
       }
     }
 
-    return { provider: 'source-pages', images: images.slice(0, count) };
+    // Prefer real images; only fall back to screenshots if no real images were found.
+    const finalImages = images.length ? images.slice(0, count) : screenshotFallbacks.slice(0, count);
+    return { provider: 'source-pages', images: finalImages };
   } finally {
     await safeCloseSocial(context);
   }
+}
+
+function hostnameOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
 }
 
 app.post('/api/research/search', async (req, res) => {

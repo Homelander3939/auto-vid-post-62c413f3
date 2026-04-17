@@ -79,6 +79,8 @@ function escapeHtml(s: string): string {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// Builds a SHORT caption that always fits inside Telegram's 1024-char photo
+// caption limit. Used as the first message attached to the image.
 function buildGenerationCaption(input: {
   prompt: string;
   primaryDescription: string;
@@ -90,49 +92,75 @@ function buildGenerationCaption(input: {
   imageCredit?: string;
   sourceImageCredit?: string;
 }): string {
-  const { prompt, variants, platforms, sources, postId, imageCredit, sourceImageCredit } = input;
+  const { prompt, primaryDescription, primaryHashtags, postId, imageCredit, sourceImageCredit } = input;
+  const head = `✨ <b>New AI post generated</b>\nPrompt: ${escapeHtml(truncateText(prompt, 220))}`;
+  const preview = primaryDescription
+    ? `\n\n${escapeHtml(truncateText(primaryDescription, 380))}`
+    : '';
+  const tags = (primaryHashtags || []).slice(0, 4)
+    .map((tag) => `#${tag.replace(/^#/, '')}`).join(' ');
+  const tagLine = tags ? `\n${escapeHtml(tags)}` : '';
+  const footer = [
+    imageCredit ? `🎨 ${escapeHtml(truncateText(imageCredit, 80))}` : '',
+    sourceImageCredit ? `🖼️ ${escapeHtml(truncateText(sourceImageCredit, 80))}` : '',
+    postId ? `📝 <code>${postId}</code>` : '',
+    `(Full post & sources in next messages…)`,
+  ].filter(Boolean).join('\n');
+  let caption = [head + preview + tagLine, footer].join('\n\n');
+  if (caption.length > 1020) caption = caption.slice(0, 1018) + '…';
+  return caption;
+}
 
-  const compose = (opts: { promptLen: number; descLen: number; maxPlatforms: number; maxSources: number; maxTags: number }) => {
-    const head = `✨ <b>New AI post generated</b>\nPrompt: ${escapeHtml(truncateText(prompt, opts.promptLen))}`;
+// Builds the FULL detailed body (per-platform variants + sources + footer) to
+// be sent as one or more follow-up text messages (4096-char Telegram limit each).
+function buildGenerationDetailMessages(input: {
+  variants: Variants;
+  platforms: string[];
+  sources: Source[];
+  postId: string | null;
+}): string[] {
+  const { variants, platforms, sources, postId } = input;
+  const blocks: string[] = [];
 
-    const variantLines = platforms.slice(0, opts.maxPlatforms).map((platform) => {
-      const variant = variants[platform];
-      if (!variant) return '';
-      const desc = escapeHtml(truncateText(variant.description || '', opts.descLen));
-      const tags = (variant.hashtags || [])
-        .slice(0, opts.maxTags)
-        .map((tag) => `#${tag.replace(/^#/, '')}`)
-        .join(' ');
-      return `— <b>${platform.toUpperCase()}</b> —\n${desc}${tags ? `\n${escapeHtml(tags)}` : ''}`;
-    }).filter(Boolean);
-
-    const sourceLines = sources.slice(0, opts.maxSources)
-      .map((source, index) => `${index + 1}. <a href="${escapeHtml(source.url)}">${escapeHtml(truncateText(source.title || hostnameOf(source.url), 42))}</a>`)
-      .join('\n');
-
-    const footer = [
-      imageCredit ? `🎨 ${escapeHtml(truncateText(imageCredit, 70))}` : '',
-      sourceImageCredit ? `🖼️ ${escapeHtml(truncateText(sourceImageCredit, 70))}` : '',
-      postId ? `📝 Post ID: <code>${postId}</code>` : '',
-      sourceLines ? `🔎 Sources:\n${sourceLines}` : '',
-      `Reply: <b>post</b> / <b>edit &lt;text&gt;</b> / <b>skip</b>`,
-    ].filter(Boolean).join('\n');
-
-    return [head, ...variantLines, footer].filter(Boolean).join('\n\n');
-  };
-
-  const attempts = [
-    { promptLen: 120, descLen: 170, maxPlatforms: 3, maxSources: 2, maxTags: 4 },
-    { promptLen: 90, descLen: 120, maxPlatforms: 3, maxSources: 2, maxTags: 3 },
-    { promptLen: 72, descLen: 90, maxPlatforms: 2, maxSources: 1, maxTags: 2 },
-  ];
-
-  for (const attempt of attempts) {
-    const caption = compose(attempt);
-    if (caption.length <= 1024) return caption;
+  // Each platform = its own block (full text, no truncation).
+  for (const platform of platforms) {
+    const variant = variants[platform];
+    if (!variant) continue;
+    const desc = escapeHtml(variant.description || '');
+    const tags = (variant.hashtags || [])
+      .map((tag) => `#${tag.replace(/^#/, '')}`)
+      .join(' ');
+    blocks.push(`— <b>${platform.toUpperCase()}</b> —\n${desc}${tags ? `\n\n${escapeHtml(tags)}` : ''}`);
   }
 
-  return compose({ promptLen: 56, descLen: 72, maxPlatforms: 2, maxSources: 1, maxTags: 2 }).slice(0, 1020) + '…';
+  if (sources.length) {
+    const sourceLines = sources.slice(0, 6).map((source, i) =>
+      `${i + 1}. <a href="${escapeHtml(source.url)}">${escapeHtml(truncateText(source.title || hostnameOf(source.url), 80))}</a>`
+    ).join('\n');
+    blocks.push(`🔎 <b>Sources</b>\n${sourceLines}`);
+  }
+
+  blocks.push([
+    postId ? `📝 Post ID: <code>${postId}</code>` : '',
+    `Reply: <b>post</b> / <b>edit &lt;text&gt;</b> / <b>skip</b>`,
+  ].filter(Boolean).join('\n'));
+
+  // Pack blocks into <=3800-char chunks (safety margin under 4096).
+  const MAX = 3800;
+  const messages: string[] = [];
+  let current = '';
+  for (const block of blocks) {
+    const piece = block.length > MAX ? block.slice(0, MAX - 1) + '…' : block;
+    if (!current) { current = piece; continue; }
+    if (current.length + 2 + piece.length <= MAX) {
+      current += '\n\n' + piece;
+    } else {
+      messages.push(current);
+      current = piece;
+    }
+  }
+  if (current) messages.push(current);
+  return messages;
 }
 
 type TelegramPreviewImage = { path: string; base64: string; mime: string };
@@ -157,6 +185,30 @@ async function loadTelegramPreviewImages(supabase: any, imagePaths: string[]): P
   return loaded.filter(Boolean) as TelegramPreviewImage[];
 }
 
+async function sendTelegramText(opts: {
+  lovableApiKey: string; telegramApiKey: string; chatId: number; text: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${opts.lovableApiKey}`,
+      'X-Connection-Api-Key': opts.telegramApiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      chat_id: opts.chatId,
+      text: opts.text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j?.ok === false) {
+    return { ok: false, error: `sendMessage ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
+  }
+  return { ok: true };
+}
+
 async function sendTelegramGenerationPreview(opts: {
   supabase: any;
   lovableApiKey: string;
@@ -164,10 +216,13 @@ async function sendTelegramGenerationPreview(opts: {
   chatId: number;
   imagePaths: string[];
   caption: string;
+  detailMessages?: string[];
 }): Promise<{ ok: boolean; error?: string }> {
-  const { supabase, lovableApiKey, telegramApiKey, chatId, imagePaths, caption } = opts;
+  const { supabase, lovableApiKey, telegramApiKey, chatId, imagePaths, caption, detailMessages = [] } = opts;
   try {
     const photos = await loadTelegramPreviewImages(supabase, imagePaths);
+    let imageSent: { ok: boolean; error?: string } = { ok: true };
+
     if (photos.length > 1) {
       const boundary = `----lovable-${crypto.randomUUID()}`;
       const enc = new TextEncoder();
@@ -178,10 +233,8 @@ async function sendTelegramGenerationPreview(opts: {
           ? { type: 'photo', media: `attach://preview_${index}.${ext}`, caption, parse_mode: 'HTML' }
           : { type: 'photo', media: `attach://preview_${index}.${ext}` };
       });
-
       parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`));
       parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="media"\r\n\r\n${JSON.stringify(media)}\r\n`));
-
       for (let index = 0; index < photos.length; index++) {
         const photo = photos[index];
         const ext = photo.mime.split('/')[1]?.split(';')[0] || 'png';
@@ -191,7 +244,6 @@ async function sendTelegramGenerationPreview(opts: {
         parts.push(enc.encode(`\r\n`));
       }
       parts.push(enc.encode(`--${boundary}--\r\n`));
-
       const r = await fetch(`${TELEGRAM_GATEWAY}/sendMediaGroup`, {
         method: 'POST',
         headers: {
@@ -203,14 +255,11 @@ async function sendTelegramGenerationPreview(opts: {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j?.ok === false) {
-        return { ok: false, error: `sendMediaGroup ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
+        imageSent = { ok: false, error: `sendMediaGroup ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
       }
-      return { ok: true };
-    }
-
-    if (photos.length === 1) {
+    } else if (photos.length === 1) {
       const photo = photos[0];
-      const captionShort = caption.length > 950 ? caption.slice(0, 950) + '…' : caption;
+      const captionShort = caption.length > 1020 ? caption.slice(0, 1018) + '…' : caption;
       const boundary = `----lovable-${crypto.randomUUID()}`;
       const enc = new TextEncoder();
       const bytes = Uint8Array.from(atob(photo.base64), (c) => c.charCodeAt(0));
@@ -221,10 +270,6 @@ async function sendTelegramGenerationPreview(opts: {
       parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="post.png"\r\nContent-Type: ${photo.mime || 'image/png'}\r\n\r\n`));
       parts.push(bytes);
       parts.push(enc.encode(`\r\n--${boundary}--\r\n`));
-      const totalLen = parts.reduce((s, p) => s + p.length, 0);
-      const body = new Uint8Array(totalLen);
-      let off = 0;
-      for (const p of parts) { body.set(p, off); off += p.length; }
       const r = await fetch(`${TELEGRAM_GATEWAY}/sendPhoto`, {
         method: 'POST',
         headers: {
@@ -236,29 +281,21 @@ async function sendTelegramGenerationPreview(opts: {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j?.ok === false) {
-        return { ok: false, error: `sendPhoto ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
+        imageSent = { ok: false, error: `sendPhoto ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
       }
-      return { ok: true };
+    } else {
+      imageSent = await sendTelegramText({ lovableApiKey, telegramApiKey, chatId, text: caption });
     }
 
-    const r = await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${lovableApiKey}`,
-        'X-Connection-Api-Key': telegramApiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: caption,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true,
-      }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok || j?.ok === false) {
-      return { ok: false, error: `sendMessage ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
+    if (!imageSent.ok) return imageSent;
+
+    // Follow-up text messages with the FULL per-platform variants + sources.
+    for (const chunk of detailMessages) {
+      if (!chunk?.trim()) continue;
+      const sent = await sendTelegramText({ lovableApiKey, telegramApiKey, chatId, text: chunk });
+      if (!sent.ok) return sent;
     }
+
     return { ok: true };
   } catch (e: any) {
     return { ok: false, error: e?.message || 'unknown' };
@@ -1307,6 +1344,12 @@ Deno.serve(async (req) => {
               imageCredit: imgResult.credit,
               sourceImageCredit: imgResult.sourceImageCredit,
             });
+            const detailMessages = buildGenerationDetailMessages({
+              variants,
+              platforms: body.platforms,
+              sources: finalSources,
+              postId: savedPostId,
+            });
             const tg = await sendTelegramGenerationPreview({
               supabase,
               lovableApiKey: lvKey,
@@ -1314,6 +1357,7 @@ Deno.serve(async (req) => {
               chatId: tgChatId,
               imagePaths: [imgResult.sourceImagePath, imgResult.path].filter(Boolean) as string[],
               caption,
+              detailMessages,
             });
             send('step', {
               id: 'telegram',
