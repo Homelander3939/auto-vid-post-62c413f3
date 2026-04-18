@@ -2,15 +2,16 @@
 // pulled from social_posts + pending_commands + generation_jobs tables. Lives at the top of
 // the Job Queue page. Live generation jobs show step-by-step progress mirrored from the
 // edge function so the user can watch progress even after navigating away from /social.
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { Sparkles, Search, Image as ImageIcon, ExternalLink, ChevronDown, ChevronUp, Cpu, Globe, FileText, Hash, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Sparkles, Search, Image as ImageIcon, ExternalLink, ChevronDown, ChevronUp, Cpu, Globe, FileText, Hash, Loader2, CheckCircle2, AlertTriangle, X as XIcon } from 'lucide-react';
 import { useState } from 'react';
-import { listSocialPosts, getSocialImageUrl, listGenerationJobs, type SocialPost, type GenerationJob } from '@/lib/socialPosts';
+import { listSocialPosts, getSocialImageUrl, listGenerationJobs, cancelGenerationJob, cancelAllRunningJobs, type SocialPost, type GenerationJob } from '@/lib/socialPosts';
+import { useToast } from '@/hooks/use-toast';
 import { Link } from 'react-router-dom';
 
 interface PendingCommand {
