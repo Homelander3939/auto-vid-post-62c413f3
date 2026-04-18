@@ -385,6 +385,33 @@ export default function AITasksPanel() {
     }
   };
 
+  const handleDeleteJob = async (id: string) => {
+    try {
+      await deleteGenerationJob(id);
+      queryClient.invalidateQueries({ queryKey: ['generation_jobs'] });
+    } catch (e: any) {
+      toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDeletePost = async (id: string) => {
+    try {
+      await deleteSocialPost(id);
+      queryClient.invalidateQueries({ queryKey: ['social_posts'] });
+    } catch (e: any) {
+      toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteCommand = async (id: string) => {
+    try {
+      await deletePendingCommand(id);
+      queryClient.invalidateQueries({ queryKey: ['pending_commands_recent'] });
+    } catch (e: any) {
+      toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
+    }
+  };
+
   if (total === 0) return null;
 
   return (
@@ -424,9 +451,9 @@ export default function AITasksPanel() {
         </div>
       </div>
       <div className="space-y-2">
-        {recentJobs.map((j) => <GenerationJobRow key={j.id} job={j} onCancel={handleCancel} />)}
-        {recentPosts.map((p) => <PostRow key={p.id} post={p} />)}
-        {recentCommands.map((c) => <CommandRow key={c.id} cmd={c} />)}
+        {recentJobs.map((j) => <GenerationJobRow key={j.id} job={j} onCancel={handleCancel} onDelete={handleDeleteJob} />)}
+        {recentPosts.map((p) => <PostRow key={p.id} post={p} onDelete={handleDeletePost} />)}
+        {recentCommands.map((c) => <CommandRow key={c.id} cmd={c} onDelete={handleDeleteCommand} />)}
       </div>
     </div>
   );
