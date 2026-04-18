@@ -227,7 +227,7 @@ function CommandRow({ cmd, onDelete }: { cmd: PendingCommand; onDelete: (id: str
   );
 }
 
-function GenerationJobRow({ job, onCancel }: { job: GenerationJob; onCancel: (id: string) => void }) {
+function GenerationJobRow({ job, onCancel, onDelete }: { job: GenerationJob; onCancel: (id: string) => void; onDelete: (id: string) => void }) {
   const [expanded, setExpanded] = useState(job.status === 'running');
   const [cancelling, setCancelling] = useState(false);
   const events = (job.events || []) as any[];
