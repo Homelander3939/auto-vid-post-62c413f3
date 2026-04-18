@@ -55,7 +55,7 @@ function statusColor(status: string): string {
   return 'bg-secondary text-secondary-foreground';
 }
 
-function PostRow({ post }: { post: SocialPost }) {
+function PostRow({ post, onDelete }: { post: SocialPost; onDelete: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const imageUrl = getSocialImageUrl(post.image_path);
   const variantCount = Object.keys(post.platform_variants || {}).length;
