@@ -1414,16 +1414,24 @@ Deno.serve(async (req) => {
           }).eq('id', jobId);
         }
       } catch (e: any) {
-        console.error('agent error', e);
-        send('error', { error: e?.message || 'Unknown error', status: e?.status || 500 });
+        const isCancel = cancelRequested || /cancelled by user/i.test(e?.message || '');
+        if (isCancel) {
+          console.log('agent cancelled by user');
+          send('error', { error: 'Cancelled by user' });
+        } else {
+          console.error('agent error', e);
+          send('error', { error: e?.message || 'Unknown error', status: e?.status || 500 });
+        }
         if (jobId) {
           await flushEvents();
           await supabase.from('generation_jobs').update({
-            status: 'failed', error: e?.message || 'Unknown error',
+            status: isCancel ? 'cancelled' : 'failed',
+            error: isCancel ? 'Cancelled by user' : (e?.message || 'Unknown error'),
             completed_at: new Date().toISOString(),
           }).eq('id', jobId);
         }
       } finally {
+        if (cancelTimer) { try { clearTimeout(cancelTimer); } catch {} }
         clearInterval(heartbeat);
         try { controller.close(); } catch {}
       }
