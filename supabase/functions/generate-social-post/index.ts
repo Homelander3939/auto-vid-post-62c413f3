@@ -970,31 +970,50 @@ Deno.serve(async (req) => {
   // ── Serialization guard ──
   // Auto-cancel any stale running job (>10 min) so the queue self-heals.
   // Then refuse if a fresh job is still actively running — only one agentic task at a time.
+  // EXCEPTION: when an `existingJobId` is supplied (the orchestrator, e.g. ai-chat tool,
+  // already created the row and validated there's no conflict), reuse it directly.
   await supabase.rpc('cancel_stale_generation_jobs').catch(() => {});
-  const { data: liveJobs } = await supabase
-    .from('generation_jobs')
-    .select('id, prompt, created_at')
-    .eq('status', 'running')
-    .order('created_at', { ascending: false })
-    .limit(1);
-  if (liveJobs && liveJobs.length > 0) {
-    return new Response(JSON.stringify({
-      error: 'Another generation is already running. Cancel it first or wait for it to finish.',
-      busyJobId: liveJobs[0].id,
-      busyPrompt: liveJobs[0].prompt,
-    }), { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+  let jobId: string | null = null;
+  const existingJobId: string | undefined = body.existingJobId;
+  if (existingJobId) {
+    // Trust the orchestrator's row — just verify it exists and is still running.
+    const { data: existing } = await supabase
+      .from('generation_jobs')
+      .select('id, status')
+      .eq('id', existingJobId)
+      .maybeSingle();
+    if (existing && (existing as any).status === 'running') {
+      jobId = (existing as any).id;
+    }
   }
 
-  // Persist a generation_jobs row so the UI can resume after navigating away and the
-  // Job Queue can show live progress without holding the browser SSE stream open.
-  const { data: jobRow } = await supabase.from('generation_jobs').insert({
-    prompt: body.prompt,
-    platforms: body.platforms,
-    include_image: !!body.includeImage,
-    status: 'running',
-    events: [],
-  }).select('id').single();
-  const jobId: string | null = jobRow?.id || null;
+  if (!jobId) {
+    const { data: liveJobs } = await supabase
+      .from('generation_jobs')
+      .select('id, prompt, created_at')
+      .eq('status', 'running')
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (liveJobs && liveJobs.length > 0) {
+      return new Response(JSON.stringify({
+        error: 'Another generation is already running. Cancel it first or wait for it to finish.',
+        busyJobId: liveJobs[0].id,
+        busyPrompt: liveJobs[0].prompt,
+      }), { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    // Persist a generation_jobs row so the UI can resume after navigating away and the
+    // Job Queue can show live progress without holding the browser SSE stream open.
+    const { data: jobRow } = await supabase.from('generation_jobs').insert({
+      prompt: body.prompt,
+      platforms: body.platforms,
+      include_image: !!body.includeImage,
+      status: 'running',
+      events: [],
+    }).select('id').single();
+    jobId = jobRow?.id || null;
+  }
 
   // ── Cancellation polling ──
   // Periodically check the job row; if user marked it 'cancelled', abort the agent loop.
