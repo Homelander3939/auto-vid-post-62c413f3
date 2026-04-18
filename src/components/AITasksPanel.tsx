@@ -8,9 +8,9 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { Sparkles, Search, Image as ImageIcon, ExternalLink, ChevronDown, ChevronUp, Cpu, Globe, FileText, Hash, Loader2, CheckCircle2, AlertTriangle, X as XIcon } from 'lucide-react';
+import { Sparkles, Search, Image as ImageIcon, ExternalLink, ChevronDown, ChevronUp, Cpu, Globe, FileText, Hash, Loader2, CheckCircle2, AlertTriangle, X as XIcon, Trash2 } from 'lucide-react';
 import { useState } from 'react';
-import { listSocialPosts, getSocialImageUrl, listGenerationJobs, cancelGenerationJob, cancelAllRunningJobs, type SocialPost, type GenerationJob } from '@/lib/socialPosts';
+import { listSocialPosts, getSocialImageUrl, listGenerationJobs, cancelGenerationJob, cancelAllRunningJobs, deleteGenerationJob, deletePendingCommand, deleteSocialPost, type SocialPost, type GenerationJob } from '@/lib/socialPosts';
 import { useToast } from '@/hooks/use-toast';
 import { Link } from 'react-router-dom';
 
@@ -55,7 +55,7 @@ function statusColor(status: string): string {
   return 'bg-secondary text-secondary-foreground';
 }
 
-function PostRow({ post }: { post: SocialPost }) {
+function PostRow({ post, onDelete }: { post: SocialPost; onDelete: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const imageUrl = getSocialImageUrl(post.image_path);
   const variantCount = Object.keys(post.platform_variants || {}).length;
@@ -95,12 +95,21 @@ function PostRow({ post }: { post: SocialPost }) {
               {post.hashtags.length > 0 && <span>#️⃣ {post.hashtags.length} tags</span>}
             </div>
           </div>
-          <Button
-            variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
-            onClick={() => setExpanded((e) => !e)}
-          >
-            {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </Button>
+          <div className="flex flex-col gap-1 items-end">
+            <Button
+              variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+              title="Delete from queue"
+              onClick={() => onDelete(post.id)}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
+              onClick={() => setExpanded((e) => !e)}
+            >
+              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </Button>
+          </div>
         </div>
         {expanded && (
           <div className="border-t pt-2 space-y-1.5 text-[11px]">
@@ -151,7 +160,7 @@ function PostRow({ post }: { post: SocialPost }) {
   );
 }
 
-function CommandRow({ cmd }: { cmd: PendingCommand }) {
+function CommandRow({ cmd, onDelete }: { cmd: PendingCommand; onDelete: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const Icon = COMMAND_ICONS[cmd.command] || Cpu;
   const label = COMMAND_LABELS[cmd.command] || cmd.command;
@@ -192,12 +201,21 @@ function CommandRow({ cmd }: { cmd: PendingCommand }) {
               <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">→ {resultPreview}</p>
             )}
           </div>
-          <Button
-            variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
-            onClick={() => setExpanded((e) => !e)}
-          >
-            {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </Button>
+          <div className="flex flex-col gap-1 items-end">
+            <Button
+              variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+              title="Delete from queue"
+              onClick={() => onDelete(cmd.id)}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
+              onClick={() => setExpanded((e) => !e)}
+            >
+              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </Button>
+          </div>
         </div>
         {expanded && cmd.result && (
           <pre className="mt-2 border-t pt-2 text-[10px] text-muted-foreground overflow-x-auto whitespace-pre-wrap break-words">
@@ -209,7 +227,7 @@ function CommandRow({ cmd }: { cmd: PendingCommand }) {
   );
 }
 
-function GenerationJobRow({ job, onCancel }: { job: GenerationJob; onCancel: (id: string) => void }) {
+function GenerationJobRow({ job, onCancel, onDelete }: { job: GenerationJob; onCancel: (id: string) => void; onDelete: (id: string) => void }) {
   const [expanded, setExpanded] = useState(job.status === 'running');
   const [cancelling, setCancelling] = useState(false);
   const events = (job.events || []) as any[];
@@ -288,10 +306,17 @@ function GenerationJobRow({ job, onCancel }: { job: GenerationJob; onCancel: (id
                 <XIcon className="w-3 h-3" /> {cancelling ? 'Cancelling…' : 'Cancel'}
               </Button>
             )}
-            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
-              onClick={() => setExpanded((e) => !e)}>
-              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </Button>
+            <div className="flex items-center gap-1">
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                title="Delete from queue"
+                onClick={() => onDelete(job.id)}>
+                <Trash2 className="w-3.5 h-3.5" />
+              </Button>
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
+                onClick={() => setExpanded((e) => !e)}>
+                {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </Button>
+            </div>
           </div>
         </div>
         {expanded && stepList.length > 0 && (
@@ -360,6 +385,33 @@ export default function AITasksPanel() {
     }
   };
 
+  const handleDeleteJob = async (id: string) => {
+    try {
+      await deleteGenerationJob(id);
+      queryClient.invalidateQueries({ queryKey: ['generation_jobs'] });
+    } catch (e: any) {
+      toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDeletePost = async (id: string) => {
+    try {
+      await deleteSocialPost(id);
+      queryClient.invalidateQueries({ queryKey: ['social_posts'] });
+    } catch (e: any) {
+      toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteCommand = async (id: string) => {
+    try {
+      await deletePendingCommand(id);
+      queryClient.invalidateQueries({ queryKey: ['pending_commands_recent'] });
+    } catch (e: any) {
+      toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
+    }
+  };
+
   if (total === 0) return null;
 
   return (
@@ -399,9 +451,9 @@ export default function AITasksPanel() {
         </div>
       </div>
       <div className="space-y-2">
-        {recentJobs.map((j) => <GenerationJobRow key={j.id} job={j} onCancel={handleCancel} />)}
-        {recentPosts.map((p) => <PostRow key={p.id} post={p} />)}
-        {recentCommands.map((c) => <CommandRow key={c.id} cmd={c} />)}
+        {recentJobs.map((j) => <GenerationJobRow key={j.id} job={j} onCancel={handleCancel} onDelete={handleDeleteJob} />)}
+        {recentPosts.map((p) => <PostRow key={p.id} post={p} onDelete={handleDeletePost} />)}
+        {recentCommands.map((c) => <CommandRow key={c.id} cmd={c} onDelete={handleDeleteCommand} />)}
       </div>
     </div>
   );
