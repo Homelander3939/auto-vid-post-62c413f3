@@ -95,12 +95,21 @@ function PostRow({ post, onDelete }: { post: SocialPost; onDelete: (id: string) 
               {post.hashtags.length > 0 && <span>#️⃣ {post.hashtags.length} tags</span>}
             </div>
           </div>
-          <Button
-            variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
-            onClick={() => setExpanded((e) => !e)}
-          >
-            {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </Button>
+          <div className="flex flex-col gap-1 items-end">
+            <Button
+              variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+              title="Delete from queue"
+              onClick={() => onDelete(post.id)}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
+              onClick={() => setExpanded((e) => !e)}
+            >
+              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </Button>
+          </div>
         </div>
         {expanded && (
           <div className="border-t pt-2 space-y-1.5 text-[11px]">
