@@ -345,35 +345,69 @@ async function executeTool(supabase: any, name: string, args: any, supabaseUrl: 
       return '❌ Unknown action.';
     }
     case 'generate_social_post': {
-      // IMPORTANT: Do NOT pre-insert a 'pending' social_posts row — that would
-      // make the local socialPostProcessor try to publish an empty post immediately.
-      // Instead, mirror the in-app "Generate" button: kick the deep-research agent,
-      // which will run the full visual generation flow, save the result as a DRAFT
-      // on /social, and send a Telegram preview. The user then explicitly replies
-      // "post" / "edit <text>" / "skip" in Telegram to publish or discard.
-      //
-      // Scheduling path is the only case where we DO insert a row up-front (status
-      // 'scheduled') so the scheduler can pick it up at the requested time after
-      // the draft is generated and approved.
+      // Mirror the in-app "Generate" button exactly:
+      // 1) Auto-cancel stale (>10min) running jobs so the queue self-heals.
+      // 2) Refuse if a fresh job is genuinely still running — only one agentic task at a time.
+      // 3) Pre-create the generation_jobs row (status=running) RIGHT NOW so the user
+      //    sees the task appear in the Job Queue immediately with live steps, instead
+      //    of waiting for the edge function cold-start before anything shows up.
+      // 4) Fire-and-forget the generator with the pre-created jobId so it reuses the row
+      //    instead of inserting a duplicate or hitting its own 409 guard.
       try {
+        await supabase.rpc('cancel_stale_generation_jobs').catch(() => {});
+        const { data: liveJobs } = await supabase
+          .from('generation_jobs')
+          .select('id, prompt')
+          .eq('status', 'running')
+          .order('created_at', { ascending: false })
+          .limit(1);
+        if (liveJobs && liveJobs.length > 0) {
+          return `⏳ Another generation is already running ("${truncatePrompt(liveJobs[0].prompt, 60)}"). Reply "cancel" to stop it, or wait for it to finish before starting a new one.`;
+        }
+
+        const platforms = (args.target_platforms || ['x']).filter((p: string) => ['x', 'linkedin', 'facebook'].includes(p));
+        const platformsLabel = platforms.join(', ');
+        const startupEvent = {
+          type: 'step',
+          id: 'startup',
+          emoji: '🚀',
+          label: 'Starting agent — warming up research and image tools…',
+          status: 'active',
+          ts: Date.now(),
+        };
+        const { data: jobRow, error: jobErr } = await supabase.from('generation_jobs').insert({
+          prompt: args.prompt,
+          platforms,
+          include_image: args.include_image !== false,
+          status: 'running',
+          events: [startupEvent],
+        }).select('id').single();
+        if (jobErr || !jobRow?.id) {
+          return `❌ Failed to start generation: ${jobErr?.message || 'could not create job'}`;
+        }
+        const jobId = jobRow.id;
+
         const kickBody: Record<string, unknown> = {
           prompt: args.prompt,
-          platforms: args.target_platforms || ['x'],
+          platforms,
           includeImage: args.include_image !== false,
           stream: false,
+          existingJobId: jobId,
         };
-        // Fire-and-forget — generation streams via SSE, saves draft, notifies Telegram.
+        // Fire-and-forget — the function streams via SSE, mirrors every step into
+        // generation_jobs.events (visible live in the Job Queue), saves a draft, and
+        // sends a Telegram preview when finished.
         void fetch(`${supabaseUrl}/functions/v1/generate-social-post`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify(kickBody),
         }).catch((e) => console.warn('generate-social-post kick failed:', e));
+
+        return `✨ Started agent for "${truncatePrompt(args.prompt)}" → ${platformsLabel}. Open the Job Queue to watch live steps (research, sources, image search). I'll send the full draft (image + per-platform variants + sources) to Telegram in 1-2 minutes. Reply "post" to publish, "edit <text>" to revise, or "skip" to discard. Nothing publishes without your approval.`;
       } catch (e) {
-        console.warn('generate-social-post kick threw:', e);
+        console.warn('generate_social_post tool failed:', e);
         return `❌ Failed to start generation: ${(e as Error).message}`;
       }
-      const platformsLabel = (args.target_platforms || ['x']).join(', ');
-      return `✨ Generating your draft post about "${truncatePrompt(args.prompt)}" for ${platformsLabel} now — exactly like clicking Generate in the app. I'll send you the full draft (image + per-platform variants + sources) in Telegram in 1-2 minutes. Reply "post" to publish, "edit <text>" to revise, or "skip" to discard. Nothing will be published until you approve.`;
     }
     case 'research_web': {
       const { error } = await supabase.from('pending_commands').insert({
