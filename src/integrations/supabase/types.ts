@@ -552,7 +552,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      cancel_stale_generation_jobs: { Args: never; Returns: undefined }
     }
     Enums: {
       [_ in never]: never
