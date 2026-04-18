@@ -343,6 +343,27 @@ export async function getGenerationJob(id: string): Promise<GenerationJob | null
   return (data || null) as GenerationJob | null;
 }
 
+// Mark a running job as cancelled. The edge function polls every 2s and aborts cleanly.
+export async function cancelGenerationJob(id: string): Promise<void> {
+  const { error } = await (supabase as any).from('generation_jobs').update({
+    status: 'cancelled',
+    error: 'Cancelled by user',
+    completed_at: new Date().toISOString(),
+  }).eq('id', id).eq('status', 'running');
+  if (error) throw new Error(error.message);
+}
+
+// Cancel ALL running jobs at once — used from the panel "Cancel all" action.
+export async function cancelAllRunningJobs(): Promise<number> {
+  const { data, error } = await (supabase as any).from('generation_jobs').update({
+    status: 'cancelled',
+    error: 'Cancelled by user',
+    completed_at: new Date().toISOString(),
+  }).eq('status', 'running').select('id');
+  if (error) throw new Error(error.message);
+  return (data || []).length;
+}
+
 // Streaming generation via SSE — calls the edge function and emits parsed events as they arrive.
 export async function generatePostStream(
   input: AIGenerateInput,
