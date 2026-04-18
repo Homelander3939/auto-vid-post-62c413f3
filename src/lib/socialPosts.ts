@@ -321,7 +321,7 @@ export interface GenerationJob {
   prompt: string;
   platforms: string[];
   include_image: boolean;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
   events: any[];
   result: AIGenerateOutput | null;
   error: string | null;
