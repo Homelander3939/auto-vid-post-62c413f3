@@ -160,7 +160,7 @@ function PostRow({ post, onDelete }: { post: SocialPost; onDelete: (id: string) 
   );
 }
 
-function CommandRow({ cmd }: { cmd: PendingCommand }) {
+function CommandRow({ cmd, onDelete }: { cmd: PendingCommand; onDelete: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const Icon = COMMAND_ICONS[cmd.command] || Cpu;
   const label = COMMAND_LABELS[cmd.command] || cmd.command;
@@ -201,12 +201,21 @@ function CommandRow({ cmd }: { cmd: PendingCommand }) {
               <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">→ {resultPreview}</p>
             )}
           </div>
-          <Button
-            variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
-            onClick={() => setExpanded((e) => !e)}
-          >
-            {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </Button>
+          <div className="flex flex-col gap-1 items-end">
+            <Button
+              variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+              title="Delete from queue"
+              onClick={() => onDelete(cmd.id)}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
+              onClick={() => setExpanded((e) => !e)}
+            >
+              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </Button>
+          </div>
         </div>
         {expanded && cmd.result && (
           <pre className="mt-2 border-t pt-2 text-[10px] text-muted-foreground overflow-x-auto whitespace-pre-wrap break-words">
