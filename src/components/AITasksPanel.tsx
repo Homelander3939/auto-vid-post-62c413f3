@@ -209,8 +209,9 @@ function CommandRow({ cmd }: { cmd: PendingCommand }) {
   );
 }
 
-function GenerationJobRow({ job }: { job: GenerationJob }) {
+function GenerationJobRow({ job, onCancel }: { job: GenerationJob; onCancel: (id: string) => void }) {
   const [expanded, setExpanded] = useState(job.status === 'running');
+  const [cancelling, setCancelling] = useState(false);
   const events = (job.events || []) as any[];
   const steps = events.filter((e) => e.type === 'step') as any[];
   // Reduce to latest status per step id
@@ -226,10 +227,11 @@ function GenerationJobRow({ job }: { job: GenerationJob }) {
   const variants = events.filter((e) => e.type === 'variant');
 
   const StatusIcon = job.status === 'completed' ? CheckCircle2
-    : job.status === 'failed' ? AlertTriangle
+    : job.status === 'failed' || job.status === 'cancelled' ? AlertTriangle
     : Loader2;
   const iconClass = job.status === 'completed' ? 'text-emerald-500'
     : job.status === 'failed' ? 'text-destructive'
+    : job.status === 'cancelled' ? 'text-muted-foreground'
     : 'text-primary animate-spin';
 
   return (
