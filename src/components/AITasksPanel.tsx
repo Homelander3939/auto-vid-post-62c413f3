@@ -316,6 +316,9 @@ function GenerationJobRow({ job, onCancel }: { job: GenerationJob; onCancel: (id
 
 export default function AITasksPanel() {
   const [showAll, setShowAll] = useState(false);
+  const [cancellingAll, setCancellingAll] = useState(false);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { data: posts = [] } = useQuery({
     queryKey: ['social_posts'], queryFn: listSocialPosts, refetchInterval: 5000,
   });
@@ -334,6 +337,29 @@ export default function AITasksPanel() {
   const recentCommands = commands.slice(0, showAll ? commands.length : 4);
   const total = posts.length + commands.length + genJobs.length;
 
+  const handleCancel = async (id: string) => {
+    try {
+      await cancelGenerationJob(id);
+      toast({ title: 'Cancelled', description: 'The agent will stop within a couple of seconds.' });
+      queryClient.invalidateQueries({ queryKey: ['generation_jobs'] });
+    } catch (e: any) {
+      toast({ title: 'Could not cancel', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const handleCancelAll = async () => {
+    setCancellingAll(true);
+    try {
+      const n = await cancelAllRunningJobs();
+      toast({ title: `Cancelled ${n} job${n === 1 ? '' : 's'}` });
+      queryClient.invalidateQueries({ queryKey: ['generation_jobs'] });
+    } catch (e: any) {
+      toast({ title: 'Could not cancel', description: e.message, variant: 'destructive' });
+    } finally {
+      setCancellingAll(false);
+    }
+  };
+
   if (total === 0) return null;
 
   return (
@@ -348,6 +374,17 @@ export default function AITasksPanel() {
           )}
         </h2>
         <div className="flex items-center gap-2">
+          {runningJobs.length > 0 && (
+            <Button
+              variant="outline" size="sm"
+              className="h-7 text-xs gap-1 border-destructive/40 text-destructive hover:bg-destructive/10"
+              disabled={cancellingAll}
+              onClick={handleCancelAll}
+            >
+              <XIcon className="w-3 h-3" />
+              {cancellingAll ? 'Cancelling…' : `Cancel ${runningJobs.length > 1 ? 'all' : ''}`}
+            </Button>
+          )}
           <Link to="/social">
             <Button variant="ghost" size="sm" className="h-7 text-xs gap-1">
               Open Social Posts <ExternalLink className="w-3 h-3" />
@@ -362,7 +399,7 @@ export default function AITasksPanel() {
         </div>
       </div>
       <div className="space-y-2">
-        {recentJobs.map((j) => <GenerationJobRow key={j.id} job={j} />)}
+        {recentJobs.map((j) => <GenerationJobRow key={j.id} job={j} onCancel={handleCancel} />)}
         {recentPosts.map((p) => <PostRow key={p.id} post={p} />)}
         {recentCommands.map((c) => <CommandRow key={c.id} cmd={c} />)}
       </div>
