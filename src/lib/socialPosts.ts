@@ -364,6 +364,18 @@ export async function cancelAllRunningJobs(): Promise<number> {
   return (data || []).length;
 }
 
+// Delete a single generation job from the queue (any status).
+export async function deleteGenerationJob(id: string): Promise<void> {
+  const { error } = await (supabase as any).from('generation_jobs').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+// Delete a single pending_commands row from the queue.
+export async function deletePendingCommand(id: string): Promise<void> {
+  const { error } = await (supabase as any).from('pending_commands').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
 // Streaming generation via SSE — calls the edge function and emits parsed events as they arrive.
 export async function generatePostStream(
   input: AIGenerateInput,
