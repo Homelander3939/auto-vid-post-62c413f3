@@ -2,15 +2,16 @@
 // pulled from social_posts + pending_commands + generation_jobs tables. Lives at the top of
 // the Job Queue page. Live generation jobs show step-by-step progress mirrored from the
 // edge function so the user can watch progress even after navigating away from /social.
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { Sparkles, Search, Image as ImageIcon, ExternalLink, ChevronDown, ChevronUp, Cpu, Globe, FileText, Hash, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Sparkles, Search, Image as ImageIcon, ExternalLink, ChevronDown, ChevronUp, Cpu, Globe, FileText, Hash, Loader2, CheckCircle2, AlertTriangle, X as XIcon } from 'lucide-react';
 import { useState } from 'react';
-import { listSocialPosts, getSocialImageUrl, listGenerationJobs, type SocialPost, type GenerationJob } from '@/lib/socialPosts';
+import { listSocialPosts, getSocialImageUrl, listGenerationJobs, cancelGenerationJob, cancelAllRunningJobs, type SocialPost, type GenerationJob } from '@/lib/socialPosts';
+import { useToast } from '@/hooks/use-toast';
 import { Link } from 'react-router-dom';
 
 interface PendingCommand {
@@ -49,7 +50,8 @@ const COMMAND_LABELS: Record<string, string> = {
 function statusColor(status: string): string {
   if (status === 'completed' || status === 'success') return 'bg-emerald-500/15 text-emerald-700 border-emerald-500/30';
   if (status === 'failed' || status === 'error') return 'bg-destructive/10 text-destructive border-destructive/30';
-  if (status === 'processing' || status === 'pending' || status === 'draft') return 'bg-amber-500/15 text-amber-700 border-amber-500/30';
+  if (status === 'cancelled') return 'bg-muted text-muted-foreground border-border';
+  if (status === 'processing' || status === 'pending' || status === 'draft' || status === 'running') return 'bg-amber-500/15 text-amber-700 border-amber-500/30';
   return 'bg-secondary text-secondary-foreground';
 }
 
@@ -207,8 +209,9 @@ function CommandRow({ cmd }: { cmd: PendingCommand }) {
   );
 }
 
-function GenerationJobRow({ job }: { job: GenerationJob }) {
+function GenerationJobRow({ job, onCancel }: { job: GenerationJob; onCancel: (id: string) => void }) {
   const [expanded, setExpanded] = useState(job.status === 'running');
+  const [cancelling, setCancelling] = useState(false);
   const events = (job.events || []) as any[];
   const steps = events.filter((e) => e.type === 'step') as any[];
   // Reduce to latest status per step id
@@ -224,10 +227,11 @@ function GenerationJobRow({ job }: { job: GenerationJob }) {
   const variants = events.filter((e) => e.type === 'variant');
 
   const StatusIcon = job.status === 'completed' ? CheckCircle2
-    : job.status === 'failed' ? AlertTriangle
+    : job.status === 'failed' || job.status === 'cancelled' ? AlertTriangle
     : Loader2;
   const iconClass = job.status === 'completed' ? 'text-emerald-500'
     : job.status === 'failed' ? 'text-destructive'
+    : job.status === 'cancelled' ? 'text-muted-foreground'
     : 'text-primary animate-spin';
 
   return (
@@ -270,10 +274,25 @@ function GenerationJobRow({ job }: { job: GenerationJob }) {
               {job.saved_post_id && <Link to="/social" className="text-primary hover:underline">→ View draft</Link>}
             </div>
           </div>
-          <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
-            onClick={() => setExpanded((e) => !e)}>
-            {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </Button>
+          <div className="flex flex-col gap-1 items-end">
+            {job.status === 'running' && (
+              <Button
+                variant="outline" size="sm"
+                className="h-7 text-[11px] gap-1 border-destructive/40 text-destructive hover:bg-destructive/10"
+                disabled={cancelling}
+                onClick={async () => {
+                  setCancelling(true);
+                  try { await onCancel(job.id); } finally { setCancelling(false); }
+                }}
+              >
+                <XIcon className="w-3 h-3" /> {cancelling ? 'Cancelling…' : 'Cancel'}
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
+              onClick={() => setExpanded((e) => !e)}>
+              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </Button>
+          </div>
         </div>
         {expanded && stepList.length > 0 && (
           <div className="border-t pt-2 space-y-1 max-h-64 overflow-y-auto">
@@ -297,6 +316,9 @@ function GenerationJobRow({ job }: { job: GenerationJob }) {
 
 export default function AITasksPanel() {
   const [showAll, setShowAll] = useState(false);
+  const [cancellingAll, setCancellingAll] = useState(false);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { data: posts = [] } = useQuery({
     queryKey: ['social_posts'], queryFn: listSocialPosts, refetchInterval: 5000,
   });
@@ -315,6 +337,29 @@ export default function AITasksPanel() {
   const recentCommands = commands.slice(0, showAll ? commands.length : 4);
   const total = posts.length + commands.length + genJobs.length;
 
+  const handleCancel = async (id: string) => {
+    try {
+      await cancelGenerationJob(id);
+      toast({ title: 'Cancelled', description: 'The agent will stop within a couple of seconds.' });
+      queryClient.invalidateQueries({ queryKey: ['generation_jobs'] });
+    } catch (e: any) {
+      toast({ title: 'Could not cancel', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const handleCancelAll = async () => {
+    setCancellingAll(true);
+    try {
+      const n = await cancelAllRunningJobs();
+      toast({ title: `Cancelled ${n} job${n === 1 ? '' : 's'}` });
+      queryClient.invalidateQueries({ queryKey: ['generation_jobs'] });
+    } catch (e: any) {
+      toast({ title: 'Could not cancel', description: e.message, variant: 'destructive' });
+    } finally {
+      setCancellingAll(false);
+    }
+  };
+
   if (total === 0) return null;
 
   return (
@@ -329,6 +374,17 @@ export default function AITasksPanel() {
           )}
         </h2>
         <div className="flex items-center gap-2">
+          {runningJobs.length > 0 && (
+            <Button
+              variant="outline" size="sm"
+              className="h-7 text-xs gap-1 border-destructive/40 text-destructive hover:bg-destructive/10"
+              disabled={cancellingAll}
+              onClick={handleCancelAll}
+            >
+              <XIcon className="w-3 h-3" />
+              {cancellingAll ? 'Cancelling…' : `Cancel ${runningJobs.length > 1 ? 'all' : ''}`}
+            </Button>
+          )}
           <Link to="/social">
             <Button variant="ghost" size="sm" className="h-7 text-xs gap-1">
               Open Social Posts <ExternalLink className="w-3 h-3" />
@@ -343,7 +399,7 @@ export default function AITasksPanel() {
         </div>
       </div>
       <div className="space-y-2">
-        {recentJobs.map((j) => <GenerationJobRow key={j.id} job={j} />)}
+        {recentJobs.map((j) => <GenerationJobRow key={j.id} job={j} onCancel={handleCancel} />)}
         {recentPosts.map((p) => <PostRow key={p.id} post={p} />)}
         {recentCommands.map((c) => <CommandRow key={c.id} cmd={c} />)}
       </div>
