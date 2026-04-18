@@ -274,10 +274,25 @@ function GenerationJobRow({ job, onCancel }: { job: GenerationJob; onCancel: (id
               {job.saved_post_id && <Link to="/social" className="text-primary hover:underline">→ View draft</Link>}
             </div>
           </div>
-          <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
-            onClick={() => setExpanded((e) => !e)}>
-            {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </Button>
+          <div className="flex flex-col gap-1 items-end">
+            {job.status === 'running' && (
+              <Button
+                variant="outline" size="sm"
+                className="h-7 text-[11px] gap-1 border-destructive/40 text-destructive hover:bg-destructive/10"
+                disabled={cancelling}
+                onClick={async () => {
+                  setCancelling(true);
+                  try { await onCancel(job.id); } finally { setCancelling(false); }
+                }}
+              >
+                <XIcon className="w-3 h-3" /> {cancelling ? 'Cancelling…' : 'Cancel'}
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
+              onClick={() => setExpanded((e) => !e)}>
+              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </Button>
+          </div>
         </div>
         {expanded && stepList.length > 0 && (
           <div className="border-t pt-2 space-y-1 max-h-64 overflow-y-auto">
