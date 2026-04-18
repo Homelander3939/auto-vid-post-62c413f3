@@ -1065,6 +1065,7 @@ Deno.serve(async (req) => {
         const queries: string[] = (plan.needsResearch ? (plan.queries || []) : []).slice(0, 4);
 
         for (let i = 0; i < queries.length; i++) {
+          throwIfCancelled();
           const q = queries[i];
           const stepId = `search-${i}`;
           send('step', { id: stepId, emoji: '🔎', label: `Searching: "${q}"`, status: 'active' });
@@ -1085,6 +1086,7 @@ Deno.serve(async (req) => {
         const toScrape = allSources.slice(0, 3);
         const scraped: { source: Source; text: string }[] = [];
         for (let i = 0; i < toScrape.length; i++) {
+          throwIfCancelled();
           const src = toScrape[i];
           const stepId = `scrape-${i}`;
           send('step', { id: stepId, emoji: '📖', label: `Reading ${hostnameOf(src.url)}…`, status: 'active' });
