@@ -967,6 +967,24 @@ Deno.serve(async (req) => {
 
   const wantsStream = body.stream !== false;
 
+  // ── Serialization guard ──
+  // Auto-cancel any stale running job (>10 min) so the queue self-heals.
+  // Then refuse if a fresh job is still actively running — only one agentic task at a time.
+  await supabase.rpc('cancel_stale_generation_jobs').catch(() => {});
+  const { data: liveJobs } = await supabase
+    .from('generation_jobs')
+    .select('id, prompt, created_at')
+    .eq('status', 'running')
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (liveJobs && liveJobs.length > 0) {
+    return new Response(JSON.stringify({
+      error: 'Another generation is already running. Cancel it first or wait for it to finish.',
+      busyJobId: liveJobs[0].id,
+      busyPrompt: liveJobs[0].prompt,
+    }), { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  }
+
   // Persist a generation_jobs row so the UI can resume after navigating away and the
   // Job Queue can show live progress without holding the browser SSE stream open.
   const { data: jobRow } = await supabase.from('generation_jobs').insert({
@@ -977,6 +995,22 @@ Deno.serve(async (req) => {
     events: [],
   }).select('id').single();
   const jobId: string | null = jobRow?.id || null;
+
+  // ── Cancellation polling ──
+  // Periodically check the job row; if user marked it 'cancelled', abort the agent loop.
+  let cancelRequested = false;
+  let cancelTimer: number | undefined;
+  if (jobId) {
+    const checkCancel = async () => {
+      try {
+        const { data } = await supabase.from('generation_jobs').select('status').eq('id', jobId).single();
+        if (data && (data as any).status === 'cancelled') cancelRequested = true;
+      } catch {}
+      if (!cancelRequested) cancelTimer = setTimeout(checkCancel, 2000) as any;
+    };
+    cancelTimer = setTimeout(checkCancel, 2000) as any;
+  }
+  const throwIfCancelled = () => { if (cancelRequested) throw new Error('Cancelled by user'); };
 
   // Buffered DB writer — flushes events to generation_jobs.events at most every 500ms
   // to avoid hammering the DB. Stream still emits in real time over SSE.
