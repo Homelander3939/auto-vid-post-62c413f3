@@ -306,10 +306,17 @@ function GenerationJobRow({ job, onCancel, onDelete }: { job: GenerationJob; onC
                 <XIcon className="w-3 h-3" /> {cancelling ? 'Cancelling…' : 'Cancel'}
               </Button>
             )}
-            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
-              onClick={() => setExpanded((e) => !e)}>
-              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </Button>
+            <div className="flex items-center gap-1">
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                title="Delete from queue"
+                onClick={() => onDelete(job.id)}>
+                <Trash2 className="w-3.5 h-3.5" />
+              </Button>
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
+                onClick={() => setExpanded((e) => !e)}>
+                {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </Button>
+            </div>
           </div>
         </div>
         {expanded && stepList.length > 0 && (
