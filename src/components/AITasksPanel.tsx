@@ -50,7 +50,8 @@ const COMMAND_LABELS: Record<string, string> = {
 function statusColor(status: string): string {
   if (status === 'completed' || status === 'success') return 'bg-emerald-500/15 text-emerald-700 border-emerald-500/30';
   if (status === 'failed' || status === 'error') return 'bg-destructive/10 text-destructive border-destructive/30';
-  if (status === 'processing' || status === 'pending' || status === 'draft') return 'bg-amber-500/15 text-amber-700 border-amber-500/30';
+  if (status === 'cancelled') return 'bg-muted text-muted-foreground border-border';
+  if (status === 'processing' || status === 'pending' || status === 'draft' || status === 'running') return 'bg-amber-500/15 text-amber-700 border-amber-500/30';
   return 'bg-secondary text-secondary-foreground';
 }
 
