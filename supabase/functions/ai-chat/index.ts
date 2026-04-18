@@ -166,7 +166,7 @@ const tools = [
         type: 'object',
         properties: {
           prompt: { type: 'string', description: 'Topic or instructions for the post' },
-          target_platforms: { type: 'array', items: { type: 'string', enum: ['x', 'facebook', 'instagram', 'tiktok'] } },
+          target_platforms: { type: 'array', items: { type: 'string', enum: ['x', 'linkedin', 'facebook'] }, description: 'Social text platforms only — X (Twitter), LinkedIn, Facebook. Never tiktok/instagram/youtube here.' },
           include_image: { type: 'boolean' },
           scheduled_at: { type: 'string', description: 'Optional ISO datetime to schedule (omit to post immediately)' },
         },
