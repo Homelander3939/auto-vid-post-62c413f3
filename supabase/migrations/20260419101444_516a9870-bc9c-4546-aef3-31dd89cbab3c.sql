@@ -1,0 +1,1 @@
+UPDATE public.social_post_schedules SET cron_expression = '30 9 * * *', last_run_at = NULL WHERE id = 1;
