@@ -1,0 +1,428 @@
+// Recurring AI post-generation scheduler — same visual frequency picker as the
+// upload Schedule page. Each schedule periodically calls generate-social-post,
+// which drafts the post AND pushes a Telegram preview automatically.
+import { useEffect, useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
+import { useToast } from '@/hooks/use-toast';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import {
+  Plus, Save, Trash2, ChevronDown, ChevronUp, Repeat, Clock, Timer, Sparkles, Play,
+} from 'lucide-react';
+import {
+  listGenerationSchedules, saveGenerationSchedule, deleteGenerationSchedule,
+  runGenerationScheduleNow, getSocialAccounts, SOCIAL_PLATFORMS,
+  type GenerationSchedule, type SocialAccount,
+} from '@/lib/socialPosts';
+
+type FrequencyMode = 'hourly' | 'daily' | 'weekly';
+type DurationUnit = 'hours' | 'days' | 'weeks';
+const HOURS = Array.from({ length: 24 }, (_, i) => i);
+const DAYS_OF_WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
+
+function clampMinute(v: number) {
+  if (Number.isNaN(v)) return 0;
+  return Math.max(0, Math.min(59, v));
+}
+
+function cronToState(cron: string) {
+  const parts = (cron || '0 9 * * *').split(' ');
+  if (parts.length !== 5) return { mode: 'daily' as FrequencyMode, minute: 0, hour: 9, weekdays: [1,2,3,4,5], interval: 1 };
+  const [min, hr, , , dow] = parts;
+  const minute = min === '*' ? 0 : parseInt(min) || 0;
+  const hour = hr === '*' ? 0 : parseInt(hr.replace('*/', '')) || 9;
+  if (hr === '*' || hr.startsWith('*/')) {
+    const interval = hr === '*' ? 1 : parseInt(hr.replace('*/', '')) || 1;
+    return { mode: 'hourly' as FrequencyMode, minute, hour: interval, weekdays: [1,2,3,4,5], interval };
+  }
+  if (dow !== '*') {
+    const weekdays = dow.split(',').map(Number).filter((n) => !isNaN(n));
+    return { mode: 'weekly' as FrequencyMode, minute, hour, weekdays, interval: 1 };
+  }
+  return { mode: 'daily' as FrequencyMode, minute, hour, weekdays: [1,2,3,4,5], interval: 1 };
+}
+
+function stateToCron(mode: FrequencyMode, hour: number, minute: number, weekdays: number[], interval: number) {
+  switch (mode) {
+    case 'hourly': return interval === 1 ? `${minute} * * * *` : `${minute} */${interval} * * *`;
+    case 'daily':  return `${minute} ${hour} * * *`;
+    case 'weekly': return `${minute} ${hour} * * ${weekdays.sort().join(',')}`;
+  }
+}
+
+function humanReadable(cron: string) {
+  const s = cronToState(cron);
+  const t = `${s.hour.toString().padStart(2, '0')}:${s.minute.toString().padStart(2, '0')}`;
+  switch (s.mode) {
+    case 'hourly': return s.interval === 1 ? `Every hour at :${s.minute.toString().padStart(2, '0')}` : `Every ${s.interval}h at :${s.minute.toString().padStart(2, '0')}`;
+    case 'daily':  return `Daily at ${t}`;
+    case 'weekly': return `${s.weekdays.sort().map((d) => DAYS_OF_WEEK[d]).join(', ')} at ${t}`;
+  }
+}
+
+const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local';
+
+function ScheduleCard({
+  schedule, accounts, onSave, onDelete, onRunNow,
+}: {
+  schedule: GenerationSchedule;
+  accounts: SocialAccount[];
+  onSave: (s: GenerationSchedule) => void;
+  onDelete?: () => void;
+  onRunNow?: () => void;
+}) {
+  const isNew = !schedule.id;
+  const [expanded, setExpanded] = useState(isNew);
+  const [name, setName] = useState(schedule.name);
+  const [enabled, setEnabled] = useState(schedule.enabled);
+  const [aiPrompt, setAiPrompt] = useState(schedule.ai_prompt);
+  const [includeImage, setIncludeImage] = useState(schedule.include_image);
+  const [platforms, setPlatforms] = useState<string[]>(schedule.target_platforms);
+  const [accountSel, setAccountSel] = useState<Record<string, string>>(schedule.account_selections || {});
+  const [endAt, setEndAt] = useState<string | null>(schedule.end_at);
+
+  const parsed = cronToState(schedule.cron_expression);
+  const [mode, setMode] = useState<FrequencyMode>(parsed.mode);
+  const [hour, setHour] = useState(parsed.hour);
+  const [minute, setMinute] = useState(parsed.minute);
+  const [weekdays, setWeekdays] = useState<number[]>(parsed.weekdays);
+  const [interval, setInterval] = useState(parsed.interval);
+
+  const [useDuration, setUseDuration] = useState(!!schedule.end_at);
+  const [durationAmount, setDurationAmount] = useState(7);
+  const [durationUnit, setDurationUnit] = useState<DurationUnit>('days');
+
+  const cron = useMemo(() => stateToCron(mode, hour, minute, weekdays, interval), [mode, hour, minute, weekdays, interval]);
+  const summary = humanReadable(cron);
+
+  useEffect(() => {
+    if (!useDuration) { setEndAt(null); return; }
+    const ms = durationUnit === 'hours' ? durationAmount * 3600000
+      : durationUnit === 'days' ? durationAmount * 86400000
+      : durationAmount * 604800000;
+    setEndAt(new Date(Date.now() + ms).toISOString());
+  }, [useDuration, durationAmount, durationUnit]);
+
+  const accountsByPlatform = useMemo(() => {
+    const m: Record<string, SocialAccount[]> = {};
+    for (const p of SOCIAL_PLATFORMS) m[p] = accounts.filter((a) => a.platform === p && a.enabled);
+    return m;
+  }, [accounts]);
+
+  const togglePlatform = (p: string) => setPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
+  const toggleWeekday = (d: number) => setWeekdays((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]);
+
+  const handleSave = () => {
+    onSave({
+      ...schedule,
+      name: name || 'Generation Schedule',
+      enabled, cron_expression: cron,
+      target_platforms: platforms,
+      ai_prompt: aiPrompt,
+      include_image: includeImage,
+      account_selections: accountSel,
+      end_at: endAt,
+    });
+  };
+
+  return (
+    <Card>
+      <CardContent className="pt-4 space-y-4">
+        <div className="flex items-center justify-between gap-2">
+          <button onClick={() => setExpanded(!expanded)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+            <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${enabled ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground/30'}`} />
+            <div className="min-w-0">
+              <p className="text-sm font-medium truncate">{name || 'Untitled Schedule'}</p>
+              <p className="text-xs text-muted-foreground truncate">
+                {summary} · {platforms.map((p) => PLATFORM_LABELS[p] || p).join(', ') || 'no platforms'}
+                {schedule.last_run_at && ` · last: ${new Date(schedule.last_run_at).toLocaleString()}`}
+              </p>
+            </div>
+            {expanded ? <ChevronUp className="w-4 h-4 shrink-0 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 shrink-0 text-muted-foreground" />}
+          </button>
+          <Switch checked={enabled} onCheckedChange={setEnabled} />
+        </div>
+
+        {expanded && (
+          <div className="space-y-4 pt-2 border-t">
+            <div className="space-y-1.5">
+              <Label className="text-xs">Schedule Name</Label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Daily AI Trends Digest" />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs flex items-center gap-1.5"><Sparkles className="w-3.5 h-3.5" /> AI Prompt</Label>
+              <Textarea
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                rows={4}
+                placeholder="What should the AI write about each run? e.g. 'Latest AI news this week, focus on developer tools'"
+              />
+              <p className="text-xs text-muted-foreground">Same prompt is sent to the agent every run. Each result is saved as a draft and previewed in Telegram.</p>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Checkbox id={`img-${schedule.id ?? 'new'}`} checked={includeImage} onCheckedChange={(v) => setIncludeImage(!!v)} />
+              <Label htmlFor={`img-${schedule.id ?? 'new'}`} className="text-xs">Include AI-generated image</Label>
+            </div>
+
+            <div className="space-y-3">
+              <Label className="text-xs flex items-center gap-1.5"><Repeat className="w-3.5 h-3.5" /> Frequency</Label>
+              <div className="grid grid-cols-3 gap-2">
+                {(['hourly', 'daily', 'weekly'] as FrequencyMode[]).map((m) => (
+                  <Button key={m} variant={mode === m ? 'default' : 'outline'} size="sm" onClick={() => setMode(m)} className="capitalize">{m}</Button>
+                ))}
+              </div>
+
+              {mode === 'hourly' && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Every N hours</Label>
+                    <Select value={String(interval)} onValueChange={(v) => setInterval(Number(v))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>{[1, 2, 3, 4, 6, 8, 12].map((n) => <SelectItem key={n} value={String(n)}>{n}h</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">At minute (0-59)</Label>
+                    <Input type="number" min={0} max={59} value={minute} onChange={(e) => setMinute(clampMinute(parseInt(e.target.value, 10)))} />
+                  </div>
+                </div>
+              )}
+
+              {mode === 'daily' && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Hour</Label>
+                    <Select value={String(hour)} onValueChange={(v) => setHour(Number(v))}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>{HOURS.map((h) => <SelectItem key={h} value={String(h)}>{h.toString().padStart(2, '0')}:00</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Minute (0-59)</Label>
+                    <Input type="number" min={0} max={59} value={minute} onChange={(e) => setMinute(clampMinute(parseInt(e.target.value, 10)))} />
+                  </div>
+                </div>
+              )}
+
+              {mode === 'weekly' && (
+                <>
+                  <div>
+                    <Label className="text-xs mb-2 block">Days</Label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {DAYS_OF_WEEK.map((d, i) => (
+                        <Button key={i} variant={weekdays.includes(i) ? 'default' : 'outline'} size="sm" onClick={() => toggleWeekday(i)} className="w-11 h-9 text-xs px-0">{d}</Button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Hour</Label>
+                      <Select value={String(hour)} onValueChange={(v) => setHour(Number(v))}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>{HOURS.map((h) => <SelectItem key={h} value={String(h)}>{h.toString().padStart(2, '0')}:00</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Minute (0-59)</Label>
+                      <Input type="number" min={0} max={59} value={minute} onChange={(e) => setMinute(clampMinute(parseInt(e.target.value, 10)))} />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <p className="text-xs text-muted-foreground">Time zone: <span className="font-medium">{localTz}</span></p>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs flex items-center gap-1.5"><Timer className="w-3.5 h-3.5" /> Duration</Label>
+              <div className="flex items-center gap-3">
+                <Switch checked={useDuration} onCheckedChange={setUseDuration} />
+                <span className="text-xs">{useDuration ? 'Runs for set duration' : 'Runs indefinitely'}</span>
+              </div>
+              {useDuration && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Input type="number" min={1} value={durationAmount} onChange={(e) => setDurationAmount(Math.max(1, parseInt(e.target.value) || 1))} />
+                  <Select value={durationUnit} onValueChange={(v) => setDurationUnit(v as DurationUnit)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="hours">Hours</SelectItem>
+                      <SelectItem value="days">Days</SelectItem>
+                      <SelectItem value="weeks">Weeks</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <Label className="text-xs mb-2 block">Platforms</Label>
+              <div className="flex flex-wrap gap-2">
+                {SOCIAL_PLATFORMS.map((p) => (
+                  <Button key={p} variant={platforms.includes(p) ? 'default' : 'outline'} size="sm" onClick={() => togglePlatform(p)}>
+                    {PLATFORM_LABELS[p]}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            {platforms.map((p) => {
+              const list = accountsByPlatform[p] || [];
+              if (list.length <= 1) return null;
+              return (
+                <div key={p} className="space-y-1.5">
+                  <Label className="text-xs">{PLATFORM_LABELS[p]} Account</Label>
+                  <Select value={accountSel[p] || ''} onValueChange={(v) => setAccountSel((s) => ({ ...s, [p]: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Select account" /></SelectTrigger>
+                    <SelectContent>
+                      {list.map((a) => <SelectItem key={a.id} value={a.id}>{a.label || a.email}{a.is_default ? ' ★' : ''}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              );
+            })}
+
+            <div className="flex items-center gap-2 text-xs text-muted-foreground border-t pt-3">
+              <Clock className="w-3.5 h-3.5 text-primary" />
+              <span>{summary}</span>
+              <code className="bg-muted px-1 rounded font-mono">{cron}</code>
+              {endAt && <span>· Ends {new Date(endAt).toLocaleDateString()}</span>}
+            </div>
+
+            <div className="flex gap-2 flex-wrap">
+              <Button onClick={handleSave} className="flex-1 gap-2" size="sm">
+                <Save className="w-3.5 h-3.5" /> Save
+              </Button>
+              {!isNew && onRunNow && (
+                <Button variant="outline" size="sm" onClick={onRunNow} className="gap-2">
+                  <Play className="w-3.5 h-3.5" /> Run now
+                </Button>
+              )}
+              {!isNew && onDelete && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="ghost" size="sm" className="hover:text-destructive">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete this schedule?</AlertDialogTitle>
+                      <AlertDialogDescription>This stops all future automatic generations.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={onDelete} className="bg-destructive hover:bg-destructive/90 text-destructive-foreground">Delete</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+export default function GenerationScheduler() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const { data: schedules = [] } = useQuery({ queryKey: ['generation_schedules'], queryFn: listGenerationSchedules, refetchInterval: 10000 });
+  const { data: accounts = [] } = useQuery({ queryKey: ['social_accounts'], queryFn: getSocialAccounts });
+  const [drafts, setDrafts] = useState<Partial<GenerationSchedule>[]>([]);
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['generation_schedules'] });
+
+  const handleSave = async (s: GenerationSchedule, isDraft = false) => {
+    try {
+      await saveGenerationSchedule(s);
+      toast({ title: 'Saved', description: 'Generation schedule updated.' });
+      if (isDraft) setDrafts([]);
+      refresh();
+    } catch (e: any) {
+      toast({ title: 'Save failed', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    try { await deleteGenerationSchedule(id); toast({ title: 'Deleted' }); refresh(); }
+    catch (e: any) { toast({ title: 'Error', description: e.message, variant: 'destructive' }); }
+  };
+
+  const handleRunNow = async (id: number) => {
+    try {
+      await runGenerationScheduleNow(id);
+      toast({ title: 'Triggered', description: 'Generation started — watch the Job Queue.' });
+    } catch (e: any) {
+      toast({ title: 'Trigger failed', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const addDraft = () => setDrafts((d) => [...d, {
+    name: 'New Generation Schedule',
+    enabled: true,
+    cron_expression: '0 9 * * *',
+    upload_interval_minutes: 60,
+    target_platforms: ['x', 'linkedin', 'facebook'],
+    ai_prompt: '',
+    include_image: true,
+    account_selections: {},
+    end_at: null,
+    last_run_at: null,
+  }]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Generation Schedules</h2>
+          <p className="text-xs text-muted-foreground">
+            Recurring AI post drafting. Each run saves a draft to the Queue and sends a preview to Telegram.
+          </p>
+        </div>
+        <Button size="sm" onClick={addDraft} className="gap-2">
+          <Plus className="w-4 h-4" /> New Schedule
+        </Button>
+      </div>
+
+      {drafts.map((d, idx) => (
+        <ScheduleCard
+          key={`draft-${idx}`}
+          schedule={d as GenerationSchedule}
+          accounts={accounts}
+          onSave={(s) => handleSave(s, true)}
+        />
+      ))}
+
+      {schedules.map((s) => (
+        <ScheduleCard
+          key={s.id}
+          schedule={s}
+          accounts={accounts}
+          onSave={(updated) => handleSave(updated)}
+          onDelete={() => handleDelete(s.id)}
+          onRunNow={() => handleRunNow(s.id)}
+        />
+      ))}
+
+      {schedules.length === 0 && drafts.length === 0 && (
+        <div className="text-center text-muted-foreground py-12 text-sm">
+          No generation schedules yet. Create one to have AI draft posts automatically and ping you on Telegram.
+        </div>
+      )}
+    </div>
+  );
+}

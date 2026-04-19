@@ -25,6 +25,7 @@ import {
   type AIGenerateOutput,
 } from '@/lib/socialPosts';
 import AIPostComposer from '@/components/AIPostComposer';
+import GenerationScheduler from '@/components/GenerationScheduler';
 import { saveLocalJobAccountSelections } from '@/lib/localBrowserProfiles';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 
@@ -494,12 +495,16 @@ export default function SocialPostsPage() {
         <TabsList>
           <TabsTrigger value="compose">Compose</TabsTrigger>
           <TabsTrigger value="queue">Queue ({posts.length})</TabsTrigger>
+          <TabsTrigger value="schedules">Schedules</TabsTrigger>
         </TabsList>
         <TabsContent value="compose" className="mt-6">
           <ComposeTab accounts={accounts} onCreated={refresh} />
         </TabsContent>
         <TabsContent value="queue" className="mt-6">
           <QueueTab posts={posts} onChange={refresh} />
+        </TabsContent>
+        <TabsContent value="schedules" className="mt-6">
+          <GenerationScheduler />
         </TabsContent>
       </Tabs>
     </div>
