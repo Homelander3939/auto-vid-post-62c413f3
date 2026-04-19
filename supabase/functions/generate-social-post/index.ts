@@ -972,7 +972,7 @@ Deno.serve(async (req) => {
   // Then refuse if a fresh job is still actively running — only one agentic task at a time.
   // EXCEPTION: when an `existingJobId` is supplied (the orchestrator, e.g. ai-chat tool,
   // already created the row and validated there's no conflict), reuse it directly.
-  await supabase.rpc('cancel_stale_generation_jobs').catch(() => {});
+  try { await supabase.rpc('cancel_stale_generation_jobs'); } catch { /* best-effort */ }
 
   let jobId: string | null = null;
   const existingJobId: string | undefined = body.existingJobId;
