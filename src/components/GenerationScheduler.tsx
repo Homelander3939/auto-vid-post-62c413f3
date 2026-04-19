@@ -71,7 +71,9 @@ function humanReadable(cron: string) {
   }
 }
 
-const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local';
+// All cron expressions are interpreted in Asia/Tbilisi (UTC+4) by the
+// run-due-generations edge function. The dropdowns below show Tbilisi time.
+const localTz = 'Asia/Tbilisi (UTC+4)';
 
 function ScheduleCard({
   schedule, accounts, onSave, onDelete, onRunNow,

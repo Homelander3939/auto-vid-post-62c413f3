@@ -383,8 +383,14 @@ function StatusIcon({ status }: { status: string }) {
   return <Clock className="w-4 h-4 text-muted-foreground" />;
 }
 
-function QueueTab({ posts, onChange }: { posts: SocialPost[]; onChange: () => void }) {
+function QueueTab({ posts, accounts, onChange }: { posts: SocialPost[]; accounts: SocialAccount[]; onChange: () => void }) {
   const { toast } = useToast();
+
+  const accountsByPlatform = useMemo(() => {
+    const m: Record<string, SocialAccount[]> = {};
+    for (const p of SOCIAL_PLATFORMS) m[p] = accounts.filter((a) => a.platform === p && a.enabled);
+    return m;
+  }, [accounts]);
 
   const handleDelete = async (id: string) => {
     try { await deleteSocialPost(id); toast({ title: 'Removed' }); onChange(); }
@@ -398,6 +404,42 @@ function QueueTab({ posts, onChange }: { posts: SocialPost[]; onChange: () => vo
       toast({ title: 'Retrying' });
       onChange();
     } catch (e: any) { toast({ title: 'Error', description: e.message, variant: 'destructive' }); }
+  };
+
+  // 1-click publish for drafts: auto-pick the default (or first enabled) account per
+  // selected platform, flip status to pending, and kick the local processor.
+  const handlePostNow = async (post: SocialPost) => {
+    const selections: Record<string, string> = { ...(post.account_selections || {}) };
+    const missing: string[] = [];
+    for (const p of post.target_platforms) {
+      if (selections[p]) continue;
+      const list = accountsByPlatform[p] || [];
+      const def = list.find((a) => a.is_default) || list[0];
+      if (def) selections[p] = def.id; else missing.push(p);
+    }
+    if (missing.length) {
+      toast({
+        title: `No account for ${missing.map((p) => PLATFORM_LABELS[p] || p).join(', ')}`,
+        description: 'Add an account in Settings before posting.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    try {
+      const platformResults = post.target_platforms.map((name) => ({ name, status: 'pending' as const }));
+      await (await import('@/integrations/supabase/client')).supabase
+        .from('social_posts').update({
+          status: 'pending',
+          account_selections: selections,
+          platform_results: platformResults,
+        } as any).eq('id', post.id);
+      try { await saveLocalJobAccountSelections(post.id, selections); } catch {}
+      try { await fetch(`http://localhost:3001/api/social-posts/process/${post.id}`, { method: 'POST' }); } catch {}
+      toast({ title: 'Posting now', description: `Sending to ${post.target_platforms.map((p) => PLATFORM_LABELS[p] || p).join(', ')}` });
+      onChange();
+    } catch (e: any) {
+      toast({ title: 'Failed', description: e.message, variant: 'destructive' });
+    }
   };
 
   if (posts.length === 0) {
@@ -443,6 +485,11 @@ function QueueTab({ posts, onChange }: { posts: SocialPost[]; onChange: () => vo
                 )}
               </div>
               <div className="flex flex-col gap-1 shrink-0">
+                {post.status === 'draft' && (
+                  <Button size="sm" onClick={() => handlePostNow(post)} className="gap-1.5">
+                    <Send className="w-3.5 h-3.5" /> Post Now
+                  </Button>
+                )}
                 {(post.status === 'failed' || post.platform_results.some((r) => r.status === 'error')) && (
                   <Button size="sm" variant="outline" onClick={() => handleRetry(post.id)}>
                     <RefreshCw className="w-3.5 h-3.5" />
@@ -501,7 +548,7 @@ export default function SocialPostsPage() {
           <ComposeTab accounts={accounts} onCreated={refresh} />
         </TabsContent>
         <TabsContent value="queue" className="mt-6">
-          <QueueTab posts={posts} onChange={refresh} />
+          <QueueTab posts={posts} accounts={accounts} onChange={refresh} />
         </TabsContent>
         <TabsContent value="schedules" className="mt-6">
           <GenerationScheduler />

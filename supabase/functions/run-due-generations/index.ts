@@ -19,15 +19,20 @@ function fieldMatches(field: string, value: number, min: number, max: number): b
   return field.split(',').map((p) => parseInt(p, 10)).filter((n) => !isNaN(n)).includes(value);
 }
 
+// All cron expressions are interpreted in **Asia/Tbilisi (UTC+4, no DST)** —
+// the user's local timezone. We shift `now` by +4h before extracting fields so
+// `0 9 * * *` means "09:00 Tbilisi" not 09:00 UTC.
+const TBILISI_OFFSET_MS = 4 * 60 * 60 * 1000;
 function isDue(cron: string, now: Date): boolean {
   const parts = (cron || '').trim().split(/\s+/);
   if (parts.length !== 5) return false;
   const [m, h, dom, mon, dow] = parts;
-  const minute = now.getUTCMinutes();
-  const hour   = now.getUTCHours();
-  const day    = now.getUTCDate();
-  const month  = now.getUTCMonth() + 1;
-  const wday   = now.getUTCDay();
+  const local = new Date(now.getTime() + TBILISI_OFFSET_MS);
+  const minute = local.getUTCMinutes();
+  const hour   = local.getUTCHours();
+  const day    = local.getUTCDate();
+  const month  = local.getUTCMonth() + 1;
+  const wday   = local.getUTCDay();
   return fieldMatches(m, minute, 0, 59)
     && fieldMatches(h, hour, 0, 23)
     && fieldMatches(dom, day, 1, 31)
