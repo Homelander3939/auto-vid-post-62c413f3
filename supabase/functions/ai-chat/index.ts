@@ -354,7 +354,7 @@ async function executeTool(supabase: any, name: string, args: any, supabaseUrl: 
       // 4) Fire-and-forget the generator with the pre-created jobId so it reuses the row
       //    instead of inserting a duplicate or hitting its own 409 guard.
       try {
-        await supabase.rpc('cancel_stale_generation_jobs').catch(() => {});
+        try { await supabase.rpc('cancel_stale_generation_jobs'); } catch { /* best-effort */ }
         const { data: liveJobs } = await supabase
           .from('generation_jobs')
           .select('id, prompt')
