@@ -548,7 +548,7 @@ export default function SocialPostsPage() {
           <ComposeTab accounts={accounts} onCreated={refresh} />
         </TabsContent>
         <TabsContent value="queue" className="mt-6">
-          <QueueTab posts={posts} onChange={refresh} />
+          <QueueTab posts={posts} accounts={accounts} onChange={refresh} />
         </TabsContent>
         <TabsContent value="schedules" className="mt-6">
           <GenerationScheduler />
