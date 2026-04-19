@@ -466,3 +466,69 @@ export async function listImageModels(provider: string, apiKey: string): Promise
   if (error) return { models: [], error: error.message };
   return data as { models: ImageModelOption[]; error?: string };
 }
+
+// ────────────────────────────────────────────────────────────
+// Generation schedules — recurring AI post drafting → Telegram
+// ────────────────────────────────────────────────────────────
+export interface GenerationSchedule {
+  id: number;
+  name: string;
+  enabled: boolean;
+  cron_expression: string;
+  upload_interval_minutes: number;
+  target_platforms: string[];
+  ai_prompt: string;
+  include_image: boolean;
+  account_selections: Record<string, string>;
+  end_at: string | null;
+  last_run_at: string | null;
+  updated_at: string;
+}
+
+export async function listGenerationSchedules(): Promise<GenerationSchedule[]> {
+  const { data, error } = await (supabase as any)
+    .from('social_post_schedules')
+    .select('*')
+    .order('id', { ascending: true });
+  if (error || !data) return [];
+  return data.map((r: any) => ({
+    ...r,
+    target_platforms: r.target_platforms || [],
+    account_selections: r.account_selections || {},
+  })) as GenerationSchedule[];
+}
+
+export async function saveGenerationSchedule(s: Partial<GenerationSchedule>): Promise<GenerationSchedule> {
+  const payload: any = {
+    name: s.name || 'Generation Schedule',
+    enabled: !!s.enabled,
+    cron_expression: s.cron_expression || '0 9 * * *',
+    upload_interval_minutes: s.upload_interval_minutes ?? 60,
+    target_platforms: s.target_platforms || ['x', 'linkedin', 'facebook'],
+    ai_prompt: s.ai_prompt || '',
+    include_image: s.include_image !== false,
+    account_selections: s.account_selections || {},
+    end_at: s.end_at || null,
+  };
+  if (s.id) {
+    const { data, error } = await (supabase as any)
+      .from('social_post_schedules').update(payload).eq('id', s.id).select().single();
+    if (error || !data) throw new Error(error?.message || 'Failed to update schedule');
+    return data as GenerationSchedule;
+  }
+  const { data, error } = await (supabase as any)
+    .from('social_post_schedules').insert(payload).select().single();
+  if (error || !data) throw new Error(error?.message || 'Failed to create schedule');
+  return data as GenerationSchedule;
+}
+
+export async function deleteGenerationSchedule(id: number): Promise<void> {
+  const { error } = await (supabase as any).from('social_post_schedules').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+// Manually trigger a single schedule run (mostly for "Run now" testing).
+export async function runGenerationScheduleNow(id: number): Promise<void> {
+  const { error } = await supabase.functions.invoke('run-due-generations', { body: { scheduleId: id, force: true } });
+  if (error) throw new Error(error.message);
+}
