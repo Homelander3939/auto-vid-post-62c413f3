@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.process-uploads]
 verify_jwt = false
+
+[functions.run-due-generations]
+verify_jwt = false
