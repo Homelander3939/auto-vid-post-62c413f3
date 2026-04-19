@@ -485,6 +485,11 @@ function QueueTab({ posts, accounts, onChange }: { posts: SocialPost[]; accounts
                 )}
               </div>
               <div className="flex flex-col gap-1 shrink-0">
+                {post.status === 'draft' && (
+                  <Button size="sm" onClick={() => handlePostNow(post)} className="gap-1.5">
+                    <Send className="w-3.5 h-3.5" /> Post Now
+                  </Button>
+                )}
                 {(post.status === 'failed' || post.platform_results.some((r) => r.status === 'error')) && (
                   <Button size="sm" variant="outline" onClick={() => handleRetry(post.id)}>
                     <RefreshCw className="w-3.5 h-3.5" />
