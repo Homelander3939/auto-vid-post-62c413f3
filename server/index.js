@@ -302,7 +302,7 @@ async function processJob(jobId, options = {}) {
       videoPath = path.join(tempDir, job.video_file_name);
       const buffer = Buffer.from(await fileData.arrayBuffer());
       fs.writeFileSync(videoPath, buffer);
-    } else if (typeof job.video_file_name === 'string' && job.video_file_name.startsWith('[folder] ')) {
+    } else if (typeof job.video_file_name === 'string' && /^\[folder(?:\|\d+)?\]\s/i.test(job.video_file_name)) {
       const folderPath = normalizeFolderPath(job.video_file_name);
       const { videoFile, textFile } = scanFolder(folderPath);
 
