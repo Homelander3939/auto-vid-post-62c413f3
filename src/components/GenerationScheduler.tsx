@@ -230,6 +230,11 @@ function ScheduleCard({
               </div>
             </div>
 
+            <div className="flex items-center gap-3">
+              <Checkbox id={`img-${schedule.id ?? 'new'}`} checked={includeImage} onCheckedChange={(v) => setIncludeImage(!!v)} />
+              <Label htmlFor={`img-${schedule.id ?? 'new'}`} className="text-xs">Include AI-generated image</Label>
+            </div>
+
             <div className="space-y-3">
               <Label className="text-xs flex items-center gap-1.5"><Repeat className="w-3.5 h-3.5" /> Frequency</Label>
               <div className="grid grid-cols-3 gap-2">
