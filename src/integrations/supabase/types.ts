@@ -354,6 +354,7 @@ export type Database = {
         Row: {
           account_selections: Json
           ai_prompt: string
+          auto_publish: boolean
           cron_expression: string
           enabled: boolean
           end_at: string | null
@@ -361,13 +362,17 @@ export type Database = {
           include_image: boolean
           last_run_at: string | null
           name: string
+          run_count: number
           target_platforms: string[]
+          topic_mode: boolean
           updated_at: string
           upload_interval_minutes: number
+          variation_hints: string[]
         }
         Insert: {
           account_selections?: Json
           ai_prompt?: string
+          auto_publish?: boolean
           cron_expression?: string
           enabled?: boolean
           end_at?: string | null
@@ -375,13 +380,17 @@ export type Database = {
           include_image?: boolean
           last_run_at?: string | null
           name?: string
+          run_count?: number
           target_platforms?: string[]
+          topic_mode?: boolean
           updated_at?: string
           upload_interval_minutes?: number
+          variation_hints?: string[]
         }
         Update: {
           account_selections?: Json
           ai_prompt?: string
+          auto_publish?: boolean
           cron_expression?: string
           enabled?: boolean
           end_at?: string | null
@@ -389,9 +398,12 @@ export type Database = {
           include_image?: boolean
           last_run_at?: string | null
           name?: string
+          run_count?: number
           target_platforms?: string[]
+          topic_mode?: boolean
           updated_at?: string
           upload_interval_minutes?: number
+          variation_hints?: string[]
         }
         Relationships: []
       }
