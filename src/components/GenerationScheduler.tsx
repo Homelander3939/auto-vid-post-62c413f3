@@ -481,7 +481,7 @@ export default function GenerationScheduler() {
 
       {schedules.length === 0 && drafts.length === 0 && (
         <div className="text-center text-muted-foreground py-12 text-sm">
-          No generation schedules yet. Create one to have AI draft posts automatically and ping you on Telegram.
+          No campaigns yet. Create one to have AI act as your daily / weekly social media manager — drafting (and optionally posting) creative content automatically.
         </div>
       )}
     </div>
