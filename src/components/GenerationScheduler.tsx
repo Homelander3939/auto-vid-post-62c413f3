@@ -430,7 +430,7 @@ export default function GenerationScheduler() {
   };
 
   const addDraft = () => setDrafts((d) => [...d, {
-    name: 'New Generation Schedule',
+    name: 'New Post Campaign',
     enabled: true,
     cron_expression: '0 9 * * *',
     upload_interval_minutes: 60,
@@ -440,19 +440,22 @@ export default function GenerationScheduler() {
     account_selections: {},
     end_at: null,
     last_run_at: null,
+    auto_publish: false,
+    topic_mode: true,
+    variation_hints: [],
   }]);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-base font-semibold">Generation Schedules</h2>
+          <h2 className="text-base font-semibold">Post Campaigns & Schedules</h2>
           <p className="text-xs text-muted-foreground">
-            Recurring AI post drafting. Each run saves a draft to the Queue and sends a preview to Telegram.
+            Recurring AI-generated posts. Enable Topic Campaign Mode for creative SMM-manager-style varied posts on a single topic, and Auto-Publish to send them live to LinkedIn / X / Facebook automatically.
           </p>
         </div>
         <Button size="sm" onClick={addDraft} className="gap-2">
-          <Plus className="w-4 h-4" /> New Schedule
+          <Plus className="w-4 h-4" /> New Campaign
         </Button>
       </div>
 
