@@ -93,6 +93,10 @@ function ScheduleCard({
   const [platforms, setPlatforms] = useState<string[]>(schedule.target_platforms);
   const [accountSel, setAccountSel] = useState<Record<string, string>>(schedule.account_selections || {});
   const [endAt, setEndAt] = useState<string | null>(schedule.end_at);
+  // Post Campaign extensions
+  const [autoPublish, setAutoPublish] = useState(!!schedule.auto_publish);
+  const [topicMode, setTopicMode] = useState(!!schedule.topic_mode);
+  const [variationHintsRaw, setVariationHintsRaw] = useState((schedule.variation_hints || []).join(', '));
 
   const parsed = cronToState(schedule.cron_expression);
   const [mode, setMode] = useState<FrequencyMode>(parsed.mode);
