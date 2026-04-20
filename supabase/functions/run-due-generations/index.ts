@@ -220,13 +220,17 @@ Deno.serve(async (req) => {
       }
     } else {
       // Fire and forget — draft preview goes to Telegram as before.
+      // Use stream:true since the edge function only supports streaming mode.
       fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          prompt: finalPrompt, platforms,
+          includeImage: s.include_image !== false, stream: true,
+        }),
       }).catch((e) => console.error('[run-due-generations] invoke failed', s.id, e?.message));
 
       triggered.push({ id: s.id, name: s.name, platforms, mode: 'draft' });
