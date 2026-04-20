@@ -294,7 +294,7 @@ export default function CampaignScheduler() {
           storagePath = await uploadVideoFile(entry.videoFile);
           fileName = entry.videoFile.name;
         } else if (entry.folderPath) {
-          fileName = `[folder] ${entry.folderPath}`;
+          fileName = `[folder|${intensityMinutes}] ${entry.folderPath}`;
         }
 
         const metadata: VideoMetadata = {
