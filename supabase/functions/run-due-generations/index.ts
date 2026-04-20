@@ -137,15 +137,10 @@ Deno.serve(async (req) => {
         `Hashtags must feel native, not stuffed.`;
     }
 
-    // Fire generate-social-post and AWAIT the response when auto_publish is on
-    // so we can flip the resulting draft to "pending" with the account selections.
+    // Fire generate-social-post. For auto_publish we MUST use stream:true (the
+    // edge function only persists+returns the savedPostId via SSE) and parse
+    // the stream for the `saved` event so we can flip the new draft to pending.
     const url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/generate-social-post`;
-    const payload = {
-      prompt: finalPrompt,
-      platforms,
-      includeImage: s.include_image !== false,
-      stream: false,
-    };
 
     if (s.auto_publish) {
       try {
@@ -155,10 +150,41 @@ Deno.serve(async (req) => {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
           },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            prompt: finalPrompt, platforms,
+            includeImage: s.include_image !== false, stream: true,
+          }),
         });
-        const json = await resp.json().catch(() => ({}));
-        const savedPostId: string | null = json?.savedPostId || json?.saved_post_id || null;
+
+        let savedPostId: string | null = null;
+        if (resp.ok && resp.body) {
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let currentEvent = '';
+          // Drain the SSE stream — it ends when generate-social-post is done
+          // (max ~2 min). We only need the `saved` event but must consume to EOF
+          // so the function fully runs (image gen, telegram, draft save).
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let nl: number;
+            while ((nl = buffer.indexOf('\n')) !== -1) {
+              let line = buffer.slice(0, nl);
+              buffer = buffer.slice(nl + 1);
+              if (line.endsWith('\r')) line = line.slice(0, -1);
+              if (!line) { currentEvent = ''; continue; }
+              if (line.startsWith('event: ')) { currentEvent = line.slice(7).trim(); continue; }
+              if (line.startsWith('data: ') && currentEvent === 'saved') {
+                try {
+                  const parsed = JSON.parse(line.slice(6));
+                  if (parsed?.id) savedPostId = parsed.id;
+                } catch { /* ignore */ }
+              }
+            }
+          }
+        }
 
         if (savedPostId) {
           // Resolve account selections: prefer schedule's mapping, fallback to default account per platform.
