@@ -483,6 +483,11 @@ export interface GenerationSchedule {
   end_at: string | null;
   last_run_at: string | null;
   updated_at: string;
+  // Post Campaign extensions
+  auto_publish?: boolean;        // when true, drafts are immediately queued for publishing
+  topic_mode?: boolean;          // treat ai_prompt as an evergreen topic; AI varies angle each run
+  variation_hints?: string[];    // optional rotating angles/styles ("contrarian", "story", "data-driven"…)
+  run_count?: number;
 }
 
 export async function listGenerationSchedules(): Promise<GenerationSchedule[]> {
@@ -509,6 +514,9 @@ export async function saveGenerationSchedule(s: Partial<GenerationSchedule>): Pr
     include_image: s.include_image !== false,
     account_selections: s.account_selections || {},
     end_at: s.end_at || null,
+    auto_publish: !!s.auto_publish,
+    topic_mode: !!s.topic_mode,
+    variation_hints: s.variation_hints || [],
   };
   if (s.id) {
     const { data, error } = await (supabase as any)

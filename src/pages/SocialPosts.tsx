@@ -542,7 +542,7 @@ export default function SocialPostsPage() {
         <TabsList>
           <TabsTrigger value="compose">Compose</TabsTrigger>
           <TabsTrigger value="queue">Queue ({posts.length})</TabsTrigger>
-          <TabsTrigger value="schedules">Schedules</TabsTrigger>
+          <TabsTrigger value="schedules">Campaigns</TabsTrigger>
         </TabsList>
         <TabsContent value="compose" className="mt-6">
           <ComposeTab accounts={accounts} onCreated={refresh} />

@@ -99,29 +99,142 @@ Deno.serve(async (req) => {
       continue;
     }
 
-    // Mark last_run_at FIRST to avoid double-fire if pg_cron retries.
+    // Mark last_run_at FIRST + bump run_count to avoid double-fire if pg_cron retries.
+    const nextRunCount = (s.run_count || 0) + 1;
     await supabase.from('social_post_schedules')
-      .update({ last_run_at: now.toISOString(), updated_at: now.toISOString() })
+      .update({ last_run_at: now.toISOString(), updated_at: now.toISOString(), run_count: nextRunCount } as any)
       .eq('id', s.id);
 
-    // Fire and forget — generate-social-post handles its own SSE / job row /
-    // draft save / Telegram preview. We don't block on it.
-    const url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/generate-social-post`;
-    fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
-      },
-      body: JSON.stringify({
-        prompt: s.ai_prompt,
-        platforms,
-        includeImage: s.include_image !== false,
-        stream: false,
-      }),
-    }).catch((e) => console.error('[run-due-generations] invoke failed', s.id, e?.message));
+    // ── Topic Campaign Mode ─────────────────────────────────────────────
+    // When topic_mode is on, treat ai_prompt as an evergreen TOPIC and wrap
+    // it with creative SMM-manager-style instructions that rotate each run
+    // so consecutive posts feel fresh — just like a human social manager
+    // would post about the same brand week after week.
+    let finalPrompt: string = s.ai_prompt;
+    if (s.topic_mode) {
+      const defaultHints = [
+        'an unexpected contrarian take',
+        'a story-driven micro-narrative with a hook',
+        'a data-driven insight with a surprising stat',
+        'a practical actionable tip framed as a checklist',
+        'a behind-the-scenes / how-it-works angle',
+        'a question that invites engagement and replies',
+        'a bold prediction about where this is heading',
+        'a teardown of a common myth or misconception',
+        'a list of 3 quick wins',
+        'a personal lesson learned framed authentically',
+      ];
+      const hints: string[] = (Array.isArray(s.variation_hints) && s.variation_hints.length)
+        ? s.variation_hints
+        : defaultHints;
+      const angle = hints[(nextRunCount - 1) % hints.length];
+      finalPrompt =
+        `You are a seasoned social media manager running an ongoing content campaign on the topic: "${s.ai_prompt}".\n\n` +
+        `For TODAY'S post (run #${nextRunCount}), use this angle: ${angle}.\n` +
+        `Be creative, innovative, and write like a real human SMM manager — not a generic AI. ` +
+        `Avoid repeating phrases or hooks you would have used on previous runs of this campaign. ` +
+        `Tailor the tone per platform (X = punchy & witty, LinkedIn = professional & insightful, Facebook = warm & conversational). ` +
+        `Hashtags must feel native, not stuffed.`;
+    }
 
-    triggered.push({ id: s.id, name: s.name, platforms });
+    // Fire generate-social-post. For auto_publish we MUST use stream:true (the
+    // edge function only persists+returns the savedPostId via SSE) and parse
+    // the stream for the `saved` event so we can flip the new draft to pending.
+    const url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/generate-social-post`;
+
+    if (s.auto_publish) {
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+          },
+          body: JSON.stringify({
+            prompt: finalPrompt, platforms,
+            includeImage: s.include_image !== false, stream: true,
+          }),
+        });
+
+        let savedPostId: string | null = null;
+        if (resp.ok && resp.body) {
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let currentEvent = '';
+          // Drain the SSE stream — it ends when generate-social-post is done
+          // (max ~2 min). We only need the `saved` event but must consume to EOF
+          // so the function fully runs (image gen, telegram, draft save).
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let nl: number;
+            while ((nl = buffer.indexOf('\n')) !== -1) {
+              let line = buffer.slice(0, nl);
+              buffer = buffer.slice(nl + 1);
+              if (line.endsWith('\r')) line = line.slice(0, -1);
+              if (!line) { currentEvent = ''; continue; }
+              if (line.startsWith('event: ')) { currentEvent = line.slice(7).trim(); continue; }
+              if (line.startsWith('data: ') && currentEvent === 'saved') {
+                try {
+                  const parsed = JSON.parse(line.slice(6));
+                  if (parsed?.id) savedPostId = parsed.id;
+                } catch { /* ignore */ }
+              }
+            }
+          }
+        }
+
+        if (savedPostId) {
+          // Resolve account selections: prefer schedule's mapping, fallback to default account per platform.
+          const selections: Record<string, string> = { ...(s.account_selections || {}) };
+          const missing = platforms.filter((p) => !selections[p]);
+          if (missing.length) {
+            const { data: accts } = await supabase
+              .from('social_post_accounts')
+              .select('id, platform, is_default, enabled')
+              .in('platform', missing)
+              .eq('enabled', true);
+            for (const p of missing) {
+              const list = (accts || []).filter((a: any) => a.platform === p);
+              const def = list.find((a: any) => a.is_default) || list[0];
+              if (def) selections[p] = def.id;
+            }
+          }
+
+          const platformResults = platforms.map((name) => ({ name, status: 'pending' }));
+          await supabase.from('social_posts').update({
+            status: 'pending',
+            account_selections: selections,
+            platform_results: platformResults,
+          } as any).eq('id', savedPostId);
+
+          triggered.push({ id: s.id, name: s.name, platforms, savedPostId, mode: 'auto-publish' });
+        } else {
+          triggered.push({ id: s.id, name: s.name, platforms, mode: 'auto-publish-no-save' });
+        }
+      } catch (e: any) {
+        console.error('[run-due-generations] auto-publish failed', s.id, e?.message);
+        skipped.push({ id: s.id, reason: 'auto-publish-error', error: e?.message });
+      }
+    } else {
+      // Fire and forget — draft preview goes to Telegram as before.
+      // Use stream:true since the edge function only supports streaming mode.
+      fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+        },
+        body: JSON.stringify({
+          prompt: finalPrompt, platforms,
+          includeImage: s.include_image !== false, stream: true,
+        }),
+      }).catch((e) => console.error('[run-due-generations] invoke failed', s.id, e?.message));
+
+      triggered.push({ id: s.id, name: s.name, platforms, mode: 'draft' });
+    }
   }
 
   return new Response(JSON.stringify({ ok: true, triggered, skipped, now: now.toISOString() }), {
