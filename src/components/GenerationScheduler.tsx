@@ -173,19 +173,61 @@ function ScheduleCard({
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs flex items-center gap-1.5"><Sparkles className="w-3.5 h-3.5" /> AI Prompt</Label>
+              <Label className="text-xs flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5" /> {topicMode ? 'Campaign Topic' : 'AI Prompt'}
+              </Label>
               <Textarea
                 value={aiPrompt}
                 onChange={(e) => setAiPrompt(e.target.value)}
                 rows={4}
-                placeholder="What should the AI write about each run? e.g. 'Latest AI news this week, focus on developer tools'"
+                placeholder={topicMode
+                  ? "Topic the AI should keep posting about, e.g. 'Sustainable urban gardening for beginners'"
+                  : "What should the AI write about each run? e.g. 'Latest AI news this week, focus on developer tools'"}
               />
-              <p className="text-xs text-muted-foreground">Same prompt is sent to the agent every run. Each result is saved as a draft and previewed in Telegram.</p>
+              <p className="text-xs text-muted-foreground">
+                {topicMode
+                  ? 'Each run, the AI rotates a fresh angle (story, contrarian take, data, tip, question…) so the campaign feels human and varied.'
+                  : 'Same prompt is sent to the agent every run. Each result is saved as a draft and previewed in Telegram.'}
+              </p>
             </div>
 
-            <div className="flex items-center gap-3">
-              <Checkbox id={`img-${schedule.id ?? 'new'}`} checked={includeImage} onCheckedChange={(v) => setIncludeImage(!!v)} />
-              <Label htmlFor={`img-${schedule.id ?? 'new'}`} className="text-xs">Include AI-generated image</Label>
+            {/* ── Post Campaign controls ─────────────────────────────── */}
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-3">
+              <div className="flex items-start gap-3">
+                <Switch checked={topicMode} onCheckedChange={setTopicMode} />
+                <div className="flex-1 min-w-0">
+                  <Label className="text-xs font-medium">Topic Campaign Mode</Label>
+                  <p className="text-[11px] text-muted-foreground">
+                    AI acts as a creative SMM manager — varies hooks, angles, and tone every run so consecutive posts on the same topic stay fresh.
+                  </p>
+                </div>
+              </div>
+
+              {topicMode && (
+                <div className="space-y-1.5 pl-9">
+                  <Label className="text-xs">Variation Angles (optional, comma-separated)</Label>
+                  <Input
+                    value={variationHintsRaw}
+                    onChange={(e) => setVariationHintsRaw(e.target.value)}
+                    placeholder="contrarian take, story, data insight, quick tip, behind-the-scenes"
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Leave empty to use the built-in rotation (10 angles). Custom hints rotate in order each run.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex items-start gap-3 border-t pt-3">
+                <Switch checked={autoPublish} onCheckedChange={setAutoPublish} />
+                <div className="flex-1 min-w-0">
+                  <Label className="text-xs font-medium">Auto-Publish to Selected Accounts</Label>
+                  <p className="text-[11px] text-muted-foreground">
+                    {autoPublish
+                      ? '⚠ Posts go LIVE automatically each run — no manual approval. Make sure platforms & accounts below are correct.'
+                      : 'Off: each run saves a draft and pings Telegram for manual approval.'}
+                  </p>
+                </div>
+              </div>
             </div>
 
             <div className="space-y-3">
