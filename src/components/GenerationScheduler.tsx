@@ -130,6 +130,8 @@ function ScheduleCard({
   const toggleWeekday = (d: number) => setWeekdays((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]);
 
   const handleSave = () => {
+    const variationHints = variationHintsRaw
+      .split(/[,\n]+/).map((h) => h.trim()).filter(Boolean);
     onSave({
       ...schedule,
       name: name || 'Generation Schedule',
@@ -139,6 +141,9 @@ function ScheduleCard({
       include_image: includeImage,
       account_selections: accountSel,
       end_at: endAt,
+      auto_publish: autoPublish,
+      topic_mode: topicMode,
+      variation_hints: variationHints,
     });
   };
 
