@@ -134,10 +134,17 @@ function resolveMetadataForVideo(baseDir, videoFileName, fallbackTitle = '', fal
 
 function normalizeFolderPath(folderPath) {
   return String(folderPath || '')
-    .replace(/^\[folder\]\s*/i, '')
+    .replace(/^\[folder(?:\|\d+)?\]\s*/i, '')
     .replace(/^"(.+)"$/, '$1')
     .replace(/^'(.+)'$/, '$1')
     .trim();
+}
+
+function parseFolderIntensity(marker) {
+  const m = String(marker || '').match(/^\[folder\|(\d+)\]/i);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 function getReadyPlatforms(settings, requestedPlatforms = []) {
