@@ -134,10 +134,17 @@ function resolveMetadataForVideo(baseDir, videoFileName, fallbackTitle = '', fal
 
 function normalizeFolderPath(folderPath) {
   return String(folderPath || '')
-    .replace(/^\[folder\]\s*/i, '')
+    .replace(/^\[folder(?:\|\d+)?\]\s*/i, '')
     .replace(/^"(.+)"$/, '$1')
     .replace(/^'(.+)'$/, '$1')
     .trim();
+}
+
+function parseFolderIntensity(marker) {
+  const m = String(marker || '').match(/^\[folder\|(\d+)\]/i);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 function getReadyPlatforms(settings, requestedPlatforms = []) {
@@ -295,7 +302,7 @@ async function processJob(jobId, options = {}) {
       videoPath = path.join(tempDir, job.video_file_name);
       const buffer = Buffer.from(await fileData.arrayBuffer());
       fs.writeFileSync(videoPath, buffer);
-    } else if (typeof job.video_file_name === 'string' && job.video_file_name.startsWith('[folder] ')) {
+    } else if (typeof job.video_file_name === 'string' && /^\[folder(?:\|\d+)?\]\s/i.test(job.video_file_name)) {
       const folderPath = normalizeFolderPath(job.video_file_name);
       const { videoFile, textFile } = scanFolder(folderPath);
 
@@ -988,8 +995,66 @@ async function processScheduledUploads() {
       let folderPathForJob = null;
 
       // Handle folder-based entries
-      if (videoFileName.startsWith('[folder] ')) {
+      if (/^\[folder(?:\|\d+)?\]\s/i.test(videoFileName)) {
         const folderPath = normalizeFolderPath(videoFileName);
+        const intensityMin = parseFolderIntensity(videoFileName);
+
+        // If an intensity is set, fan out: scan ALL videos and schedule them spaced by intensity.
+        if (intensityMin) {
+          const allPairs = scanAllFiles(folderPath);
+          if (allPairs.length === 0) {
+            console.error(`[Scheduler] No videos found in folder: ${folderPath}`);
+            await supabase.from('scheduled_uploads').update({ status: 'error' }).eq('id', item.id);
+            await notifyTelegram(settings, `❌ Scheduled folder upload: no videos found in ${folderPath}`);
+            continue;
+          }
+
+          const baseTime = new Date(item.scheduled_at).getTime();
+          const fanoutRows = allPairs.map((pair, idx) => {
+            let entryTitle = item.title;
+            let entryDesc = item.description;
+            let entryTags = item.tags;
+            if (pair.textFile) {
+              const meta = parseTextFile(path.join(folderPath, pair.textFile));
+              if (!entryTitle || entryTitle === '(auto from folder)') entryTitle = meta.title || pair.videoFile;
+              if (!entryDesc) entryDesc = meta.description || '';
+              if (!entryTags?.length) entryTags = meta.tags || [];
+            }
+            return {
+              video_file_name: pair.videoFile,
+              video_storage_path: null,
+              title: entryTitle || pair.videoFile,
+              description: entryDesc || '',
+              tags: entryTags || [],
+              target_platforms: item.target_platforms,
+              account_id: item.account_id,
+              scheduled_at: new Date(baseTime + idx * intensityMin * 60_000).toISOString(),
+              status: 'scheduled',
+            };
+          });
+
+          const { data: inserted, error: fanErr } = await supabase
+            .from('scheduled_uploads')
+            .insert(fanoutRows)
+            .select();
+          if (fanErr) {
+            console.error('[Scheduler] Fan-out insert failed:', fanErr.message);
+            await supabase.from('scheduled_uploads').update({ status: 'error' }).eq('id', item.id);
+            continue;
+          }
+
+          // Copy account selections from the parent to each fan-out child
+          const parentSelections = getScheduledAccountSelections(item.id);
+          for (const child of inserted || []) {
+            try { saveScheduledAccountSelections(child.id, parentSelections); } catch {}
+          }
+
+          await supabase.from('scheduled_uploads').update({ status: 'completed' }).eq('id', item.id);
+          await notifyTelegram(settings, `📅 Scheduled ${inserted?.length || 0} videos from ${folderPath}, every ${intensityMin}m starting ${new Date(baseTime).toLocaleString()}`);
+          continue;
+        }
+
+        // No intensity → legacy behavior: pick the latest single video.
         const { videoFile, textFile } = scanFolder(folderPath);
         if (!videoFile) {
           console.error(`[Scheduler] No video found in folder: ${folderPath}`);
@@ -999,9 +1064,7 @@ async function processScheduledUploads() {
         }
         videoFileName = videoFile;
         folderPathForJob = folderPath;
-        videoStoragePath = null; // Will be read from folder directly
-
-        // Parse text file metadata if found
+        videoStoragePath = null;
         if (textFile) {
           const meta = parseTextFile(path.join(folderPath, textFile));
           if (!itemTitle || itemTitle === '(auto from folder)') itemTitle = meta.title || videoFile;

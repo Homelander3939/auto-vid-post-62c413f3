@@ -294,7 +294,7 @@ export default function CampaignScheduler() {
           storagePath = await uploadVideoFile(entry.videoFile);
           fileName = entry.videoFile.name;
         } else if (entry.folderPath) {
-          fileName = `[folder] ${entry.folderPath}`;
+          fileName = `[folder|${intensityMinutes}] ${entry.folderPath}`;
         }
 
         const metadata: VideoMetadata = {
@@ -470,17 +470,36 @@ export default function CampaignScheduler() {
 
           {/* FOLDER mode */}
           {sourceMode === 'folder' && (
-            <div className="space-y-2">
-              <Label className="text-xs">Folder Path</Label>
-              <Input
-                value={folderPath}
-                onChange={(e) => setFolderPath(e.target.value)}
-                placeholder="C:\Videos\uploads or /home/user/videos"
-                className="font-mono text-xs"
-              />
-              <p className="text-xs text-muted-foreground">
-                System will process ALL videos in folder with matching .txt files, uploading 1-by-1 with chosen intensity.
-              </p>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label className="text-xs">Folder Path</Label>
+                <Input
+                  value={folderPath}
+                  onChange={(e) => setFolderPath(e.target.value)}
+                  placeholder="C:\Videos\uploads or /home/user/videos"
+                  className="font-mono text-xs"
+                />
+                <p className="text-xs text-muted-foreground">
+                  System will process ALL videos in folder with matching .txt files, uploading 1-by-1 with chosen intensity.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-xs flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5" /> Upload Intensity
+                </Label>
+                <Select value={String(intensityMinutes)} onValueChange={v => setIntensityMinutes(Number(v))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {INTENSITY_OPTIONS.map(opt => (
+                      <SelectItem key={opt.value} value={String(opt.value)}>{opt.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  First video uploads at the scheduled time, the rest are spaced {intensityMinutes} minutes apart. New uploads start independently — a slow previous run does not block the next.
+                </p>
+              </div>
             </div>
           )}
 
