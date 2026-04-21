@@ -21,11 +21,15 @@ echo [2b/5] Loading Gemma 3 27B model...
 start "LM Studio Load Model" cmd /c "lms load google/gemma-3-27b"
 
 echo [3/5] Checking Dependencies...
-IF NOT EXIST "node_modules" (
-    echo [!] Missing frontend packages. Installing now...
-    call npm install
+call npm run ensure-deps
+IF ERRORLEVEL 1 (
+    echo [!] Frontend dependency check failed.
+    echo     Make sure this repo is fully updated and package.json still includes the ensure-deps script.
+    echo     Fix the errors above, then run the launcher again.
+    pause
+    exit /b 1
 ) ELSE (
-    echo [OK] Frontend packages found.
+    echo [OK] Frontend packages are ready.
 )
 
 cd server
