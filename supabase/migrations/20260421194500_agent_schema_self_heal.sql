@@ -1,4 +1,4 @@
-ALTER TABLE public.app_settings
+ALTER TABLE IF EXISTS public.app_settings
   ADD COLUMN IF NOT EXISTS agent_task_mode TEXT NOT NULL DEFAULT 'standard',
   ADD COLUMN IF NOT EXISTS agent_automation_mode TEXT NOT NULL DEFAULT 'safe',
   ADD COLUMN IF NOT EXISTS agent_memory_enabled BOOLEAN NOT NULL DEFAULT true,
@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS public.agent_runs (
   completed_at TIMESTAMPTZ
 );
 
+-- Self-heal partially migrated databases: CREATE TABLE handles missing tables,
+-- while ALTER TABLE backfills missing columns when the table already exists.
 ALTER TABLE public.agent_runs
   ADD COLUMN IF NOT EXISTS task_mode TEXT NOT NULL DEFAULT 'standard',
   ADD COLUMN IF NOT EXISTS automation_mode TEXT NOT NULL DEFAULT 'safe',
@@ -97,6 +99,8 @@ CREATE TABLE IF NOT EXISTS public.agent_skills (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Self-heal partially migrated databases: CREATE TABLE handles missing tables,
+-- while ALTER TABLE backfills missing columns when the table already exists.
 ALTER TABLE public.agent_skills
   ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '',
   ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual',
@@ -180,6 +184,8 @@ CREATE TABLE IF NOT EXISTS public.agent_memories (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Self-heal partially migrated databases: CREATE TABLE handles missing tables,
+-- while ALTER TABLE backfills missing columns when the table already exists.
 ALTER TABLE public.agent_memories
   ADD COLUMN IF NOT EXISTS content TEXT NOT NULL DEFAULT '',
   ADD COLUMN IF NOT EXISTS memory_type TEXT NOT NULL DEFAULT 'fact',
