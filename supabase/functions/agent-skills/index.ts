@@ -11,6 +11,21 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const SKILL_SCORE = {
+  skillJson: 100,
+  frameworkManifest: 95,
+  claudeCommand: 90,
+  structuredAgentPrompt: 88,
+  markdownSkillFolder: 85,
+  structuredSkillFolder: 84,
+  explicitPromptFile: 83,
+  namedMarkdownAgent: 80,
+  namedStructuredAgent: 79,
+  genericJson: 40,
+  genericStructured: 30,
+  genericMarkdown: 20,
+} as const;
+
 function slugify(s: string): string {
   return (s || 'skill').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'skill';
 }
@@ -275,21 +290,21 @@ async function fetchRepoSkills(url: string): Promise<any[]> {
 
   const scoreFile = (filePath: string) => {
     const path = filePath.toLowerCase();
-    // Higher scores mean "more likely to be a deliberate reusable skill manifest".
-    // skill.json wins, then known agent-framework formats, then markdown prompt files.
-    if (path.endsWith('skill.json')) return 100;
-    if (path.includes('openclaw') && /\.(json|yaml|yml|md)$/i.test(path)) return 95;
-    if (path.includes('hermes') && /\.(json|yaml|yml|md)$/i.test(path)) return 95;
-    if (path.includes('.claude/commands/') && path.endsWith('.md')) return 90;
-    if ((path.includes('/commands/') || path.includes('/agents/') || path.includes('/recipes/')) && /\.(yaml|yml|md)$/i.test(path)) return 88;
-    if ((path.includes('/skills/') || path.includes('/prompts/') || path.includes('/agents/')) && path.endsWith('.md')) return 85;
-    if ((path.includes('/skills/') || path.includes('/prompts/') || path.includes('/agents/')) && /\.(yaml|yml|toml)$/i.test(path)) return 84;
-    if (/(\.prompt|\.skill|\.agent)\.(md|yaml|yml|toml)$/i.test(path)) return 83;
-    if (/(agents|claude|hermes|openclaw)\.md$/i.test(path)) return 80;
-    if (/(agents|claude|hermes|openclaw)\.(yaml|yml|toml)$/i.test(path)) return 79;
-    if (path.endsWith('.json')) return 40;
-    if (/\.(yaml|yml|toml)$/i.test(path)) return 30;
-    if (path.endsWith('.md')) return 20;
+    // Higher scores mean "more likely to be an explicit reusable skill definition".
+    // This prioritizes canonical manifests first, then known framework layouts, then generic prompts.
+    if (path.endsWith('skill.json')) return SKILL_SCORE.skillJson;
+    if (path.includes('openclaw') && /\.(json|yaml|yml|md)$/i.test(path)) return SKILL_SCORE.frameworkManifest;
+    if (path.includes('hermes') && /\.(json|yaml|yml|md)$/i.test(path)) return SKILL_SCORE.frameworkManifest;
+    if (path.includes('.claude/commands/') && path.endsWith('.md')) return SKILL_SCORE.claudeCommand;
+    if ((path.includes('/commands/') || path.includes('/agents/') || path.includes('/recipes/')) && /\.(yaml|yml|md)$/i.test(path)) return SKILL_SCORE.structuredAgentPrompt;
+    if ((path.includes('/skills/') || path.includes('/prompts/') || path.includes('/agents/')) && path.endsWith('.md')) return SKILL_SCORE.markdownSkillFolder;
+    if ((path.includes('/skills/') || path.includes('/prompts/') || path.includes('/agents/')) && /\.(yaml|yml|toml)$/i.test(path)) return SKILL_SCORE.structuredSkillFolder;
+    if (/(\.prompt|\.skill|\.agent)\.(md|yaml|yml|toml)$/i.test(path)) return SKILL_SCORE.explicitPromptFile;
+    if (/(agents|claude|hermes|openclaw)\.md$/i.test(path)) return SKILL_SCORE.namedMarkdownAgent;
+    if (/(agents|claude|hermes|openclaw)\.(yaml|yml|toml)$/i.test(path)) return SKILL_SCORE.namedStructuredAgent;
+    if (path.endsWith('.json')) return SKILL_SCORE.genericJson;
+    if (/\.(yaml|yml|toml)$/i.test(path)) return SKILL_SCORE.genericStructured;
+    if (path.endsWith('.md')) return SKILL_SCORE.genericMarkdown;
     return 0;
   };
 

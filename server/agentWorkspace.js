@@ -16,8 +16,11 @@ const ALLOWED_SHELL = ['npm', 'npx', 'node', 'python', 'python3', 'py', 'pip', '
 
 function getWorkspaceRoot(workspaceRoot) {
   const raw = String(workspaceRoot || '').trim();
-  const resolved = raw ? path.resolve(raw) : DEFAULT_WORKSPACE_ROOT;
-  if (resolved === path.parse(resolved).root) {
+  const resolved = path.normalize(raw ? path.resolve(raw) : DEFAULT_WORKSPACE_ROOT);
+  const rootPath = path.normalize(path.parse(resolved).root);
+  const rootCompare = process.platform === 'win32' ? rootPath.toLowerCase() : rootPath;
+  const resolvedCompare = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  if (resolvedCompare === rootCompare) {
     throw new Error('Workspace root cannot be the filesystem root');
   }
   const normalized = resolved.toLowerCase();
@@ -76,7 +79,7 @@ async function startPreviewServer(workspaceRoot) {
       if (parts.length === 0) {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         const projects = fs.readdirSync(root).filter((d) => fs.statSync(path.join(root, d)).isDirectory());
-        res.end(`<h1>Agent Workspace</h1><ul>${projects.map((p) => `<li><a href="/${encodeURIComponent(p)}/">${escapeHtml(p)}</a></li>`).join('')}</ul>`);
+        res.end(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Agent Workspace</title></head><body><main><h1>Agent Workspace</h1><ul aria-label="Available agent projects">${projects.map((p) => `<li><a href="/${encodeURIComponent(p)}/">${escapeHtml(p)}</a></li>`).join('')}</ul></main></body></html>`);
         return;
       }
       const slug = parts[0];

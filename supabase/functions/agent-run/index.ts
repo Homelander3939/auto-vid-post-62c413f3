@@ -388,7 +388,7 @@ function inferResearchProvider(provider: string, apiKey: string): string {
   if (/^BSA[A-Za-z0-9_-]{10,}$/i.test(key)) return 'brave';
   // Tavily keys use the tvly- prefix.
   if (/^tvly-[A-Za-z0-9]{10,}$/i.test(key)) return 'tavily';
-  // Serper keys are 64-char hex strings.
+  // Serper keys are often 64-char hex strings; this is still only a heuristic and may false-positive.
   if (/^[a-f0-9]{64}$/i.test(key)) return 'serper';
   // Firecrawl keys use the fc- prefix.
   if (/^fc-[A-Za-z0-9]{10,}$/i.test(key)) return 'firecrawl';
@@ -536,9 +536,9 @@ function inferImageProvider(provider: string, apiKey: string): string {
   if (/^AIza[A-Za-z0-9_-]{20,}$/.test(key)) return 'google';
   // OpenAI keys use sk- / sk-proj- prefixes.
   if (/^sk-(proj-)?[A-Za-z0-9_-]{20,}$/.test(key)) return 'openai';
-  // Pexels keys are long mixed-case alphanumeric strings.
+  // Pexels keys are often long mixed-case alphanumeric strings; provider auto-detection may need updates if formats change.
   if (/^[A-Za-z0-9]{50,60}$/.test(key) && !/^[a-f0-9]+$/i.test(key)) return 'pexels';
-  // Unsplash access keys are shorter mixed-case tokens.
+  // Unsplash access keys are often shorter mixed-case tokens; this is also only a best-effort guess.
   if (/^[A-Za-z0-9_-]{40,48}$/.test(key)) return 'unsplash';
   return 'lovable';
 }
@@ -735,6 +735,16 @@ async function queueLocalCommand(supabase: any, command: string, args: any): Pro
   return await waitForLocalCommand(supabase, data.id);
 }
 
+function validatePlannedToolCall(hasPlan: boolean, callIndex: number, name: string): string | null {
+  if (!hasPlan && name !== 'plan') {
+    return 'You must call plan first before any other tool. Re-issue your next response as a single plan tool call.';
+  }
+  if (callIndex > 0 && name !== 'plan') {
+    return 'Only one non-plan tool call is allowed per turn. Wait for this result, then decide the next tool.';
+  }
+  return null;
+}
+
 /* ── Main agent loop ─────────────────────────────────────────────────── */
 
 async function runAgent(supabase: any, runId: string, lovableKey: string, telegramKey: string | null) {
@@ -880,12 +890,10 @@ You can also call \`save_skill\` after a successful novel routine — it propose
         let toolResultData: any = null;
         let ok = true;
 
-        if (!hasPlan && name !== 'plan') {
+        const plannerViolation = validatePlannedToolCall(hasPlan, callIndex, name);
+        if (plannerViolation) {
           ok = false;
-          toolResultText = 'You must call plan first before any other tool. Re-issue your next response as a single plan tool call.';
-        } else if (callIndex > 0 && name !== 'plan') {
-          ok = false;
-          toolResultText = 'Only one non-plan tool call is allowed per turn. Wait for this result, then decide the next tool.';
+          toolResultText = plannerViolation;
         } else if (name === 'plan') {
           hasPlan = Array.isArray(args.steps) && args.steps.length > 0;
           await appendEvent(supabase, runId, { type: 'plan', steps: args.steps || [] });

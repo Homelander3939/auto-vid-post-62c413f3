@@ -724,13 +724,17 @@ serve(async (req) => {
           images: m.raw_update?.media?.images || [],
           files: m.raw_update?.media?.files || [],
         }));
-      const newestTelegramMessage = ((history || []) as any[]).find((m) => !m.is_bot)
-        || { text: telegram_user_text, raw_update: {} };
+      const newestTelegramMessage = ((history || []) as any[]).find((m) => !m.is_bot);
+      const fallbackTelegramMessage = {
+        text: telegram_user_text,
+        raw_update: { media: { images: [], files: [] } },
+      };
+      const currentTelegramMessage = newestTelegramMessage || fallbackTelegramMessage;
       const currentUserMessage = buildMessageForModel({
         role: 'user',
-        content: newestTelegramMessage.text || telegram_user_text,
-        images: newestTelegramMessage.raw_update?.media?.images || [],
-        files: newestTelegramMessage.raw_update?.media?.files || [],
+        content: currentTelegramMessage.text || telegram_user_text,
+        images: currentTelegramMessage.raw_update?.media?.images || [],
+        files: currentTelegramMessage.raw_update?.media?.files || [],
       });
 
       const fullMessages = [
