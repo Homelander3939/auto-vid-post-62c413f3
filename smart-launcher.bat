@@ -23,7 +23,9 @@ start "LM Studio Load Model" cmd /c "lms load google/gemma-3-27b"
 echo [3/5] Checking Dependencies...
 call npm run ensure-deps
 IF ERRORLEVEL 1 (
-    echo [!] Frontend dependency check failed. Fix the errors above, then run the launcher again.
+    echo [!] Frontend dependency check failed.
+    echo     Make sure this repo is fully updated and package.json still includes the ensure-deps script.
+    echo     Fix the errors above, then run the launcher again.
     pause
     exit /b 1
 ) ELSE (
