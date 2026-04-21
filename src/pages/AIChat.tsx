@@ -80,6 +80,8 @@ const MAX_STORED_MESSAGES = 200;
 const BROWSER_MIRROR_SOURCE = 'browser-mirror';
 const MAX_TEXT_ATTACHMENT_LENGTH = 10_000;
 const AGENT_RUN_MARKER_PREFIX = '__AGENT_RUN__:';
+const AGENT_RUN_MARKER_RE = new RegExp(`${AGENT_RUN_MARKER_PREFIX}([0-9a-f-]+)`, 'g');
+const AGENT_RUN_MARKER_LINE_RE = new RegExp(`${AGENT_RUN_MARKER_PREFIX}[0-9a-f-]+\\n?`, 'g');
 const SUGGESTED_PROMPTS = [
   'Check queued jobs',
   'Show scheduled uploads',
@@ -562,6 +564,7 @@ export default function AIChat() {
           throw new Error(data?.error || error?.message || 'Agent run did not start');
         }
 
+        // Keep the marker on its own line prefix so the chat UI can extract the run ID and mount AgentRunPanel.
         const startedMessage = `${AGENT_RUN_MARKER_PREFIX}${data.runId}
 🚀 Real agent run started.
 
@@ -785,7 +788,7 @@ Open the activity panel on the right if you want to follow the process flow whil
                       </div>
                     )}
 
-                    {msg.role === 'assistant' && msg.content && (msg.content.match(new RegExp(`${AGENT_RUN_MARKER_PREFIX}([0-9a-f-]+)`, 'g')) || []).map((m, idx) => {
+                    {msg.role === 'assistant' && msg.content && (msg.content.match(AGENT_RUN_MARKER_RE) || []).map((m, idx) => {
                       const id = m.replace(AGENT_RUN_MARKER_PREFIX, '');
                       return <div key={idx} className="mb-2 w-full"><AgentRunPanel runId={id} /></div>;
                     })}
@@ -800,7 +803,7 @@ Open the activity panel on the right if you want to follow the process flow whil
                       }`}>
                         {msg.role === 'assistant' ? (
                           <div className="prose prose-sm max-w-none prose-neutral dark:prose-invert [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_code]:text-xs [&_pre]:rounded-lg [&_pre]:bg-muted">
-                            <ReactMarkdown>{msg.content.replace(new RegExp(`${AGENT_RUN_MARKER_PREFIX}[0-9a-f-]+\\n?`, 'g'), '')}</ReactMarkdown>
+                            <ReactMarkdown>{msg.content.replace(AGENT_RUN_MARKER_LINE_RE, '')}</ReactMarkdown>
                           </div>
                         ) : (
                           <span className="whitespace-pre-wrap break-words">{msg.content}</span>

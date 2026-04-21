@@ -66,6 +66,14 @@ const DEFAULT_MEMORY_IMPORTANCE = 60;
 const MIN_MEMORY_IMPORTANCE = 1;
 const MAX_MEMORY_IMPORTANCE = 100;
 
+function clampImportance(value: number) {
+  return Math.min(Math.max(Number(value) || DEFAULT_MEMORY_IMPORTANCE, MIN_MEMORY_IMPORTANCE), MAX_MEMORY_IMPORTANCE);
+}
+
+function getStepDisplayText(step: SkillStep) {
+  return step.note || step.tool || step.description || step.task || step.command || 'Untitled step';
+}
+
 export default function AgentSkills() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [memories, setMemories] = useState<AgentMemory[]>([]);
@@ -275,7 +283,7 @@ export default function AgentSkills() {
       content: memoryDraft.content.trim(),
       memory_type: memoryDraft.memory_type,
       tags: memoryDraft.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
-      importance: Math.min(Math.max(Number(memoryDraft.importance) || DEFAULT_MEMORY_IMPORTANCE, MIN_MEMORY_IMPORTANCE), MAX_MEMORY_IMPORTANCE),
+      importance: clampImportance(memoryDraft.importance),
       enabled: true,
     });
     if (error) {
@@ -381,7 +389,7 @@ export default function AgentSkills() {
                     {p.pending_skill?.steps?.length ? (
                       <ol className="text-xs text-muted-foreground mt-2 ml-4 list-decimal space-y-0.5">
                         {p.pending_skill.steps.slice(0, 5).map((s, i) => (
-                          <li key={i}>{s.note || s.tool || s.description || s.task || s.command}</li>
+                          <li key={i}>{getStepDisplayText(s)}</li>
                         ))}
                       </ol>
                     ) : null}

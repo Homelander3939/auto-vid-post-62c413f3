@@ -10,6 +10,10 @@ describe('agentChat helpers', () => {
     expect(shouldLaunchAgentRun('Suggest three hashtags for my next TikTok post.')).toBe(false);
   });
 
+  it('does not force agent mode for unrelated short research phrasing', () => {
+    expect(shouldLaunchAgentRun('Can you research three hashtags for this post?')).toBe(false);
+  });
+
   it('upgrades text-file workflows into agent runs', () => {
     expect(shouldLaunchAgentRun('Please use the attached brief.', [{
       name: 'brief.md',
