@@ -8,6 +8,7 @@ const corsHeaders = {
 
 const AI_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
+const DIRECT_TOOL_REPLY_NAMES = new Set(['generate_social_post', 'research_web', 'check_platform_stats', 'open_browser', 'run_agent']);
 
 /* ── Tool definitions (full agentic surface) ─────────── */
 
@@ -891,12 +892,29 @@ serve(async (req) => {
             })),
           });
 
+          const directToolReplies: string[] = [];
+
           for (const tc of toolCalls) {
             let args: any = {};
             try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* */ }
             console.log(`Tool: ${tc.function.name}`, args);
             const result = await executeTool(supabase, tc.function.name, args, supabaseUrl, serviceKey);
             fullMessages.push({ role: 'tool', tool_call_id: tc.id || 'call_0', content: result });
+            if (DIRECT_TOOL_REPLY_NAMES.has(tc.function.name)) {
+              directToolReplies.push(result);
+            }
+          }
+
+          if (directToolReplies.length > 0) {
+            // Long-running / queueing tools already return user-facing text (and agent-run IDs),
+            // so we stream that response directly and skip a second AI pass that could hide it.
+            const directReply = directToolReplies.join('\n\n').trim();
+            if (directReply) {
+              const chunk = JSON.stringify({ choices: [{ delta: { content: directReply } }] });
+              await writer.write(encoder.encode(`data: ${chunk}\n\n`));
+            }
+            await writer.write(encoder.encode('data: [DONE]\n\n'));
+            return;
           }
 
           const resp2 = await fetch(AI_GATEWAY, {

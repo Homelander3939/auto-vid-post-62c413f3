@@ -26,7 +26,10 @@ const SKILL_SCORE = {
   genericMarkdown: 20,
 } as const;
 
-const IMPORTABLE_TEXT_FILE_RE = /\.(json|md|txt|yaml|yml|toml)$/i;
+const IMPORTABLE_TEXT_FILE_RE = /\.(json|md|txt|yaml|yml|toml|prompt|skill|agent|instructions)$/i;
+// Cap branch/path split attempts for GitHub tree/blob URLs so deeply nested paths
+// do not fan out into excessive API calls while still covering common slashy branch names.
+const MAX_MODE_PATH_CANDIDATES = 6;
 
 type SkillRecord = {
   name: string;
@@ -43,17 +46,26 @@ function slugify(s: string): string {
   return (s || 'skill').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'skill';
 }
 
-function parseGitHubRepo(url: string): { owner: string; repo: string; branch?: string; path?: string } | null {
+function parseGitHubRepo(url: string): { owner: string; repo: string; branch?: string; path?: string; mode?: 'tree' | 'blob'; refSegments?: string[] } | null {
   let parsed: URL;
   try { parsed = new URL(url); } catch { return null; }
   if (!['github.com', 'www.github.com'].includes(parsed.hostname)) return null;
-  const m = parsed.pathname.match(/^\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/(?:tree|blob)\/([^/]+)(?:\/(.+))?)?\/?$/);
-  if (!m) return null;
+  const segments = parsed.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (segments.length < 2) return null;
+  const owner = segments[0];
+  const repo = (segments[1] || '').replace(/\.git$/, '');
+  if (!owner || !repo) return null;
+
+  const mode = segments[2] === 'tree' || segments[2] === 'blob' ? segments[2] : undefined;
+  const remainder = mode ? segments.slice(3) : [];
+
   return {
-    owner: m[1],
-    repo: m[2],
-    branch: m[3],
-    path: m[4] || '',
+    owner,
+    repo,
+    branch: remainder[0],
+    path: remainder.slice(1).join('/'),
+    mode,
+    refSegments: remainder,
   };
 }
 
@@ -82,6 +94,7 @@ function scoreSkillPath(filePath: string) {
   if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && normalizedPath.endsWith('.md')) return SKILL_SCORE.markdownSkillFolder;
   if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && /\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.structuredSkillFolder;
   if (/(\.prompt|\.skill|\.agent)\.(md|yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.explicitPromptFile;
+  if (/\.(prompt|skill|agent|instructions)$/i.test(normalizedPath)) return SKILL_SCORE.explicitPromptFile;
   if (/(agents|claude|hermes|openclaw)\.md$/i.test(normalizedPath)) return SKILL_SCORE.namedMarkdownAgent;
   if (/(agents|claude|hermes|openclaw)\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.namedStructuredAgent;
   if (normalizedPath.endsWith('.json')) return SKILL_SCORE.genericJson;
@@ -362,6 +375,19 @@ function buildProbableRepoPaths(basePath: string): string[] {
   ].filter((value, index, arr) => arr.indexOf(value) === index && IMPORTABLE_TEXT_FILE_RE.test(value));
 }
 
+function buildModePathCandidates(parsed: { mode?: 'tree' | 'blob'; refSegments?: string[] }): Array<{ branch: string; path: string }> {
+  const segments = Array.isArray(parsed.refSegments) ? parsed.refSegments.filter(Boolean) : [];
+  if (!parsed.mode || segments.length < 2) return [];
+  const candidates: Array<{ branch: string; path: string }> = [];
+  // Start at 1 because we need at least one segment for the branch/ref name and one for the file path.
+  for (let i = 1; i < segments.length && candidates.length < MAX_MODE_PATH_CANDIDATES; i += 1) {
+    const branch = segments.slice(0, i).join('/');
+    const path = segments.slice(i).join('/');
+    if (branch && path) candidates.push({ branch, path });
+  }
+  return candidates;
+}
+
 function dedupeSkillRecords(skillRecords: SkillRecord[]): SkillRecord[] {
   const seen = new Set<string>();
   return skillRecords.filter((record) => {
@@ -421,6 +447,13 @@ async function fetchRepoSkills(url: string): Promise<SkillRecord[]> {
 
   const candidateBranches = [parsed.branch, defaultBranch, 'main', 'master']
     .filter((branch, index, arr): branch is string => !!branch && arr.indexOf(branch) === index);
+
+  for (const candidate of buildModePathCandidates(parsed)) {
+    const directFromMode = await tryFetchSkillCandidates(parsed.owner, parsed.repo, [candidate.branch, ...candidateBranches], [candidate.path]);
+    if (directFromMode.length > 0) return directFromMode;
+    const probableFromMode = await tryFetchSkillCandidates(parsed.owner, parsed.repo, [candidate.branch, ...candidateBranches], buildProbableRepoPaths(candidate.path));
+    if (probableFromMode.length > 0) return probableFromMode;
+  }
 
   if (parsed.path && IMPORTABLE_TEXT_FILE_RE.test(parsed.path)) {
     const direct = await tryFetchSkillCandidates(parsed.owner, parsed.repo, candidateBranches, [parsed.path]);

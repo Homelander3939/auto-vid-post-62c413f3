@@ -46,7 +46,7 @@ interface AgentMemory {
   created_at: string;
 }
 
-const IMPORTABLE_ZIP_ENTRY_RE = /\.(json|md|txt|yaml|yml|toml)$/i;
+const IMPORTABLE_ZIP_ENTRY_RE = /\.(json|md|txt|yaml|yml|toml|prompt|skill|agent|instructions)$/i;
 
 export default function AgentSkills() {
   const [skills, setSkills] = useState<Skill[]>([]);
