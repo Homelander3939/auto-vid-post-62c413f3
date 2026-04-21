@@ -10,31 +10,44 @@ const packageLockPath = path.join(rootDir, 'package-lock.json');
 const nodeModulesPath = path.join(rootDir, 'node_modules');
 const installedLockPath = path.join(nodeModulesPath, '.package-lock.json');
 
-function hasMissingDependency() {
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-  const dependencyNames = Object.keys(packageJson.dependencies || {});
-  return dependencyNames.some((name) => !existsSync(path.join(nodeModulesPath, name)));
+function readPackageJson() {
+  return JSON.parse(readFileSync(packageJsonPath, 'utf8'));
 }
 
-function needsInstall() {
-  if (!existsSync(nodeModulesPath)) return true;
-  if (hasMissingDependency()) return true;
-  if (!existsSync(packageLockPath) || !existsSync(installedLockPath)) return true;
-  return statSync(packageLockPath).mtimeMs > statSync(installedLockPath).mtimeMs;
+export function hasMissingDependency(dependencies = {}, modulesPath = nodeModulesPath, pathExists = existsSync) {
+  return Object.keys(dependencies || {}).some((name) => !pathExists(path.join(modulesPath, name)));
 }
 
-if (!needsInstall()) {
-  process.exit(0);
+export function needsInstall({
+  dependencies = readPackageJson().dependencies,
+  modulesPath = nodeModulesPath,
+  lockPath = packageLockPath,
+  installedLock = installedLockPath,
+  pathExists = existsSync,
+  getStat = statSync,
+} = {}) {
+  if (!pathExists(modulesPath)) return true;
+  if (hasMissingDependency(dependencies, modulesPath, pathExists)) return true;
+  if (!pathExists(lockPath) || !pathExists(installedLock)) return true;
+  return getStat(lockPath).mtimeMs > getStat(installedLock).mtimeMs;
 }
 
-console.log('[setup] Frontend dependencies changed. Running npm install...');
+export function ensureDeps(runInstall = () => {
+  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  return spawnSync(npmCommand, ['install'], {
+    cwd: rootDir,
+    stdio: 'inherit',
+  });
+}) {
+  if (!needsInstall()) {
+    return 0;
+  }
 
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const install = spawnSync(npmCommand, ['install'], {
-  cwd: rootDir,
-  stdio: 'inherit',
-});
+  console.log('[setup] Frontend dependencies changed. Running npm install...');
+  const install = runInstall();
+  return install.status ?? 1;
+}
 
-if (install.status !== 0) {
-  process.exit(install.status ?? 1);
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.exit(ensureDeps());
 }
