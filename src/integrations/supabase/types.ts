@@ -22,8 +22,10 @@ export type Database = {
           events: Json
           id: string
           model: string
+          pending_skill: Json | null
           prompt: string
           result: Json | null
+          skill_id: string | null
           source: string
           status: string
           telegram_chat_id: string | null
@@ -38,8 +40,10 @@ export type Database = {
           events?: Json
           id?: string
           model?: string
+          pending_skill?: Json | null
           prompt?: string
           result?: Json | null
+          skill_id?: string | null
           source?: string
           status?: string
           telegram_chat_id?: string | null
@@ -54,14 +58,79 @@ export type Database = {
           events?: Json
           id?: string
           model?: string
+          pending_skill?: Json | null
           prompt?: string
           result?: Json | null
+          skill_id?: string | null
           source?: string
           status?: string
           telegram_chat_id?: string | null
           telegram_status_message_id?: number | null
           updated_at?: string
           workspace_path?: string
+        }
+        Relationships: []
+      }
+      agent_skills: {
+        Row: {
+          created_at: string
+          description: string
+          enabled: boolean
+          id: string
+          is_routine: boolean
+          last_used_at: string | null
+          name: string
+          routine_cron: string | null
+          routine_last_run_at: string | null
+          slug: string
+          source: string
+          source_url: string | null
+          steps: Json
+          system_prompt: string
+          tags: string[]
+          triggers: string[]
+          updated_at: string
+          use_count: number
+        }
+        Insert: {
+          created_at?: string
+          description?: string
+          enabled?: boolean
+          id?: string
+          is_routine?: boolean
+          last_used_at?: string | null
+          name: string
+          routine_cron?: string | null
+          routine_last_run_at?: string | null
+          slug: string
+          source?: string
+          source_url?: string | null
+          steps?: Json
+          system_prompt?: string
+          tags?: string[]
+          triggers?: string[]
+          updated_at?: string
+          use_count?: number
+        }
+        Update: {
+          created_at?: string
+          description?: string
+          enabled?: boolean
+          id?: string
+          is_routine?: boolean
+          last_used_at?: string | null
+          name?: string
+          routine_cron?: string | null
+          routine_last_run_at?: string | null
+          slug?: string
+          source?: string
+          source_url?: string | null
+          steps?: Json
+          system_prompt?: string
+          tags?: string[]
+          triggers?: string[]
+          updated_at?: string
+          use_count?: number
         }
         Relationships: []
       }
