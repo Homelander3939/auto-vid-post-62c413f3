@@ -383,6 +383,8 @@ function inferResearchProvider(provider: string, apiKey: string): string {
   if (provider && provider !== 'auto') return provider;
   // Heuristic only for auto mode. The Settings UI auto-detects providers earlier,
   // so these regexes are only best-effort guesses when a key exists but the provider stayed on auto.
+  // Precedence is Brave → Tavily → Serper → Firecrawl → local fallback.
+  // If nothing matches confidently, we fall back to the local browser-backed search worker.
   const key = String(apiKey || '').trim();
   // Brave Search API keys usually start with BSA...
   if (/^BSA[A-Za-z0-9_-]{10,}$/i.test(key)) return 'brave';
@@ -440,7 +442,12 @@ async function searchFirecrawl(apiKey: string, query: string, count = 6): Promis
 async function searchLocalViaCommand(supabase: any, query: string, count = 6): Promise<ResearchSource[]> {
   const queued = await queueLocalCommand(supabase, 'research_search', { query, count });
   if (!queued.ok) throw new Error(typeof queued.result === 'string' ? queued.result : 'Local research worker failed');
-  const result = queued.result?.results || queued.result?.result?.results || [];
+  const normalizedResult = Array.isArray(queued.result?.results)
+    ? queued.result.results
+    : Array.isArray(queued.result?.result?.results)
+      ? queued.result.result.results
+      : [];
+  const result = normalizedResult;
   return (Array.isArray(result) ? result : []).map((item: any) => ({
     title: item.title || item.url || 'Untitled result',
     url: item.url,
@@ -527,6 +534,8 @@ function inferImageProvider(provider: string, apiKey: string): string {
   if (provider && provider !== 'auto') return provider;
   // Heuristic only for auto mode. Prefer the explicit saved provider whenever present;
   // these regexes are only best-effort guesses when the provider stayed on auto.
+  // Precedence is xAI → NVIDIA → Google → OpenAI → Pexels → Unsplash → Lovable fallback.
+  // The final Pexels/Unsplash checks are intentionally low-confidence fallbacks based mostly on token shape.
   const key = String(apiKey || '').trim();
   // xAI keys use the xai- prefix.
   if (/^xai-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'xai';

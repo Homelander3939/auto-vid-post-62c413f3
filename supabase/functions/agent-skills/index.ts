@@ -77,6 +77,16 @@ function inferSkillTags(filePath: string, text: string): string[] {
   return [...tags];
 }
 
+function pathContainsFrameworkName(filePath: string, framework: string): boolean {
+  const lower = filePath.toLowerCase();
+  const segments = lower.split('/').filter(Boolean);
+  const baseName = segments[segments.length - 1] || '';
+  return segments.some((segment) => segment === framework || segment.startsWith(`${framework}.`) || segment.startsWith(`${framework}-`))
+    || baseName === framework
+    || baseName.startsWith(`${framework}.`)
+    || baseName.startsWith(`${framework}-`);
+}
+
 function inferTriggersFromPath(filePath: string, name: string): string[] {
   const fileName = filePath.split('/').pop() || '';
   const stem = fileName.replace(/\.(json|md|txt|yaml|yml|toml)$/i, '');
@@ -293,8 +303,8 @@ async function fetchRepoSkills(url: string): Promise<any[]> {
     // Higher scores mean "more likely to be an explicit reusable skill definition".
     // This prioritizes canonical manifests first, then known framework layouts, then generic prompts.
     if (path.endsWith('skill.json')) return SKILL_SCORE.skillJson;
-    if (path.includes('openclaw') && /\.(json|yaml|yml|md)$/i.test(path)) return SKILL_SCORE.frameworkManifest;
-    if (path.includes('hermes') && /\.(json|yaml|yml|md)$/i.test(path)) return SKILL_SCORE.frameworkManifest;
+    if (pathContainsFrameworkName(path, 'openclaw') && /\.(json|yaml|yml|md)$/i.test(path)) return SKILL_SCORE.frameworkManifest;
+    if (pathContainsFrameworkName(path, 'hermes') && /\.(json|yaml|yml|md)$/i.test(path)) return SKILL_SCORE.frameworkManifest;
     if (path.includes('.claude/commands/') && path.endsWith('.md')) return SKILL_SCORE.claudeCommand;
     if ((path.includes('/commands/') || path.includes('/agents/') || path.includes('/recipes/')) && /\.(yaml|yml|md)$/i.test(path)) return SKILL_SCORE.structuredAgentPrompt;
     if ((path.includes('/skills/') || path.includes('/prompts/') || path.includes('/agents/')) && path.endsWith('.md')) return SKILL_SCORE.markdownSkillFolder;

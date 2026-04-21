@@ -66,6 +66,24 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function renderWorkspaceIndex(projects) {
+  const items = projects
+    .map((project) => `<li><a href="/${encodeURIComponent(project)}/">${escapeHtml(project)}</a></li>`)
+    .join('');
+  return [
+    '<!DOCTYPE html>',
+    '<html lang="en">',
+    '<head><meta charset="utf-8"><title>Agent Workspace</title></head>',
+    '<body>',
+    '<main>',
+    '<h1>Agent Workspace</h1>',
+    `<ul aria-label="Available agent projects">${items}</ul>`,
+    '</main>',
+    '</body>',
+    '</html>',
+  ].join('');
+}
+
 async function startPreviewServer(workspaceRoot) {
   const root = ensureRoot(workspaceRoot);
   const existing = previewServers.get(root);
@@ -79,7 +97,7 @@ async function startPreviewServer(workspaceRoot) {
       if (parts.length === 0) {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         const projects = fs.readdirSync(root).filter((d) => fs.statSync(path.join(root, d)).isDirectory());
-        res.end(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Agent Workspace</title></head><body><main><h1>Agent Workspace</h1><ul aria-label="Available agent projects">${projects.map((p) => `<li><a href="/${encodeURIComponent(p)}/">${escapeHtml(p)}</a></li>`).join('')}</ul></main></body></html>`);
+        res.end(renderWorkspaceIndex(projects));
         return;
       }
       const slug = parts[0];
