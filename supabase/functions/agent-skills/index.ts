@@ -26,6 +26,19 @@ const SKILL_SCORE = {
   genericMarkdown: 20,
 } as const;
 
+const IMPORTABLE_TEXT_FILE_RE = /\.(json|md|txt|yaml|yml|toml)$/i;
+
+type SkillRecord = {
+  name: string;
+  description: string;
+  triggers: string[];
+  steps: Array<{ note?: string; tool?: string; [key: string]: unknown }>;
+  system_prompt: string;
+  tags: string[];
+  source_url: string;
+  slug?: string;
+};
+
 function slugify(s: string): string {
   return (s || 'skill').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'skill';
 }
@@ -55,6 +68,26 @@ function isRawGitHubContentUrl(url: string): boolean {
 
 function toRawGitHubUrl(owner: string, repo: string, branch: string, filePath: string) {
   return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath.replace(/^\/+/, '')}`;
+}
+
+function scoreSkillPath(filePath: string) {
+  const normalizedPath = filePath.toLowerCase();
+  // Higher scores mean "more likely to be an explicit reusable skill definition".
+  // This prioritizes canonical manifests first, then known framework layouts, then generic prompts.
+  if (normalizedPath.endsWith('skill.json')) return SKILL_SCORE.skillJson;
+  if (pathContainsFrameworkName(normalizedPath, 'openclaw') && /\.(json|yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.frameworkManifest;
+  if (pathContainsFrameworkName(normalizedPath, 'hermes') && /\.(json|yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.frameworkManifest;
+  if (normalizedPath.includes('.claude/commands/') && normalizedPath.endsWith('.md')) return SKILL_SCORE.claudeCommand;
+  if ((normalizedPath.includes('/commands/') || normalizedPath.includes('/agents/') || normalizedPath.includes('/recipes/')) && /\.(yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.structuredAgentPrompt;
+  if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && normalizedPath.endsWith('.md')) return SKILL_SCORE.markdownSkillFolder;
+  if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && /\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.structuredSkillFolder;
+  if (/(\.prompt|\.skill|\.agent)\.(md|yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.explicitPromptFile;
+  if (/(agents|claude|hermes|openclaw)\.md$/i.test(normalizedPath)) return SKILL_SCORE.namedMarkdownAgent;
+  if (/(agents|claude|hermes|openclaw)\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.namedStructuredAgent;
+  if (normalizedPath.endsWith('.json')) return SKILL_SCORE.genericJson;
+  if (/\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.genericStructured;
+  if (normalizedPath.endsWith('.md')) return SKILL_SCORE.genericMarkdown;
+  return 0;
 }
 
 function splitListLike(value: unknown): string[] {
@@ -137,7 +170,7 @@ function parseLooseKeyValueText(text: string): Record<string, string | string[]>
   return parsed;
 }
 
-function parseMarkdownSkill(raw: string, sourceUrl: string, filePath: string) {
+function parseMarkdownSkill(raw: string, sourceUrl: string, filePath: string): SkillRecord {
   let text = String(raw || '');
   const frontmatterMatch = text.match(/^---\n([\s\S]*?)\n---\n?/);
   const frontmatter: Record<string, string | string[]> = {};
@@ -187,7 +220,7 @@ function parseMarkdownSkill(raw: string, sourceUrl: string, filePath: string) {
   };
 }
 
-function normalizeSkillRecord(raw: any, sourceUrl: string, fallbackName: string) {
+function normalizeSkillRecord(raw: any, sourceUrl: string, fallbackName: string): SkillRecord {
   const metadata = raw.metadata || raw.meta || {};
   const promptMessages = Array.isArray(raw.messages)
     ? raw.messages.map((msg: any) => msg?.content || msg?.text || '').filter(Boolean).join('\n\n')
@@ -237,7 +270,7 @@ function normalizeSkillRecord(raw: any, sourceUrl: string, fallbackName: string)
   };
 }
 
-function parseStructuredSkillFile(raw: string, sourceUrl: string, filePath: string) {
+function parseStructuredSkillFile(raw: string, sourceUrl: string, filePath: string): SkillRecord {
   const parsed = parseLooseKeyValueText(raw);
   const name = String(parsed.name || parsed.title || filePath.split('/').pop()?.replace(/\.(yaml|yml|toml)$/i, '') || 'Imported Skill');
   const description = String(parsed.description || parsed.summary || parsed.purpose || '').trim();
@@ -261,101 +294,171 @@ function parseStructuredSkillFile(raw: string, sourceUrl: string, filePath: stri
   };
 }
 
-async function fetchRepoSkills(url: string): Promise<any[]> {
+function parseSkillTextFile(text: string, sourceUrl: string, filePath: string): SkillRecord[] {
+  try {
+    const json = JSON.parse(text);
+    const baseName = slugify(filePath.split('/').pop() || 'skill') || 'skill';
+    const records = Array.isArray(json)
+      ? json
+      : Array.isArray(json.skills) ? json.skills
+        : Array.isArray(json.agents) ? json.agents
+          : Array.isArray(json.commands) ? json.commands
+            : [json];
+    return records.map((record, index) => normalizeSkillRecord(record, sourceUrl, `${baseName}-${index + 1}`));
+  } catch {
+    return [/\.(yaml|yml|toml)$/i.test(filePath)
+      ? parseStructuredSkillFile(text, sourceUrl, filePath)
+      : parseMarkdownSkill(text, sourceUrl, filePath)];
+  }
+}
+
+async function tryFetchRawSkillFile(owner: string, repo: string, branch: string, filePath: string): Promise<SkillRecord[]> {
+  const rawUrl = toRawGitHubUrl(owner, repo, branch, filePath);
+  const resp = await fetch(rawUrl);
+  if (!resp.ok) return [];
+  const text = await resp.text();
+  return parseSkillTextFile(text, rawUrl, filePath)
+    .filter((record) => record.system_prompt || record.steps.length > 0);
+}
+
+async function tryFetchSkillCandidates(owner: string, repo: string, branches: string[], filePaths: string[]): Promise<SkillRecord[]> {
+  const seen = new Set<string>();
+  for (const branch of branches) {
+    for (const filePath of filePaths) {
+      const normalized = filePath.replace(/^\/+/, '');
+      const key = `${branch}:${normalized}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const imported = await tryFetchRawSkillFile(owner, repo, branch, normalized);
+      if (imported.length > 0) return imported;
+    }
+  }
+  return [];
+}
+
+function buildProbableRepoPaths(basePath: string): string[] {
+  const normalizedBase = basePath.replace(/^\/+|\/+$/g, '');
+  if (!normalizedBase) return [];
+  const leaf = normalizedBase.split('/').filter(Boolean).pop() || 'skill';
+  return [
+    normalizedBase,
+    `${normalizedBase}/skill.json`,
+    `${normalizedBase}/README.md`,
+    `${normalizedBase}/readme.md`,
+    `${normalizedBase}/index.md`,
+    `${normalizedBase}/prompt.md`,
+    `${normalizedBase}/agent.md`,
+    `${normalizedBase}/agent.yaml`,
+    `${normalizedBase}/agent.yml`,
+    `${normalizedBase}/agent.toml`,
+    `${normalizedBase}/claude.md`,
+    `${normalizedBase}/hermes.md`,
+    `${normalizedBase}/openclaw.md`,
+    `${normalizedBase}/${leaf}.json`,
+    `${normalizedBase}/${leaf}.md`,
+    `${normalizedBase}/${leaf}.yaml`,
+    `${normalizedBase}/${leaf}.yml`,
+    `${normalizedBase}/${leaf}.toml`,
+  ].filter((value, index, arr) => arr.indexOf(value) === index && IMPORTABLE_TEXT_FILE_RE.test(value));
+}
+
+function dedupeSkillRecords(skillRecords: SkillRecord[]): SkillRecord[] {
+  const seen = new Set<string>();
+  return skillRecords.filter((record) => {
+    const key = JSON.stringify([record.source_url || '', record.name || '', record.system_prompt || '']);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function parseBundledSkillFiles(files: Array<{ path: string; content: string }>, sourceName: string): SkillRecord[] {
+  const installed: SkillRecord[] = [];
+  const candidates = files
+    .filter((file) => typeof file?.path === 'string' && typeof file?.content === 'string')
+    .map((file) => ({ ...file, score: scoreSkillPath(file.path) }))
+    .filter((file) => file.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 24);
+
+  for (const file of candidates) {
+    const sourceUrl = `https://zip-import.local/${encodeURIComponent(sourceName)}/${file.path.replace(/^\/+/, '')}`;
+    const parsed = parseSkillTextFile(file.content, sourceUrl, file.path)
+      .filter((record) => record.system_prompt || record.steps.length > 0);
+    installed.push(...parsed);
+  }
+
+  if (installed.length === 0) {
+    throw new Error('No importable skills found in that ZIP file.');
+  }
+
+  return dedupeSkillRecords(installed);
+}
+
+async function fetchRepoSkills(url: string): Promise<SkillRecord[]> {
   if (isRawGitHubContentUrl(url)) {
     const r = await fetch(url);
     if (!r.ok) throw new Error(`Could not fetch ${url}: ${r.status}`);
     const text = await r.text();
-    try {
-      const json = JSON.parse(text);
-      const records = Array.isArray(json)
-        ? json
-        : Array.isArray(json.skills) ? json.skills
-          : Array.isArray(json.agents) ? json.agents
-            : Array.isArray(json.commands) ? json.commands
-              : [json];
-      return records.map((record, index) => normalizeSkillRecord(record, url, `Imported Skill ${index + 1}`));
-    } catch {
-      const fileName = url.split('/').pop() || 'skill.md';
-      return [/\.(yaml|yml|toml)$/i.test(fileName)
-        ? parseStructuredSkillFile(text, url, fileName)
-        : parseMarkdownSkill(text, url, fileName)];
-    }
+    const imported = parseSkillTextFile(text, url, url.split('/').pop() || 'skill.md')
+      .filter((record) => record.system_prompt || record.steps.length > 0);
+    if (imported.length === 0) throw new Error('No importable skills found in that file.');
+    return imported;
   }
 
   const parsed = parseGitHubRepo(url);
   if (!parsed) throw new Error('Unsupported URL. Use a GitHub repo URL, blob URL, or raw file URL.');
+  let defaultBranch = parsed.branch || 'main';
+  try {
+    const repoResp = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}`);
+    if (repoResp.ok) {
+      const repoMeta = await repoResp.json();
+      defaultBranch = parsed.branch || repoMeta.default_branch || defaultBranch;
+    }
+  } catch {
+    // Best-effort only — raw.githubusercontent fallback below can still work.
+  }
 
-  const repoResp = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}`);
-  if (!repoResp.ok) throw new Error(`Could not inspect GitHub repo: ${repoResp.status}`);
-  const repoMeta = await repoResp.json();
-  const branch = parsed.branch || repoMeta.default_branch || 'main';
+  const candidateBranches = [parsed.branch, defaultBranch, 'main', 'master']
+    .filter((branch, index, arr): branch is string => !!branch && arr.indexOf(branch) === index);
 
-  const treeResp = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
-  if (!treeResp.ok) throw new Error(`Could not list repo files: ${treeResp.status}`);
-  const treeData = await treeResp.json();
-  const tree = Array.isArray(treeData.tree) ? treeData.tree : [];
+  if (parsed.path && IMPORTABLE_TEXT_FILE_RE.test(parsed.path)) {
+    const direct = await tryFetchSkillCandidates(parsed.owner, parsed.repo, candidateBranches, [parsed.path]);
+    if (direct.length > 0) return direct;
+  }
+
+  if (parsed.path) {
+    const probable = await tryFetchSkillCandidates(parsed.owner, parsed.repo, candidateBranches, buildProbableRepoPaths(parsed.path));
+    if (probable.length > 0) return probable;
+  }
+
+  let tree: any[] = [];
+  try {
+    const treeResp = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(defaultBranch)}?recursive=1`);
+    if (treeResp.ok) {
+      const treeData = await treeResp.json();
+      tree = Array.isArray(treeData.tree) ? treeData.tree : [];
+    }
+  } catch {
+    // fall through to final error below
+  }
+
   const basePath = parsed.path ? parsed.path.replace(/\/$/, '') : '';
   const filtered = tree.filter((entry: any) => entry.type === 'blob' && (!basePath || String(entry.path || '').startsWith(basePath)));
-
-  const scoreFile = (filePath: string) => {
-    const normalizedPath = filePath.toLowerCase();
-    // Higher scores mean "more likely to be an explicit reusable skill definition".
-    // This prioritizes canonical manifests first, then known framework layouts, then generic prompts.
-    if (normalizedPath.endsWith('skill.json')) return SKILL_SCORE.skillJson;
-    if (pathContainsFrameworkName(normalizedPath, 'openclaw') && /\.(json|yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.frameworkManifest;
-    if (pathContainsFrameworkName(normalizedPath, 'hermes') && /\.(json|yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.frameworkManifest;
-    if (normalizedPath.includes('.claude/commands/') && normalizedPath.endsWith('.md')) return SKILL_SCORE.claudeCommand;
-    if ((normalizedPath.includes('/commands/') || normalizedPath.includes('/agents/') || normalizedPath.includes('/recipes/')) && /\.(yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.structuredAgentPrompt;
-    if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && normalizedPath.endsWith('.md')) return SKILL_SCORE.markdownSkillFolder;
-    if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && /\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.structuredSkillFolder;
-    if (/(\.prompt|\.skill|\.agent)\.(md|yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.explicitPromptFile;
-    if (/(agents|claude|hermes|openclaw)\.md$/i.test(normalizedPath)) return SKILL_SCORE.namedMarkdownAgent;
-    if (/(agents|claude|hermes|openclaw)\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.namedStructuredAgent;
-    if (normalizedPath.endsWith('.json')) return SKILL_SCORE.genericJson;
-    if (/\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.genericStructured;
-    if (normalizedPath.endsWith('.md')) return SKILL_SCORE.genericMarkdown;
-    return 0;
-  };
-
   const candidates = filtered
-    .map((entry: any) => ({ ...entry, score: scoreFile(String(entry.path || '')) }))
+    .map((entry: any) => ({ ...entry, score: scoreSkillPath(String(entry.path || '')) }))
     .filter((entry: any) => entry.score > 0)
     .sort((a: any, b: any) => b.score - a.score)
     .slice(0, 12);
 
-  if (candidates.length === 0) {
-    throw new Error('No recognizable skill files found in that repository.');
-  }
-
   const installed: any[] = [];
   for (const candidate of candidates) {
-    const rawUrl = toRawGitHubUrl(parsed.owner, parsed.repo, branch, candidate.path);
-    const r = await fetch(rawUrl);
-    if (!r.ok) continue;
-      const text = await r.text();
-      try {
-        const json = JSON.parse(text);
-        const records = Array.isArray(json)
-          ? json
-          : Array.isArray(json.skills) ? json.skills
-            : Array.isArray(json.agents) ? json.agents
-              : Array.isArray(json.commands) ? json.commands
-                : [json];
-        for (const [index, record] of records.entries()) {
-          const normalized = normalizeSkillRecord(record, rawUrl, `${candidate.path.split('/').pop() || 'skill'} ${index + 1}`);
-          if (normalized.system_prompt || normalized.steps.length > 0) installed.push(normalized);
-        }
-      } catch {
-        const parsedSkill = /\.(yaml|yml|toml)$/i.test(candidate.path)
-          ? parseStructuredSkillFile(text, rawUrl, candidate.path)
-          : parseMarkdownSkill(text, rawUrl, candidate.path);
-        if (parsedSkill.system_prompt || parsedSkill.steps.length > 0) installed.push(parsedSkill);
-      }
+    const imported = await tryFetchRawSkillFile(parsed.owner, parsed.repo, defaultBranch, candidate.path);
+    installed.push(...imported);
   }
 
-  if (installed.length === 0) throw new Error('No importable skills found in that repository.');
-  return installed;
+  if (installed.length > 0) return dedupeSkillRecords(installed);
+  throw new Error('No importable skills found from that link. Try a direct raw file URL or upload a ZIP export instead.');
 }
 
 async function insertSkills(supabase: any, skillRecords: any[]) {
@@ -399,6 +502,21 @@ serve(async (req) => {
       const imported = await fetchRepoSkills(url);
       const installed = await insertSkills(supabase, imported);
 
+      return new Response(JSON.stringify({
+        ok: true,
+        skill: installed[0],
+        skills: installed,
+        count: installed.length,
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (body.action === 'install_bundle') {
+      const { files, sourceName } = body;
+      if (!Array.isArray(files) || files.length === 0) throw new Error('files are required');
+      const imported = parseBundledSkillFiles(files, sourceName || 'skills.zip');
+      const installed = await insertSkills(supabase, imported);
       return new Response(JSON.stringify({
         ok: true,
         skill: installed[0],

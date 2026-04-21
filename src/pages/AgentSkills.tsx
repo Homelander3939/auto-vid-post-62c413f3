@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -7,8 +7,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Sparkles, Github, Play, Trash2, Plus, CheckCircle2, BookOpen, Loader2, Brain } from 'lucide-react';
+import { Sparkles, Github, Play, Trash2, Plus, CheckCircle2, BookOpen, Loader2, Brain, Upload } from 'lucide-react';
 import { toast } from 'sonner';
+import JSZip from 'jszip';
 
 interface Skill {
   id: string;
@@ -45,6 +46,8 @@ interface AgentMemory {
   created_at: string;
 }
 
+const IMPORTABLE_ZIP_ENTRY_RE = /\.(json|md|txt|yaml|yml|toml)$/i;
+
 export default function AgentSkills() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [memories, setMemories] = useState<AgentMemory[]>([]);
@@ -55,6 +58,7 @@ export default function AgentSkills() {
   const [createOpen, setCreateOpen] = useState(false);
   const [running, setRunning] = useState<string | null>(null);
   const [draft, setDraft] = useState({ name: '', description: '', triggers: '', system_prompt: '', steps: '' });
+  const zipInputRef = useRef<HTMLInputElement>(null);
 
   const load = async () => {
     setLoading(true);
@@ -95,6 +99,41 @@ export default function AgentSkills() {
     } catch (e: any) {
       toast.error(`Install failed: ${e.message}`);
     } finally {
+      setInstalling(false);
+    }
+  };
+
+  const installFromZip = async (file: File) => {
+    setInstalling(true);
+    try {
+      const zip = await JSZip.loadAsync(file);
+      const importableEntries = Object.values(zip.files)
+        .filter((entry) => !entry.dir)
+        .filter((entry) => !entry.name.startsWith('__MACOSX/'))
+        .filter((entry) => IMPORTABLE_ZIP_ENTRY_RE.test(entry.name))
+        .slice(0, 40);
+
+      if (importableEntries.length === 0) {
+        throw new Error('No importable skill files found in that ZIP. Include JSON, Markdown, YAML, TOML, or TXT skill files.');
+      }
+
+      const files = await Promise.all(importableEntries.map(async (entry) => ({
+        path: entry.name,
+        content: await entry.async('string'),
+      })));
+
+      const { data, error } = await supabase.functions.invoke('agent-skills', {
+        body: { action: 'install_bundle', sourceName: file.name, files },
+      });
+      if (error || data?.error) throw new Error(data?.error || error?.message);
+      const installedCount = Number(data?.count || (Array.isArray(data?.skills) ? data.skills.length : 0)) || 1;
+      toast.success(installedCount > 1 ? `Installed ${installedCount} skills from ZIP` : `Installed: ${data.skill.name}`);
+      load();
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : 'ZIP install failed';
+      toast.error(message);
+    } finally {
+      if (zipInputRef.current) zipInputRef.current.value = '';
       setInstalling(false);
     }
   };
@@ -204,7 +243,7 @@ export default function AgentSkills() {
         <p className="text-xs text-muted-foreground mb-3">
           Paste a repo URL or raw file URL. The importer now scans common skill layouts such as <code className="text-[10px] bg-secondary px-1 rounded">skill.json</code>, <code className="text-[10px] bg-secondary px-1 rounded">skills/</code>, <code className="text-[10px] bg-secondary px-1 rounded">agents/</code>, <code className="text-[10px] bg-secondary px-1 rounded">commands/</code>, and Claude/OpenClaw/Hermes prompt files.
         </p>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Input
             placeholder="https://github.com/owner/repo  or  raw skill.json URL"
             value={installUrl}
@@ -214,7 +253,24 @@ export default function AgentSkills() {
           <Button onClick={installFromGithub} disabled={installing || !installUrl.trim()}>
             {installing ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Install'}
           </Button>
+          <input
+            ref={zipInputRef}
+            type="file"
+            accept=".zip,application/zip"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void installFromZip(file);
+            }}
+          />
+          <Button variant="outline" onClick={() => zipInputRef.current?.click()} disabled={installing}>
+            {installing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4 mr-1.5" />}
+            Upload ZIP
+          </Button>
         </div>
+        <p className="text-[11px] text-muted-foreground mt-2">
+          If a GitHub link cannot be imported, upload a ZIP export and the app will scan the archive for skills automatically.
+        </p>
       </Card>
 
       {/* Pending proposals from agent runs */}

@@ -33,6 +33,17 @@ interface Msg {
   images?: { url: string }[];
 }
 
+const APP_CHAT_STORAGE_KEY = 'ai-chat-browser-history-v1';
+const MAX_STORED_MESSAGES = 200;
+const BROWSER_MIRROR_SOURCE = 'browser-mirror';
+
+function isStoredMessage(value: unknown): value is Msg {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<Msg>;
+  return (record.role === 'user' || record.role === 'assistant')
+    && typeof record.content === 'string';
+}
+
 /* ── Stream helper — routes to cloud ai-chat edge function (Lovable AI Gateway) ── */
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`;
@@ -195,15 +206,39 @@ export default function AIChat() {
   });
   const telegramEnabled = !!(settings?.telegram_enabled && settings?.telegram_chat_id);
 
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(APP_CHAT_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      setAppMessages(parsed.filter(isStoredMessage).slice(-MAX_STORED_MESSAGES));
+    } catch (error) {
+      console.error('Failed to restore browser chat history:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(APP_CHAT_STORAGE_KEY, JSON.stringify(appMessages.slice(-MAX_STORED_MESSAGES)));
+    } catch (error) {
+      console.error('Failed to persist browser chat history:', error);
+    }
+  }, [appMessages]);
+
   /* ── Telegram history (polls every 4s) ── */
   const { data: telegramMessages } = useQuery({
-    queryKey: ['telegram-history'],
+    queryKey: ['telegram-history', settings?.telegram_chat_id || 'all'],
     queryFn: async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from('telegram_messages')
         .select('*')
         .order('created_at', { ascending: true })
-        .limit(200);
+        .limit(MAX_STORED_MESSAGES);
+      if (settings?.telegram_chat_id) {
+        query = query.eq('chat_id', Number(settings.telegram_chat_id));
+      }
+      const { data, error } = await query;
       if (error) console.error('Telegram fetch error:', error);
       return data || [];
     },
@@ -214,22 +249,74 @@ export default function AIChat() {
 
   /* ── Resolve numeric chat_id from telegram_messages ── */
   const resolvedChatId = useMemo(() => {
+    if (settings?.telegram_chat_id) return String(settings.telegram_chat_id);
     if (!telegramMessages?.length) return undefined;
     const latest = [...telegramMessages].reverse().find((m: any) => m.chat_id);
     return latest ? String(latest.chat_id) : undefined;
-  }, [telegramMessages]);
+  }, [settings?.telegram_chat_id, telegramMessages]);
 
   /* ── Mirror helper: send text to Telegram ── */
   const mirrorToTelegram = useCallback(async (text: string) => {
     if (!telegramEnabled || !resolvedChatId || !text.trim()) return;
     try {
       await supabase.functions.invoke('send-telegram', {
-        body: { chat_id: resolvedChatId, text: text.slice(0, 3900), parse_mode: 'HTML' },
+        body: { chat_id: resolvedChatId, text: text.slice(0, 3900) },
       });
     } catch (e) {
       console.error('Mirror to Telegram failed:', e);
     }
   }, [telegramEnabled, resolvedChatId]);
+
+  const mirrorImageToTelegram = useCallback(async (file: FileAttachment, caption?: string) => {
+    if (!telegramEnabled || !resolvedChatId || !file.url) return;
+    try {
+      const response = await fetch(file.url);
+      const blob = await response.blob();
+      const reader = new FileReader();
+      const base64 = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          if (typeof reader.result !== 'string' || !reader.result.includes(',')) {
+            reject(new Error('Invalid image data'));
+            return;
+          }
+          const [, data] = reader.result.split(',', 2);
+          if (!data) {
+            reject(new Error('Invalid image data'));
+            return;
+          }
+          resolve(data);
+        };
+        reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
+        reader.readAsDataURL(blob);
+      });
+      await supabase.functions.invoke('send-telegram', {
+        body: {
+          chat_id: resolvedChatId,
+          text: caption?.slice(0, 1000),
+          photo_base64: base64,
+          photo_mime_type: file.type || blob.type || 'image/png',
+        },
+      });
+    } catch (error) {
+      console.error('Mirror image to Telegram failed:', error);
+    }
+  }, [telegramEnabled, resolvedChatId]);
+
+  const mirrorBrowserMessage = useCallback(async (speaker: 'You' | 'AI', text: string, files: FileAttachment[] = []) => {
+    if (!telegramEnabled || !resolvedChatId) return;
+    const imageFiles = files.filter((file) => file.isImage);
+    const otherFiles = files.filter((file) => !file.isImage);
+    const attachmentLines = otherFiles.map((file) => `• ${file.name}${file.url ? ` — ${file.url}` : ''}`);
+    const summary = [
+      `${speaker}: ${text.trim() || (files.length > 0 ? '[sent attachment]' : '')}`.trim(),
+      attachmentLines.length > 0 ? `Attachments:\n${attachmentLines.join('\n')}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    if (summary) await mirrorToTelegram(summary);
+    for (const [index, image] of imageFiles.entries()) {
+      await mirrorImageToTelegram(image, index === 0 && !summary ? `${speaker} image: ${image.name}` : undefined);
+    }
+  }, [mirrorImageToTelegram, mirrorToTelegram, resolvedChatId, telegramEnabled]);
 
   /* ── Merge app + telegram messages by timestamp ── */
   const mapTelegramMediaToFiles = useCallback((rawUpdate: any): FileAttachment[] => {
@@ -262,10 +349,11 @@ export default function AIChat() {
   const messages = useMemo(() => {
     const tgMsgs: Msg[] = (telegramMessages || []).map((m: any) => {
       const mediaFiles = mapTelegramMediaToFiles(m.raw_update);
+      const source = m.raw_update?.source === BROWSER_MIRROR_SOURCE ? 'app' : 'telegram';
       return {
         role: m.is_bot ? 'assistant' as const : 'user' as const,
         content: m.text || '',
-        source: 'telegram' as const,
+        source,
         timestamp: m.created_at,
         files: mediaFiles.length > 0 ? mediaFiles : undefined,
         images: mediaFiles.some((f) => f.isImage)
@@ -355,7 +443,7 @@ export default function AIChat() {
 
     // Mirror user message to Telegram + send typing indicator
     if (telegramEnabled && resolvedChatId) {
-      if (text) void mirrorToTelegram(`💬 ${text}`);
+      void mirrorBrowserMessage('You', text, pendingFiles);
       // Show "typing..." in Telegram while AI thinks
       void supabase.functions.invoke('send-telegram', {
         body: { chat_id: resolvedChatId, action: 'typing' },
@@ -374,7 +462,7 @@ export default function AIChat() {
       });
     };
 
-    const contextMsgs = messages.slice(-20).map((m) => {
+    const contextMsgs = appMessages.slice(-20).map((m) => {
       const base: any = { role: m.role, content: m.content };
       if (m.images) base.images = m.images;
       if (m.files?.some((f) => !f.isImage)) {
@@ -402,7 +490,7 @@ export default function AIChat() {
           );
           // Mirror AI response to Telegram
           if (telegramEnabled && resolvedChatId && assistantSoFar.trim()) {
-            void mirrorToTelegram(`🤖 ${assistantSoFar.slice(0, 3900)}`);
+            void mirrorBrowserMessage('AI', assistantSoFar);
           }
         },
         onError: (err) => {
