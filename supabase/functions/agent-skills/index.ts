@@ -28,6 +28,17 @@ const SKILL_SCORE = {
 
 const IMPORTABLE_TEXT_FILE_RE = /\.(json|md|txt|yaml|yml|toml)$/i;
 
+type SkillRecord = {
+  name: string;
+  description: string;
+  triggers: string[];
+  steps: Array<{ note?: string; tool?: string; [key: string]: unknown }>;
+  system_prompt: string;
+  tags: string[];
+  source_url: string;
+  slug?: string;
+};
+
 function slugify(s: string): string {
   return (s || 'skill').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'skill';
 }
@@ -159,7 +170,7 @@ function parseLooseKeyValueText(text: string): Record<string, string | string[]>
   return parsed;
 }
 
-function parseMarkdownSkill(raw: string, sourceUrl: string, filePath: string) {
+function parseMarkdownSkill(raw: string, sourceUrl: string, filePath: string): SkillRecord {
   let text = String(raw || '');
   const frontmatterMatch = text.match(/^---\n([\s\S]*?)\n---\n?/);
   const frontmatter: Record<string, string | string[]> = {};
@@ -209,7 +220,7 @@ function parseMarkdownSkill(raw: string, sourceUrl: string, filePath: string) {
   };
 }
 
-function normalizeSkillRecord(raw: any, sourceUrl: string, fallbackName: string) {
+function normalizeSkillRecord(raw: any, sourceUrl: string, fallbackName: string): SkillRecord {
   const metadata = raw.metadata || raw.meta || {};
   const promptMessages = Array.isArray(raw.messages)
     ? raw.messages.map((msg: any) => msg?.content || msg?.text || '').filter(Boolean).join('\n\n')
@@ -259,7 +270,7 @@ function normalizeSkillRecord(raw: any, sourceUrl: string, fallbackName: string)
   };
 }
 
-function parseStructuredSkillFile(raw: string, sourceUrl: string, filePath: string) {
+function parseStructuredSkillFile(raw: string, sourceUrl: string, filePath: string): SkillRecord {
   const parsed = parseLooseKeyValueText(raw);
   const name = String(parsed.name || parsed.title || filePath.split('/').pop()?.replace(/\.(yaml|yml|toml)$/i, '') || 'Imported Skill');
   const description = String(parsed.description || parsed.summary || parsed.purpose || '').trim();
@@ -283,7 +294,7 @@ function parseStructuredSkillFile(raw: string, sourceUrl: string, filePath: stri
   };
 }
 
-function parseSkillTextFile(text: string, sourceUrl: string, filePath: string): any[] {
+function parseSkillTextFile(text: string, sourceUrl: string, filePath: string): SkillRecord[] {
   try {
     const json = JSON.parse(text);
     const records = Array.isArray(json)
@@ -300,7 +311,7 @@ function parseSkillTextFile(text: string, sourceUrl: string, filePath: string): 
   }
 }
 
-async function tryFetchRawSkillFile(owner: string, repo: string, branch: string, filePath: string): Promise<any[]> {
+async function tryFetchRawSkillFile(owner: string, repo: string, branch: string, filePath: string): Promise<SkillRecord[]> {
   const rawUrl = toRawGitHubUrl(owner, repo, branch, filePath);
   const resp = await fetch(rawUrl);
   if (!resp.ok) return [];
@@ -309,7 +320,7 @@ async function tryFetchRawSkillFile(owner: string, repo: string, branch: string,
     .filter((record) => record.system_prompt || record.steps.length > 0);
 }
 
-async function tryFetchSkillCandidates(owner: string, repo: string, branches: string[], filePaths: string[]): Promise<any[]> {
+async function tryFetchSkillCandidates(owner: string, repo: string, branches: string[], filePaths: string[]): Promise<SkillRecord[]> {
   const seen = new Set<string>();
   for (const branch of branches) {
     for (const filePath of filePaths) {
@@ -350,7 +361,7 @@ function buildProbableRepoPaths(basePath: string): string[] {
   ].filter((value, index, arr) => arr.indexOf(value) === index && IMPORTABLE_TEXT_FILE_RE.test(value));
 }
 
-function dedupeSkillRecords(skillRecords: any[]) {
+function dedupeSkillRecords(skillRecords: SkillRecord[]): SkillRecord[] {
   const seen = new Set<string>();
   return skillRecords.filter((record) => {
     const key = `${record.source_url || ''}:${record.name || ''}:${record.system_prompt || ''}`;
@@ -360,8 +371,8 @@ function dedupeSkillRecords(skillRecords: any[]) {
   });
 }
 
-function parseBundledSkillFiles(files: Array<{ path: string; content: string }>, sourceName: string): any[] {
-  const installed: any[] = [];
+function parseBundledSkillFiles(files: Array<{ path: string; content: string }>, sourceName: string): SkillRecord[] {
+  const installed: SkillRecord[] = [];
   const candidates = files
     .filter((file) => typeof file?.path === 'string' && typeof file?.content === 'string')
     .map((file) => ({ ...file, score: scoreSkillPath(file.path) }))
@@ -383,7 +394,7 @@ function parseBundledSkillFiles(files: Array<{ path: string; content: string }>,
   return dedupeSkillRecords(installed);
 }
 
-async function fetchRepoSkills(url: string): Promise<any[]> {
+async function fetchRepoSkills(url: string): Promise<SkillRecord[]> {
   if (isRawGitHubContentUrl(url)) {
     const r = await fetch(url);
     if (!r.ok) throw new Error(`Could not fetch ${url}: ${r.status}`);
