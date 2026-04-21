@@ -450,6 +450,20 @@ async function executeTool(supabase: any, name: string, args: any, supabaseUrl: 
       if (error) return `❌ ${error.message}`;
       return `🌐 Browser task queued: "${args.task}". Updates via Telegram.`;
     }
+    case 'run_agent': {
+      try {
+        const r = await fetch(`${supabaseUrl}/functions/v1/agent-run`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: args.task, source: 'ai-chat' }),
+        });
+        const d = await r.json();
+        if (!r.ok || !d.runId) return `❌ Agent failed to start: ${d.error || 'unknown'}`;
+        return `__AGENT_RUN__:${d.runId}\n🤖 Started agent for: "${truncatePrompt(args.task, 100)}". Watch live steps below — plan, research, file writes, and preview will appear in real-time.`;
+      } catch (e) {
+        return `❌ Agent start failed: ${(e as Error).message}`;
+      }
+    }
     default:
       return `Unknown tool: ${name}`;
   }
