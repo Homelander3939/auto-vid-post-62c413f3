@@ -4,12 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "predev": "node ./scripts/ensure-deps.mjs",
+    "ensure-deps": "node ./scripts/ensure-deps.mjs",
     "dev": "vite",
-    "prebuild": "node ./scripts/ensure-deps.mjs",
     "build": "vite build",
     "build:dev": "vite build --mode development",
-    "pretest": "node ./scripts/ensure-deps.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
