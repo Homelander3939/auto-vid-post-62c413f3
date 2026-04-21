@@ -961,10 +961,12 @@ serve(async (req) => {
             return;
           }
 
+          // This second pass always uses the Lovable Gateway, so we must use a Lovable-compatible
+          // model regardless of what the user configured (e.g. openrouter/qwen won't work here).
           const resp2 = await fetch(AI_GATEWAY, {
             method: 'POST',
             headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model, messages: fullMessages, stream: true }),
+            body: JSON.stringify({ model: DEFAULT_LOVABLE_MODEL, messages: fullMessages, stream: true }),
           });
 
           if (resp2.ok && resp2.body) {

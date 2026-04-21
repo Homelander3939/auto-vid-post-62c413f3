@@ -12,7 +12,7 @@
 //   POST { runId, action: 'cancel' }                       → cancels a running agent.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { DEFAULT_LOVABLE_MODEL, LOVABLE_GATEWAY, resolveChatProviderConfig } from "../_shared/ai-provider.ts";
+import { DEFAULT_LOVABLE_MODEL, LOVABLE_GATEWAY, normalizeLovableModel, resolveChatProviderConfig } from "../_shared/ai-provider.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -533,11 +533,21 @@ async function getProviderMap(supabase: any) {
   } catch { /* ignore */ }
   if (!imageKey) imageKey = s.image_api_key || '';
 
+  const rawProvider = (s.ai_provider || 'lovable') as string;
+  const rawApiKey = (s.ai_api_key || '') as string;
+  const rawModel = (s.ai_model || DEFAULT_LOVABLE_MODEL) as string;
+  // For the lovable provider (or when no custom API key is available), ensure the model is
+  // always a valid Lovable Gateway model. This prevents raw user-entered models like
+  // "qwen/qwen3.5-397b-a17b" from being sent to the Lovable Gateway and rejected.
+  const chatModel = (!rawApiKey || rawProvider === 'lovable')
+    ? normalizeLovableModel(rawModel)
+    : rawModel;
+
   return {
     chat: {
-      provider: s.ai_provider || 'lovable',
-      apiKey: s.ai_api_key || '',
-      model: s.ai_model || 'google/gemini-3-flash-preview',
+      provider: rawProvider,
+      apiKey: rawApiKey,
+      model: chatModel,
     },
     research: {
       provider: s.research_provider || 'auto',
@@ -577,12 +587,14 @@ async function callPlanner(messages: any[], chat: any, lovableKey: string): Prom
     const t = await r.text();
     // Any provider failure → try Lovable Gateway with the default model as a reliable fallback.
     // This handles: lovable+invalid-model, openrouter+unsupported-tool-choice, any other 4xx/5xx.
+    // Note: models like qwen that don't support tool_choice:'auto' will fail here and fall through.
     if (config.model !== DEFAULT_LOVABLE_MODEL || config.provider !== 'lovable') {
-      console.warn(`callPlanner: primary provider ${config.provider}/${config.model} failed (${r.status}), retrying with Lovable default`);
+      console.warn(`callPlanner: primary provider ${config.provider}/${config.model} failed (${r.status}): ${t.slice(0, 200)}, retrying with Lovable default`);
       const fallback = await makeRequest(LOVABLE_GATEWAY, lovableKey, DEFAULT_LOVABLE_MODEL);
       if (fallback.ok) return await fallback.json();
       const fallbackText = await fallback.text();
-      throw new Error(`Planner LLM failed (${fallback.status}): ${fallbackText.slice(0, 300)}`);
+      // Include the primary error context so users know which provider originally failed.
+      throw new Error(`Planner LLM failed (${fallback.status}): ${fallbackText.slice(0, 200)} [Primary ${config.provider}/${config.model} (${r.status}): ${t.slice(0, 100)}]`);
     }
     throw new Error(`Planner LLM failed (${r.status}): ${t.slice(0, 300)}`);
   }
