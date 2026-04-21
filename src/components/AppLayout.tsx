@@ -54,6 +54,7 @@ export default function AppLayout() {
   const queryClient = useQueryClient();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const isChatRoute = location.pathname === '/chat';
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -250,7 +251,9 @@ export default function AppLayout() {
           </div>
         </div>
 
-        <div className="max-w-5xl mx-auto p-4 sm:p-6 md:p-8">
+        <div className={cn(
+          isChatRoute ? 'h-[calc(100dvh-3.5rem)] md:h-[100dvh]' : 'max-w-5xl mx-auto p-4 sm:p-6 md:p-8'
+        )}>
           <Outlet />
         </div>
       </main>

@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Sparkles, Github, Play, Trash2, Plus, CheckCircle2, BookOpen, Loader2, Brain, Upload } from 'lucide-react';
+import { Sparkles, Github, Play, Trash2, Plus, CheckCircle2, BookOpen, Loader2, Brain, Upload, Link as LinkIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import JSZip from 'jszip';
 
@@ -19,7 +19,7 @@ interface Skill {
   source: 'manual' | 'github' | 'learned';
   source_url?: string;
   triggers: string[];
-  steps: any[];
+  steps: SkillStep[];
   system_prompt: string;
   tags: string[];
   enabled: boolean;
@@ -28,10 +28,24 @@ interface Skill {
   created_at: string;
 }
 
+interface SkillStep {
+  note?: string;
+  tool?: string;
+  description?: string;
+  task?: string;
+  command?: string;
+}
+
+interface PendingSkill {
+  name?: string;
+  description?: string;
+  steps?: SkillStep[];
+}
+
 interface PendingRun {
   id: string;
   prompt: string;
-  pending_skill: any;
+  pending_skill: PendingSkill | null;
   created_at: string;
 }
 
@@ -47,6 +61,18 @@ interface AgentMemory {
 }
 
 const IMPORTABLE_ZIP_ENTRY_RE = /\.(json|md|txt|yaml|yml|toml|prompt|skill|agent|instructions)$/i;
+const IMPORTABLE_FILE_ACCEPT = '.json,.md,.txt,.yaml,.yml,.toml,.prompt,.skill,.agent,.instructions';
+const DEFAULT_MEMORY_IMPORTANCE = 60;
+const MIN_MEMORY_IMPORTANCE = 1;
+const MAX_MEMORY_IMPORTANCE = 100;
+
+function clampImportance(value: number) {
+  return Math.min(Math.max(Number(value) || DEFAULT_MEMORY_IMPORTANCE, MIN_MEMORY_IMPORTANCE), MAX_MEMORY_IMPORTANCE);
+}
+
+function getStepDisplayText(step: SkillStep) {
+  return step.note || step.tool || step.description || step.task || step.command || 'Untitled step';
+}
 
 export default function AgentSkills() {
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -56,9 +82,12 @@ export default function AgentSkills() {
   const [installUrl, setInstallUrl] = useState('');
   const [installing, setInstalling] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [running, setRunning] = useState<string | null>(null);
   const [draft, setDraft] = useState({ name: '', description: '', triggers: '', system_prompt: '', steps: '' });
+  const [memoryDraft, setMemoryDraft] = useState({ title: '', content: '', memory_type: 'fact', tags: '', importance: DEFAULT_MEMORY_IMPORTANCE });
   const zipInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = async () => {
     setLoading(true);
@@ -67,9 +96,9 @@ export default function AgentSkills() {
       supabase.from('agent_memories').select('*').order('importance', { ascending: false }).order('created_at', { ascending: false }).limit(30),
       supabase.from('agent_runs').select('id,prompt,pending_skill,created_at').not('pending_skill', 'is', null).order('created_at', { ascending: false }).limit(20),
     ]);
-    setSkills((s.data as any) || []);
-    setMemories((m.data as any) || []);
-    setPending((p.data as any) || []);
+    setSkills((s.data as Skill[]) || []);
+    setMemories((m.data as AgentMemory[]) || []);
+    setPending((p.data as PendingRun[]) || []);
     setLoading(false);
   };
 
@@ -96,8 +125,8 @@ export default function AgentSkills() {
       toast.success(installedCount > 1 ? `Installed ${installedCount} skills` : `Installed: ${data.skill.name}`);
       setInstallUrl('');
       load();
-    } catch (e: any) {
-      toast.error(`Install failed: ${e.message}`);
+    } catch (e: unknown) {
+      toast.error(`Install failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
     } finally {
       setInstalling(false);
     }
@@ -138,6 +167,35 @@ export default function AgentSkills() {
     }
   };
 
+  const installFromFiles = async (files: FileList | File[]) => {
+    const importable = Array.from(files).filter((file) => IMPORTABLE_ZIP_ENTRY_RE.test(file.name));
+    if (importable.length === 0) {
+      toast.error('Choose a JSON, Markdown, YAML, TOML, TXT, .prompt, .skill, or .agent file.');
+      return;
+    }
+
+    setInstalling(true);
+    try {
+      const payload = await Promise.all(importable.map(async (file) => ({
+        path: file.name,
+        content: await file.text(),
+      })));
+      const { data, error } = await supabase.functions.invoke('agent-skills', {
+        body: { action: 'install_bundle', sourceName: 'local-files', files: payload },
+      });
+      if (error || data?.error) throw new Error(data?.error || error?.message);
+      const installedCount = Number(data?.count || (Array.isArray(data?.skills) ? data.skills.length : 0)) || 1;
+      toast.success(installedCount > 1 ? `Installed ${installedCount} skills from files` : `Installed: ${data.skill.name}`);
+      load();
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : 'File install failed';
+      toast.error(message);
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      setInstalling(false);
+    }
+  };
+
   const acceptPending = async (runId: string) => {
     try {
       const { data, error } = await supabase.functions.invoke('agent-skills', {
@@ -146,8 +204,8 @@ export default function AgentSkills() {
       if (error || data?.error) throw new Error(data?.error || error?.message);
       toast.success(`Skill saved: ${data.skill.name}`);
       load();
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to save skill');
     }
   };
 
@@ -164,8 +222,8 @@ export default function AgentSkills() {
       });
       if (error || data?.error) throw new Error(data?.error || error?.message);
       toast.success('Skill running — open AI Chat to watch live progress.');
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to run skill');
     } finally {
       setRunning(null);
     }
@@ -195,7 +253,7 @@ export default function AgentSkills() {
 
   const createManual = async () => {
     if (!draft.name.trim()) return;
-    let parsedSteps: any[] = [];
+    let parsedSteps: SkillStep[] = [];
     try {
       parsedSteps = draft.steps.trim()
         ? draft.steps.split('\n').filter(Boolean).map((line) => ({ note: line.trim() }))
@@ -218,6 +276,26 @@ export default function AgentSkills() {
     load();
   };
 
+  const createMemory = async () => {
+    if (!memoryDraft.title.trim() || !memoryDraft.content.trim()) return;
+    const { error } = await supabase.from('agent_memories').insert({
+      title: memoryDraft.title.trim(),
+      content: memoryDraft.content.trim(),
+      memory_type: memoryDraft.memory_type,
+      tags: memoryDraft.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+      importance: clampImportance(memoryDraft.importance),
+      enabled: true,
+    });
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success('Memory saved');
+    setMemoryOpen(false);
+    setMemoryDraft({ title: '', content: '', memory_type: 'fact', tags: '', importance: DEFAULT_MEMORY_IMPORTANCE });
+    load();
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -229,29 +307,47 @@ export default function AgentSkills() {
             Reusable routines the agent can run. Install from GitHub, write your own, or let the agent propose them after it learns a workflow.
           </p>
         </div>
-        <Button variant="outline" onClick={() => setCreateOpen(true)}>
-          <Plus className="w-4 h-4 mr-1.5" /> New Skill
-        </Button>
+        <div className="flex gap-2 flex-wrap">
+          <Button variant="outline" onClick={() => setMemoryOpen(true)}>
+            <Brain className="w-4 h-4 mr-1.5" /> New Memory
+          </Button>
+          <Button variant="outline" onClick={() => setCreateOpen(true)}>
+            <Plus className="w-4 h-4 mr-1.5" /> New Skill
+          </Button>
+        </div>
       </div>
 
-      {/* Install from GitHub */}
+      {/* Install from link / files */}
       <Card className="p-4">
         <div className="flex items-center gap-2 mb-2">
-          <Github className="w-4 h-4 text-muted-foreground" />
-          <h2 className="text-sm font-medium">Install from GitHub</h2>
+          <LinkIcon className="w-4 h-4 text-muted-foreground" />
+          <h2 className="text-sm font-medium">Install from link or file</h2>
         </div>
         <p className="text-xs text-muted-foreground mb-3">
-          Paste a repo URL or raw file URL. The importer now scans common skill layouts such as <code className="text-[10px] bg-secondary px-1 rounded">skill.json</code>, <code className="text-[10px] bg-secondary px-1 rounded">skills/</code>, <code className="text-[10px] bg-secondary px-1 rounded">agents/</code>, <code className="text-[10px] bg-secondary px-1 rounded">commands/</code>, and Claude/OpenClaw/Hermes prompt files.
+          Paste a GitHub repo, a GitHub/raw file URL, or any direct remote skill file. You can also import a single local skill file or a ZIP bundle. The importer scans common layouts such as <code className="text-[10px] bg-secondary px-1 rounded">skill.json</code>, <code className="text-[10px] bg-secondary px-1 rounded">skills/</code>, <code className="text-[10px] bg-secondary px-1 rounded">agents/</code>, <code className="text-[10px] bg-secondary px-1 rounded">commands/</code>, and Claude/OpenClaw/Hermes prompt files.
         </p>
         <div className="flex gap-2 flex-wrap">
           <Input
-            placeholder="https://github.com/owner/repo  or  raw skill.json URL"
+            placeholder="https://github.com/owner/repo  or  https://example.com/skill.md"
             value={installUrl}
             onChange={(e) => setInstallUrl(e.target.value)}
             disabled={installing}
           />
           <Button onClick={installFromGithub} disabled={installing || !installUrl.trim()}>
-            {installing ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Install'}
+            {installing ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Github className="w-4 h-4 mr-1.5" /> Install link</>}
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={IMPORTABLE_FILE_ACCEPT}
+            className="hidden"
+            multiple
+            onChange={(e) => {
+              if (e.target.files?.length) void installFromFiles(e.target.files);
+            }}
+          />
+          <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={installing}>
+            {installing ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Upload className="w-4 h-4 mr-1.5" /> Upload file</>}
           </Button>
           <input
             ref={zipInputRef}
@@ -269,7 +365,7 @@ export default function AgentSkills() {
           </Button>
         </div>
         <p className="text-[11px] text-muted-foreground mt-2">
-          If a GitHub link cannot be imported, upload a ZIP export and the app will scan the archive for skills automatically.
+          If a link import fails, try uploading the raw skill file or a ZIP export instead.
         </p>
       </Card>
 
@@ -290,13 +386,13 @@ export default function AgentSkills() {
                     <div className="font-medium text-sm">{p.pending_skill?.name || 'Untitled'}</div>
                     <div className="text-xs text-muted-foreground mt-0.5">{p.pending_skill?.description}</div>
                     <div className="text-[10px] text-muted-foreground mt-1 italic">From: "{p.prompt.slice(0, 100)}"</div>
-                    {p.pending_skill?.steps?.length > 0 && (
+                    {p.pending_skill?.steps?.length ? (
                       <ol className="text-xs text-muted-foreground mt-2 ml-4 list-decimal space-y-0.5">
-                        {p.pending_skill.steps.slice(0, 5).map((s: any, i: number) => (
-                          <li key={i}>{s.note || s.tool}</li>
+                        {p.pending_skill.steps.slice(0, 5).map((s, i) => (
+                          <li key={i}>{getStepDisplayText(s)}</li>
                         ))}
                       </ol>
-                    )}
+                    ) : null}
                   </div>
                   <div className="flex flex-col gap-1.5 shrink-0">
                     <Button size="sm" onClick={() => acceptPending(p.id)}>Approve</Button>
@@ -314,8 +410,11 @@ export default function AgentSkills() {
           <Brain className="w-4 h-4 text-muted-foreground" /> Persistent Memory ({memories.length})
         </h2>
         {memories.length === 0 ? (
-          <Card className="p-6 text-center text-sm text-muted-foreground border-dashed">
-            No persistent memories yet. In multi-agent mode the agent can now save durable facts, workflow notes, and subtask context here.
+          <Card className="p-6 text-center text-sm text-muted-foreground border-dashed space-y-3">
+            <p>No persistent memories yet. In multi-agent mode the agent can now save durable facts, workflow notes, and subtask context here.</p>
+            <Button variant="outline" size="sm" onClick={() => setMemoryOpen(true)}>
+              <Brain className="w-4 h-4 mr-1.5" /> Add memory manually
+            </Button>
           </Card>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2">
@@ -394,6 +493,56 @@ export default function AgentSkills() {
           </div>
         )}
       </div>
+
+      <Dialog open={memoryOpen} onOpenChange={setMemoryOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>New Persistent Memory</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-medium">Title</label>
+              <Input value={memoryDraft.title} onChange={(e) => setMemoryDraft({ ...memoryDraft, title: e.target.value })} placeholder="e.g. Preferred landing page style" />
+            </div>
+            <div>
+              <label className="text-xs font-medium">Memory type</label>
+              <select
+                value={memoryDraft.memory_type}
+                onChange={(e) => setMemoryDraft({ ...memoryDraft, memory_type: e.target.value })}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="fact">Fact</option>
+                <option value="workflow">Workflow</option>
+                <option value="preference">Preference</option>
+                <option value="subtask">Subtask</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium">Content</label>
+              <Textarea value={memoryDraft.content} onChange={(e) => setMemoryDraft({ ...memoryDraft, content: e.target.value })} rows={4} placeholder="Store durable context the agent should be able to reuse later." />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
+              <div>
+                <label className="text-xs font-medium">Tags (comma-separated)</label>
+                <Input value={memoryDraft.tags} onChange={(e) => setMemoryDraft({ ...memoryDraft, tags: e.target.value })} placeholder="design, portfolio, automation" />
+              </div>
+              <div>
+                <label className="text-xs font-medium">Importance</label>
+                <Input
+                  type="number"
+                  min={MIN_MEMORY_IMPORTANCE}
+                  max={MAX_MEMORY_IMPORTANCE}
+                  value={memoryDraft.importance}
+                  onChange={(e) => setMemoryDraft({ ...memoryDraft, importance: Number(e.target.value) || DEFAULT_MEMORY_IMPORTANCE })}
+                  className="sm:w-24"
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setMemoryOpen(false)}>Cancel</Button>
+            <Button onClick={createMemory} disabled={!memoryDraft.title.trim() || !memoryDraft.content.trim()}>Save Memory</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Manual create dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

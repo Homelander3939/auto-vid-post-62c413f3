@@ -78,6 +78,17 @@ function isRawGitHubContentUrl(url: string): boolean {
   }
 }
 
+function isDirectImportUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    if (['github.com', 'www.github.com', 'raw.githubusercontent.com'].includes(parsed.hostname)) return false;
+    return IMPORTABLE_TEXT_FILE_RE.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
 function toRawGitHubUrl(owner: string, repo: string, branch: string, filePath: string) {
   return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath.replace(/^\/+/, '')}`;
 }
@@ -432,8 +443,18 @@ async function fetchRepoSkills(url: string): Promise<SkillRecord[]> {
     return imported;
   }
 
+  if (isDirectImportUrl(url)) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`Could not fetch ${url}: ${r.status}`);
+    const text = await r.text();
+    const imported = parseSkillTextFile(text, url, url.split('/').pop() || 'skill.txt')
+      .filter((record) => record.system_prompt || record.steps.length > 0);
+    if (imported.length === 0) throw new Error('No importable skills found in that file.');
+    return imported;
+  }
+
   const parsed = parseGitHubRepo(url);
-  if (!parsed) throw new Error('Unsupported URL. Use a GitHub repo URL, blob URL, or raw file URL.');
+  if (!parsed) throw new Error('Unsupported URL. Use a GitHub repo URL, blob URL, raw file URL, or direct remote skill file.');
   let defaultBranch = parsed.branch || 'main';
   try {
     const repoResp = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}`);
