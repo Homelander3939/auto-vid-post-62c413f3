@@ -85,8 +85,11 @@ function getMissingColumnName(error: { message?: string; details?: string } | nu
 async function updateAppSettingsCompat(payload: Record<string, unknown>): Promise<void> {
   const nextPayload = { ...payload };
   const removedColumns = new Set<string>();
+  const maxRetries = Math.max(Object.keys(nextPayload).length, 1);
+  let attempts = 0;
 
-  while (Object.keys(nextPayload).length > 0) {
+  while (Object.keys(nextPayload).length > 0 && attempts < maxRetries) {
+    attempts += 1;
     const { error } = await (supabase as any).from('app_settings').update(nextPayload).eq('id', 1);
     if (!error) return;
 
@@ -99,7 +102,7 @@ async function updateAppSettingsCompat(payload: Record<string, unknown>): Promis
     delete nextPayload[missingColumn];
   }
 
-  throw new Error('Could not update agent settings');
+  throw new Error('Could not update agent settings: all retryable columns were rejected');
 }
 
 // Heuristic: detect provider from API key prefix.

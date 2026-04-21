@@ -34,8 +34,11 @@ function getMissingColumnName(error: { message?: string; details?: string } | nu
 async function insertAgentRunCompat(supabase: any, payload: Record<string, unknown>) {
   const nextPayload = { ...payload };
   const removedColumns = new Set<string>();
+  const maxRetries = Math.max(Object.keys(nextPayload).length, 1);
+  let attempts = 0;
 
-  while (Object.keys(nextPayload).length > 0) {
+  while (Object.keys(nextPayload).length > 0 && attempts < maxRetries) {
+    attempts += 1;
     const result = await supabase.from('agent_runs').insert(nextPayload).select('id').single();
     if (!result.error) return result;
 
@@ -48,7 +51,7 @@ async function insertAgentRunCompat(supabase: any, payload: Record<string, unkno
     delete nextPayload[missingColumn];
   }
 
-  throw new Error('Could not create agent run');
+  throw new Error('Could not create agent run: all retryable columns were rejected');
 }
 
 /* ── Tool catalog exposed to the planner LLM ─────────────────────────── */
