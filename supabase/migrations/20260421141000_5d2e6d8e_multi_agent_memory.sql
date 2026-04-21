@@ -41,3 +41,6 @@ CREATE INDEX IF NOT EXISTS idx_agent_memories_enabled_created
 CREATE TRIGGER update_agent_memories_updated_at
 BEFORE UPDATE ON public.agent_memories
 FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+ALTER PUBLICATION supabase_realtime ADD TABLE public.agent_memories;
+ALTER TABLE public.agent_memories REPLICA IDENTITY FULL;
