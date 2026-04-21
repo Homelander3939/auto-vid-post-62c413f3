@@ -948,6 +948,10 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ error: 'No AI API key. Configure one in Settings.' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
+  // Named for use in the SSE event labels below.
+  const provider = config.requestedProvider;
+  const textModel = config.model;
+
   const llm: LLMOpts = { endpoint: config.url, apiKey, model: config.model, googleMode: config.googleMode };
   const researchProvider = s.research_provider || 'auto';
   const researchKey = s.research_api_key || '';

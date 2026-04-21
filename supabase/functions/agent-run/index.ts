@@ -566,22 +566,23 @@ async function callPlanner(messages: any[], chat: any, lovableKey: string): Prom
     console.warn('callPlanner provider fallback:', config.fallbackReason);
   }
 
-  const request = (model: string) => fetch(config.url, {
+  const makeRequest = (url: string, key: string, model: string) => fetch(url, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.key}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, messages, tools, tool_choice: 'auto' }),
   });
 
-  let model = config.model;
-  let r = await request(model);
+  let r = await makeRequest(config.url, config.key, config.model);
   if (!r.ok) {
     const t = await r.text();
-    if (config.provider === 'lovable' && model !== DEFAULT_LOVABLE_MODEL && /invalid model/i.test(t)) {
-      model = DEFAULT_LOVABLE_MODEL;
-      r = await request(model);
-      if (r.ok) return await r.json();
-      const retryText = await r.text();
-      throw new Error(`Planner LLM failed (${r.status}): ${retryText.slice(0, 300)}`);
+    // Any provider failure → try Lovable Gateway with the default model as a reliable fallback.
+    // This handles: lovable+invalid-model, openrouter+unsupported-tool-choice, any other 4xx/5xx.
+    if (config.model !== DEFAULT_LOVABLE_MODEL || config.provider !== 'lovable') {
+      console.warn(`callPlanner: primary provider ${config.provider}/${config.model} failed (${r.status}), retrying with Lovable default`);
+      const fallback = await makeRequest(LOVABLE_GATEWAY, lovableKey, DEFAULT_LOVABLE_MODEL);
+      if (fallback.ok) return await fallback.json();
+      const fallbackText = await fallback.text();
+      throw new Error(`Planner LLM failed (${fallback.status}): ${fallbackText.slice(0, 300)}`);
     }
     throw new Error(`Planner LLM failed (${r.status}): ${t.slice(0, 300)}`);
   }
@@ -594,24 +595,25 @@ async function callReviewer(messages: any[], chat: any, lovableKey: string): Pro
     console.warn('callReviewer provider fallback:', config.fallbackReason);
   }
 
-  const request = (model: string) => fetch(config.url, {
+  const makeRequest = (url: string, key: string, model: string) => fetch(url, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${config.key}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, messages }),
   });
 
-  let model = config.model;
-  let r = await request(model);
+  let r = await makeRequest(config.url, config.key, config.model);
   if (!r.ok) {
-    const t = await r.text();
-    if (config.provider === 'lovable' && model !== DEFAULT_LOVABLE_MODEL && /invalid model/i.test(t)) {
-      model = DEFAULT_LOVABLE_MODEL;
-      r = await request(model);
-      if (!r.ok) {
-        const retryText = await r.text();
-        throw new Error(`Reviewer LLM failed (${r.status}): ${retryText.slice(0, 300)}`);
+    // Any provider failure → fall back to Lovable Gateway with the default model.
+    if (config.model !== DEFAULT_LOVABLE_MODEL || config.provider !== 'lovable') {
+      console.warn(`callReviewer: primary provider ${config.provider}/${config.model} failed (${r.status}), retrying with Lovable default`);
+      const fallback = await makeRequest(LOVABLE_GATEWAY, lovableKey, DEFAULT_LOVABLE_MODEL);
+      if (!fallback.ok) {
+        const fallbackText = await fallback.text();
+        throw new Error(`Reviewer LLM failed (${fallback.status}): ${fallbackText.slice(0, 300)}`);
       }
+      r = fallback;
     } else {
+      const t = await r.text();
       throw new Error(`Reviewer LLM failed (${r.status}): ${t.slice(0, 300)}`);
     }
   }

@@ -1,12 +1,13 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { DEFAULT_LOVABLE_MODEL, LOVABLE_GATEWAY, resolveChatProviderConfig } from '../_shared/ai-provider.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-const AI_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
+const AI_GATEWAY = LOVABLE_GATEWAY;
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 const DIRECT_TOOL_REPLY_NAMES = new Set(['generate_social_post', 'research_web', 'check_platform_stats', 'open_browser', 'run_agent']);
 
@@ -641,6 +642,8 @@ async function sendTelegram(chatId: string | number, text: string, lovableKey: s
 async function runAgentNonStreaming(
   supabase: any,
   fullMessages: any[],
+  chatUrl: string,
+  chatKey: string,
   model: string,
   lovableKey: string,
   supabaseUrl: string,
@@ -648,15 +651,25 @@ async function runAgentNonStreaming(
   opts: { telegramChatId?: string | number | null } = {},
   maxSteps = 4,
 ): Promise<string> {
+  const makeReq = (url: string, key: string, mdl: string) => fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: mdl, messages: fullMessages, tools, tool_choice: 'auto' }),
+  });
+
   for (let step = 0; step < maxSteps; step++) {
-    const r = await fetch(AI_GATEWAY, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${lovableKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages: fullMessages, tools, tool_choice: 'auto' }),
-    });
+    let r = await makeReq(chatUrl, chatKey, model);
     if (!r.ok) {
-      const t = await r.text();
-      throw new Error(`AI gateway ${r.status}: ${t.slice(0, 300)}`);
+      // Fall back to Lovable Gateway with default model on any failure.
+      if (chatUrl !== AI_GATEWAY || model !== DEFAULT_LOVABLE_MODEL) {
+        const errText = await r.text();
+        console.warn(`runAgentNonStreaming: ${chatUrl}/${model} failed (${r.status}): ${errText.slice(0, 200)}, retrying with Lovable default`);
+        r = await makeReq(AI_GATEWAY, lovableKey, DEFAULT_LOVABLE_MODEL);
+      }
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(`AI gateway ${r.status}: ${t.slice(0, 300)}`);
+      }
     }
     const data = await r.json();
     const choice = data.choices?.[0];
@@ -744,9 +757,17 @@ serve(async (req) => {
         currentUserMessage,
       ];
 
+      // Resolve AI config for Telegram mode the same way as web mode.
+      const { data: tgSettings } = await supabase.from('app_settings').select('ai_provider,ai_api_key,ai_model').eq('id', 1).single();
+      const tgChatConfig = resolveChatProviderConfig({
+        provider: (tgSettings as any)?.ai_provider,
+        apiKey: (tgSettings as any)?.ai_api_key,
+        model: (tgSettings as any)?.ai_model,
+      }, LOVABLE_API_KEY);
+
       try {
         const reply = await runAgentNonStreaming(
-          supabase, fullMessages, 'google/gemini-2.5-flash', LOVABLE_API_KEY, supabaseUrl, serviceKey,
+          supabase, fullMessages, tgChatConfig.url, tgChatConfig.key, tgChatConfig.model, LOVABLE_API_KEY, supabaseUrl, serviceKey,
           { telegramChatId: telegram_chat_id },
         );
         const visibleReply = reply.replace(/__AGENT_RUN__:[0-9a-f-]+\n?/gi, '').trim() || '✅ Done.';
@@ -781,24 +802,47 @@ serve(async (req) => {
     }
 
     const appContextPromise = getAppContextFast(supabase);
+    const aiSettingsPromise = supabase.from('app_settings').select('ai_provider,ai_api_key,ai_model').eq('id', 1).single();
 
     const transformedMessages = messages.map((msg: any) => msg.role === 'system' ? msg : buildMessageForModel(msg));
 
-    const appContext = await appContextPromise;
+    const [appContext, { data: aiSettings }] = await Promise.all([appContextPromise, aiSettingsPromise]);
     const systemPrompt = buildSystemPrompt(appContext, false);
     const hasImages = messages.some((m: any) => m.images && m.images.length > 0);
-    const model = hasImages ? 'google/gemini-2.5-flash' : 'google/gemini-3-flash-preview';
+
+    // Resolve the chat model from user settings; fall back to a Lovable-compatible vision model
+    // for image attachments (which requires gemini-2.5-flash or equivalent).
+    const chatConfig = resolveChatProviderConfig({
+      provider: (aiSettings as any)?.ai_provider,
+      apiKey: (aiSettings as any)?.ai_api_key,
+      model: (aiSettings as any)?.ai_model,
+    }, LOVABLE_API_KEY);
+    const chatUrl = chatConfig.url;
+    const chatKey = chatConfig.key;
+    const model = hasImages ? 'google/gemini-2.5-flash' : chatConfig.model;
+    // For image messages, force Lovable Gateway (which provides the vision-capable model).
+    const effectiveChatUrl = hasImages ? AI_GATEWAY : chatUrl;
+    const effectiveChatKey = hasImages ? LOVABLE_API_KEY : chatKey;
 
     const fullMessages = [
       { role: 'system', content: systemPrompt },
       ...transformedMessages,
     ];
 
-    const aiResp = await fetch(AI_GATEWAY, {
+    const makeChatRequest = (url: string, key: string, mdl: string) => fetch(url, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages: fullMessages, tools, tool_choice: 'auto', stream: true }),
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: mdl, messages: fullMessages, tools, tool_choice: 'auto', stream: true }),
     });
+
+    let aiResp = await makeChatRequest(effectiveChatUrl, effectiveChatKey, model);
+
+    // If the user's configured provider/model fails, fall back to Lovable Gateway with the default model.
+    if (!aiResp.ok && (chatConfig.provider !== 'lovable' || chatConfig.model !== DEFAULT_LOVABLE_MODEL)) {
+      const errText = await aiResp.text();
+      console.warn(`ai-chat: primary provider ${chatConfig.provider}/${model} failed (${aiResp.status}): ${errText.slice(0, 200)}, retrying with Lovable default`);
+      aiResp = await makeChatRequest(AI_GATEWAY, LOVABLE_API_KEY, DEFAULT_LOVABLE_MODEL);
+    }
 
     if (!aiResp.ok) {
       if (aiResp.status === 429) {
