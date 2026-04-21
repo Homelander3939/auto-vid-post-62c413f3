@@ -505,8 +505,31 @@ async function runAgent(supabase: any, runId: string, lovableKey: string, telegr
 
 User request: ${run.prompt}`;
 
+  // Find matching skills (simple keyword overlap on triggers + name)
+  const promptLow = run.prompt.toLowerCase();
+  const { data: allSkills } = await supabase.from('agent_skills').select('*').eq('enabled', true);
+  const matched = (allSkills || []).filter((sk: any) => {
+    const trigs = [sk.name, ...(sk.triggers || [])].filter(Boolean).map((t: string) => t.toLowerCase());
+    return trigs.some((t: string) => t && promptLow.includes(t));
+  }).slice(0, 3);
+
+  let skillContext = '';
+  if (matched.length > 0) {
+    skillContext = `\n\n# Relevant saved skills (use them if applicable)
+${matched.map((sk: any, i: number) => `## Skill ${i + 1}: ${sk.name}
+Description: ${sk.description}
+${sk.system_prompt ? `Instructions: ${sk.system_prompt}\n` : ''}Steps:
+${(sk.steps || []).map((s: any, j: number) => `  ${j + 1}. ${s.note || s.tool}`).join('\n')}`).join('\n\n')}`;
+    // Mark first match as the primary skill
+    await setStatus(supabase, runId, { skill_id: matched[0].id });
+    await appendEvent(supabase, runId, { type: 'skill_matched', name: matched[0].name, id: matched[0].id });
+  }
+
+  const systemPromptFull = systemPrompt + skillContext + `\n\n# Skills system
+You can also call \`save_skill\` after a successful novel routine — it proposes saving the workflow so the user can approve and reuse it later. Only propose when the task is genuinely repeatable.`;
+
   const messages: any[] = [
-    { role: 'system', content: systemPrompt },
+    { role: 'system', content: systemPromptFull },
     { role: 'user', content: run.prompt },
   ];
 
