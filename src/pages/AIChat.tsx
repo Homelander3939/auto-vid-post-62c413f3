@@ -515,6 +515,12 @@ export default function AIChat() {
                     </div>
                   )}
 
+                  {/* Agent run panels — extract __AGENT_RUN__:<uuid> markers */}
+                  {msg.role === 'assistant' && msg.content && (msg.content.match(/__AGENT_RUN__:([0-9a-f-]+)/g) || []).map((m, idx) => {
+                    const id = m.replace('__AGENT_RUN__:', '');
+                    return <div key={idx} className="w-full mb-2"><AgentRunPanel runId={id} /></div>;
+                  })}
+
                   {/* Message bubble */}
                   {msg.content && (
                     <div className={`rounded-2xl px-4 py-2.5 text-sm ${
@@ -526,7 +532,7 @@ export default function AIChat() {
                     }`}>
                       {msg.role === 'assistant' ? (
                         <div className="prose prose-sm prose-neutral dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_pre]:bg-muted [&_pre]:rounded-lg [&_code]:text-xs">
-                          <ReactMarkdown>{msg.content}</ReactMarkdown>
+                          <ReactMarkdown>{msg.content.replace(/__AGENT_RUN__:[0-9a-f-]+\n?/g, '')}</ReactMarkdown>
                         </div>
                       ) : (
                         <span className="whitespace-pre-wrap break-words">{msg.content}</span>
