@@ -141,6 +141,36 @@ const tools = [
   {
     type: 'function',
     function: {
+      name: 'save_skill',
+      description: 'Propose saving the routine you just executed as a reusable Skill (like OpenClaw/Hermes skills). The user will review and approve from the Skills page. Use this when the task represents a repeatable workflow worth memorizing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Short skill name, e.g. "Daily LinkedIn digest"' },
+          description: { type: 'string' },
+          triggers: { type: 'array', items: { type: 'string' }, description: 'Phrases that should auto-suggest this skill in future' },
+          steps: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                tool: { type: 'string' },
+                note: { type: 'string' },
+                args: { type: 'object', additionalProperties: true },
+              },
+              required: ['note'],
+            },
+          },
+          system_prompt: { type: 'string', description: 'Extra instructions to load when re-running this skill' },
+          tags: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['name', 'description', 'steps'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'finish',
       description: 'Mark the agent task as complete. Call this LAST with a short summary of what was accomplished and any links/paths the user should know about.',
       parameters: {
