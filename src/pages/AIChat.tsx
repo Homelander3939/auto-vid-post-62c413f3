@@ -78,7 +78,8 @@ interface ChatContextMessage {
 const APP_CHAT_STORAGE_KEY = 'ai-chat-browser-history-v1';
 const MAX_STORED_MESSAGES = 200;
 const BROWSER_MIRROR_SOURCE = 'browser-mirror';
-const MAX_TEXT_ATTACHMENT_CHARS = 10_000;
+const MAX_TEXT_ATTACHMENT_LENGTH = 10_000;
+const AGENT_RUN_MARKER_PREFIX = '__AGENT_RUN__:';
 const SUGGESTED_PROMPTS = [
   'Check queued jobs',
   'Show scheduled uploads',
@@ -463,8 +464,8 @@ export default function AIChat() {
       if (file.type.startsWith('text/') || /\.(txt|md|csv|json)$/.test(file.name)) {
         try {
           textContent = await file.text();
-          if (textContent.length > MAX_TEXT_ATTACHMENT_CHARS) {
-            textContent = textContent.slice(0, MAX_TEXT_ATTACHMENT_CHARS) + '\n... (truncated)';
+          if (textContent.length > MAX_TEXT_ATTACHMENT_LENGTH) {
+            textContent = textContent.slice(0, MAX_TEXT_ATTACHMENT_LENGTH) + '\n... (truncated)';
           }
         } catch {
           textContent = undefined;
@@ -561,7 +562,7 @@ export default function AIChat() {
           throw new Error(data?.error || error?.message || 'Agent run did not start');
         }
 
-        const startedMessage = `__AGENT_RUN__:${data.runId}
+        const startedMessage = `${AGENT_RUN_MARKER_PREFIX}${data.runId}
 🚀 Real agent run started.
 
 I switched this request from normal chat mode into autonomous execution so you can watch the real plan, tools, progress, and any errors live in this tab.
@@ -784,8 +785,8 @@ Open the activity panel on the right if you want to follow the process flow whil
                       </div>
                     )}
 
-                    {msg.role === 'assistant' && msg.content && (msg.content.match(/__AGENT_RUN__:([0-9a-f-]+)/g) || []).map((m, idx) => {
-                      const id = m.replace('__AGENT_RUN__:', '');
+                    {msg.role === 'assistant' && msg.content && (msg.content.match(new RegExp(`${AGENT_RUN_MARKER_PREFIX}([0-9a-f-]+)`, 'g')) || []).map((m, idx) => {
+                      const id = m.replace(AGENT_RUN_MARKER_PREFIX, '');
                       return <div key={idx} className="mb-2 w-full"><AgentRunPanel runId={id} /></div>;
                     })}
 
@@ -793,13 +794,13 @@ Open the activity panel on the right if you want to follow the process flow whil
                       <div className={`rounded-2xl px-4 py-2.5 text-sm ${
                         msg.role === 'user'
                           ? msg.source === 'telegram'
-                            ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/30 dark:text-sky-100'
-                            : 'bg-primary text-primary-foreground'
+                          ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/30 dark:text-sky-100'
+                          : 'bg-primary text-primary-foreground'
                           : 'bg-secondary text-secondary-foreground'
                       }`}>
                         {msg.role === 'assistant' ? (
                           <div className="prose prose-sm max-w-none prose-neutral dark:prose-invert [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_code]:text-xs [&_pre]:rounded-lg [&_pre]:bg-muted">
-                            <ReactMarkdown>{msg.content.replace(/__AGENT_RUN__:[0-9a-f-]+\n?/g, '')}</ReactMarkdown>
+                            <ReactMarkdown>{msg.content.replace(new RegExp(`${AGENT_RUN_MARKER_PREFIX}[0-9a-f-]+\\n?`, 'g'), '')}</ReactMarkdown>
                           </div>
                         ) : (
                           <span className="whitespace-pre-wrap break-words">{msg.content}</span>

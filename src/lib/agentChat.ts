@@ -15,19 +15,21 @@ const AGENTIC_PATTERNS = [
   /\b(build|create|generate|design|code|prototype|develop)\b[\s\S]{0,80}\b(app|website|landing page|portfolio|workflow|automation|agent|flow)\b/i,
   /\b(open|use|run)\b[\s\S]{0,40}\bbrowser\b/i,
 ];
+const MIN_AGENTIC_PROMPT_LENGTH = 220;
+const MAX_ATTACHMENT_PREVIEW_LENGTH = 1_200;
 
 export function shouldLaunchAgentRun(text: string, files: AgentChatAttachment[] = []): boolean {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (!normalized && files.length === 0) return false;
   if (files.length > 0 && files.some((file) => !file.isImage && !!file.textContent)) return true;
-  if (normalized.length >= 220) return true;
+  if (normalized.length >= MIN_AGENTIC_PROMPT_LENGTH) return true;
   return AGENTIC_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function describeAttachment(file: AgentChatAttachment): string {
   const meta = [file.type, file.size].filter(Boolean).join(', ');
   const preview = file.textContent
-    ? `\nPreview:\n${file.textContent.slice(0, 1200)}${file.textContent.length > 1200 ? '\n…' : ''}`
+    ? `\nPreview:\n${file.textContent.slice(0, MAX_ATTACHMENT_PREVIEW_LENGTH)}${file.textContent.length > MAX_ATTACHMENT_PREVIEW_LENGTH ? '\n…' : ''}`
     : '';
   return `- ${file.name}${meta ? ` (${meta})` : ''}${file.url ? `\nURL: ${file.url}` : ''}${preview}`;
 }
