@@ -73,6 +73,38 @@ export interface AgentSettings {
   workspacePath: string;
 }
 
+function getMissingColumnName(error: { message?: string; details?: string } | null | undefined): string | null {
+  const text = [error?.message, error?.details].filter(Boolean).join(' ');
+  const quoted = text.match(/Could not find the '([^']+)' column/i);
+  if (quoted?.[1]) return quoted[1];
+  const doubleQuoted = text.match(/column "([^"]+)"/i);
+  if (doubleQuoted?.[1]) return doubleQuoted[1];
+  return null;
+}
+
+async function updateAppSettingsCompat(payload: Record<string, unknown>): Promise<void> {
+  const nextPayload = { ...payload };
+  const removedColumns = new Set<string>();
+  const maxRetries = Math.min(Math.max(Object.keys(nextPayload).length, 1), 6);
+  let attempts = 0;
+
+  while (Object.keys(nextPayload).length > 0 && attempts < maxRetries) {
+    attempts += 1;
+    const { error } = await (supabase as any).from('app_settings').update(nextPayload).eq('id', 1);
+    if (!error) return;
+
+    const missingColumn = getMissingColumnName(error);
+    if (!missingColumn || !(missingColumn in nextPayload) || removedColumns.has(missingColumn)) {
+      throw new Error(error.message);
+    }
+
+    removedColumns.add(missingColumn);
+    delete nextPayload[missingColumn];
+  }
+
+  throw new Error('Could not update agent settings: all retryable columns were rejected');
+}
+
 // Heuristic: detect provider from API key prefix.
 // Returns { research?, image? } — both can be set if the key is ambiguous.
 export function detectProviderFromKey(key: string): { research?: string; image?: string } {
@@ -157,7 +189,7 @@ export async function saveAgentSettings(s: AgentSettings): Promise<void> {
     id: k.id, provider: k.provider, apiKey: k.apiKey,
     model: k.model || '', label: k.label || '', enabled: k.enabled !== false,
   }));
-  const { error } = await supabase.from('app_settings').update({
+  await updateAppSettingsCompat({
     research_provider: s.researchProvider,
     research_api_key: s.researchApiKey,
     image_provider: s.imageProvider,
@@ -172,8 +204,7 @@ export async function saveAgentSettings(s: AgentSettings): Promise<void> {
     agent_memory_max_items: Math.min(Math.max(Number(s.memoryMaxItems) || 8, 1), 20),
     agent_shell_enabled: s.shellEnabled === true,
     agent_workspace_path: s.workspacePath || '',
-  } as any).eq('id', 1);
-  if (error) throw new Error(error.message);
+  });
 }
 
 // --- Social accounts ---
