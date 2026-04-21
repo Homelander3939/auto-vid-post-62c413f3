@@ -216,6 +216,20 @@ const tools = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'run_agent',
+      description: 'START A FULL AUTONOMOUS AGENT (like Claude Code / Codex) for any complex multi-step task: building apps/websites, deep research with synthesis, generating + saving files to the user\'s PC, opening preview in browser, combining research + code + images. ALWAYS use this for anything beyond a simple one-shot tool call. The agent plans, executes, and reports back live with steps visible to the user.',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'The full task description, verbatim from the user.' },
+        },
+        required: ['task'],
+      },
+    },
+  },
 ];
 
 /* ── Tool executor ────────────────────────────────────── */
@@ -435,6 +449,20 @@ async function executeTool(supabase: any, name: string, args: any, supabaseUrl: 
       });
       if (error) return `❌ ${error.message}`;
       return `🌐 Browser task queued: "${args.task}". Updates via Telegram.`;
+    }
+    case 'run_agent': {
+      try {
+        const r = await fetch(`${supabaseUrl}/functions/v1/agent-run`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: args.task, source: 'ai-chat' }),
+        });
+        const d = await r.json();
+        if (!r.ok || !d.runId) return `❌ Agent failed to start: ${d.error || 'unknown'}`;
+        return `__AGENT_RUN__:${d.runId}\n🤖 Started agent for: "${truncatePrompt(args.task, 100)}". Watch live steps below — plan, research, file writes, and preview will appear in real-time.`;
+      } catch (e) {
+        return `❌ Agent start failed: ${(e as Error).message}`;
+      }
     }
     default:
       return `Unknown tool: ${name}`;
