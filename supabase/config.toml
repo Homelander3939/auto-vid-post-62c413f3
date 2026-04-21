@@ -14,3 +14,6 @@ verify_jwt = false
 
 [functions.run-due-generations]
 verify_jwt = false
+
+[functions.agent-run]
+verify_jwt = false

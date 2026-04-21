@@ -216,6 +216,20 @@ const tools = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'run_agent',
+      description: 'START A FULL AUTONOMOUS AGENT (like Claude Code / Codex) for any complex multi-step task: building apps/websites, deep research with synthesis, generating + saving files to the user\'s PC, opening preview in browser, combining research + code + images. ALWAYS use this for anything beyond a simple one-shot tool call. The agent plans, executes, and reports back live with steps visible to the user.',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'The full task description, verbatim from the user.' },
+        },
+        required: ['task'],
+      },
+    },
+  },
 ];
 
 /* ── Tool executor ────────────────────────────────────── */
