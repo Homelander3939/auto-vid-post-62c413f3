@@ -366,6 +366,8 @@ type ResearchSource = { title: string; url: string; snippet?: string };
 
 function inferResearchProvider(provider: string, apiKey: string): string {
   if (provider && provider !== 'auto') return provider;
+  // Heuristic only for auto mode. The Settings UI auto-detects providers earlier,
+  // so this is just a best-effort fallback when a key exists but the provider was left on auto.
   const key = String(apiKey || '').trim();
   if (/^BSA[A-Za-z0-9_-]{10,}$/i.test(key)) return 'brave';
   if (/^tvly-[A-Za-z0-9]{10,}$/i.test(key)) return 'tavily';
@@ -504,6 +506,7 @@ async function execResearchDeep(args: any, providers: any, lovableKey: string, s
 
 function inferImageProvider(provider: string, apiKey: string): string {
   if (provider && provider !== 'auto') return provider;
+  // Heuristic only for auto mode. Prefer the explicit saved provider whenever present.
   const key = String(apiKey || '').trim();
   if (/^xai-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'xai';
   if (/^nvapi-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'nvidia';

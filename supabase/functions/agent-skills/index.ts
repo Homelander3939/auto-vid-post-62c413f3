@@ -16,7 +16,10 @@ function slugify(s: string): string {
 }
 
 function parseGitHubRepo(url: string): { owner: string; repo: string; branch?: string; path?: string } | null {
-  const m = url.match(/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/(?:tree|blob)\/([^/]+)(?:\/(.+))?)?$/);
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return null; }
+  if (!['github.com', 'www.github.com'].includes(parsed.hostname)) return null;
+  const m = parsed.pathname.match(/^\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/(?:tree|blob)\/([^/]+)(?:\/(.+))?)?\/?$/);
   if (!m) return null;
   return {
     owner: m[1],
@@ -24,6 +27,15 @@ function parseGitHubRepo(url: string): { owner: string; repo: string; branch?: s
     branch: m[3],
     path: m[4] || '',
   };
+}
+
+function isRawGitHubContentUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === 'raw.githubusercontent.com';
+  } catch {
+    return false;
+  }
 }
 
 function toRawGitHubUrl(owner: string, repo: string, branch: string, filePath: string) {
@@ -112,7 +124,7 @@ function normalizeSkillRecord(raw: any, sourceUrl: string, fallbackName: string)
 }
 
 async function fetchRepoSkills(url: string): Promise<any[]> {
-  if (url.includes('raw.githubusercontent.com')) {
+  if (isRawGitHubContentUrl(url)) {
     const r = await fetch(url);
     if (!r.ok) throw new Error(`Could not fetch ${url}: ${r.status}`);
     const text = await r.text();

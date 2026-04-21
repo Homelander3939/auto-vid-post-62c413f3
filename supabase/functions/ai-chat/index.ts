@@ -240,6 +240,13 @@ function truncatePrompt(s: string, n = 80): string {
 }
 
 function buildMessageForModel(message: any) {
+  const formatFileSize = (value: unknown) => {
+    const size = typeof value === 'number' ? value : Number(value || 0);
+    if (!Number.isFinite(size) || size <= 0) return null;
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  };
   const images = Array.isArray(message?.images) ? message.images.filter((img: any) => img?.url) : [];
   const files = Array.isArray(message?.files) ? message.files : [];
   if (images.length > 0) {
@@ -249,7 +256,7 @@ function buildMessageForModel(message: any) {
     if (files.length > 0) {
       const fileSummary = files
         .filter((file: any) => !file?.isImage)
-        .map((file: any) => `- ${file.name} (${file.type || 'file'}${file.size ? `, ${file.size}` : ''})${file.textContent ? `\n${file.textContent}` : ''}`)
+        .map((file: any) => `- ${file.name} (${file.type || 'file'}${formatFileSize(file.size) ? `, ${formatFileSize(file.size)}` : ''})${file.textContent ? `\n${file.textContent}` : ''}`)
         .join('\n');
       if (fileSummary) content.push({ type: 'text', text: `Attached files:\n${fileSummary}` });
     }
@@ -259,7 +266,7 @@ function buildMessageForModel(message: any) {
   if (files.length > 0) {
     let fileContext = message.content || '';
     for (const file of files) {
-      fileContext += `\n\n[Attached file: ${file.name} (${file.type || 'file'}${file.size ? `, ${file.size}` : ''})]`;
+      fileContext += `\n\n[Attached file: ${file.name} (${file.type || 'file'}${formatFileSize(file.size) ? `, ${formatFileSize(file.size)}` : ''})]`;
       if (file.textContent) fileContext += `\n${file.textContent}`;
     }
     return { role: message.role, content: fileContext.trim() };

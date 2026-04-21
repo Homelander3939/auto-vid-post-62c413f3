@@ -16,7 +16,11 @@ const ALLOWED_SHELL = ['npm', 'npx', 'node', 'python', 'python3', 'git', 'dir', 
 
 function getWorkspaceRoot(workspaceRoot) {
   const raw = String(workspaceRoot || '').trim();
-  return raw ? path.resolve(raw) : DEFAULT_WORKSPACE_ROOT;
+  const resolved = raw ? path.resolve(raw) : DEFAULT_WORKSPACE_ROOT;
+  if (resolved === path.parse(resolved).root) {
+    throw new Error('Workspace root cannot be the filesystem root');
+  }
+  return resolved;
 }
 
 function ensureRoot(workspaceRoot) {
@@ -42,14 +46,21 @@ function safeJoin(slug, rel, workspaceRoot) {
 
 /* ── Static preview server (single shared HTTP server, projects served by slug) ── */
 const previewServers = new Map();
-let previewPortCounter = 3010;
 
-function startPreviewServer(workspaceRoot) {
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function startPreviewServer(workspaceRoot) {
   const root = ensureRoot(workspaceRoot);
   const existing = previewServers.get(root);
   if (existing) return existing.port;
 
-  const port = previewPortCounter++;
   const previewServer = http.createServer((req, res) => {
     try {
       const u = url.parse(req.url);
@@ -58,7 +69,7 @@ function startPreviewServer(workspaceRoot) {
       if (parts.length === 0) {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         const projects = fs.readdirSync(root).filter((d) => fs.statSync(path.join(root, d)).isDirectory());
-        res.end(`<h1>Agent Workspace</h1><ul>${projects.map((p) => `<li><a href="/${p}/">${p}</a></li>`).join('')}</ul>`);
+        res.end(`<h1>Agent Workspace</h1><ul>${projects.map((p) => `<li><a href="/${encodeURIComponent(p)}/">${escapeHtml(p)}</a></li>`).join('')}</ul>`);
         return;
       }
       const slug = parts[0];
@@ -81,9 +92,20 @@ function startPreviewServer(workspaceRoot) {
       res.writeHead(500); res.end(String(e.message || e));
     }
   });
-  previewServer.listen(port, () => {
-    console.log(`[AgentWorkspace] Preview server on http://localhost:${port}`);
+
+  const port = await new Promise((resolve, reject) => {
+    previewServer.once('error', reject);
+    previewServer.listen(0, () => {
+      const address = previewServer.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Could not determine preview server port'));
+        return;
+      }
+      resolve(address.port);
+    });
   });
+
+  console.log(`[AgentWorkspace] Preview server on http://localhost:${port}`);
   previewServers.set(root, { server: previewServer, port });
   return port;
 }
@@ -157,7 +179,7 @@ async function openInBrowser({ projectSlug, target, workspaceRoot }) {
   // If it doesn't look like a URL, treat as workspace-relative file path
   if (!/^https?:\/\//i.test(target)) {
     // If preview server running, prefer URL
-    const port = startPreviewServer(workspaceRoot);
+    const port = await startPreviewServer(workspaceRoot);
     toOpen = `http://localhost:${port}/${projectSlug}/${target.replace(/^\/+/, '')}`;
   }
   return new Promise((resolve) => {
@@ -173,7 +195,7 @@ async function openInBrowser({ projectSlug, target, workspaceRoot }) {
 }
 
 async function servePreview({ projectSlug, workspaceRoot }) {
-  const port = startPreviewServer(workspaceRoot);
+  const port = await startPreviewServer(workspaceRoot);
   const previewUrl = `http://localhost:${port}/${projectSlug}/`;
   return { ok: true, url: previewUrl, message: `Preview running at ${previewUrl}` };
 }
