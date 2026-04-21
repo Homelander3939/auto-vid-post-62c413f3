@@ -629,6 +629,19 @@ You can also call \`save_skill\` after a successful novel routine — it propose
             toolResultText = typeof r.result === 'string' ? r.result : JSON.stringify(r.result).slice(0, 1500);
             toolResultData = typeof r.result === 'object' ? r.result : null;
           }
+        } else if (name === 'save_skill') {
+          await setStatus(supabase, runId, {
+            pending_skill: {
+              name: args.name,
+              description: args.description,
+              triggers: args.triggers || [],
+              steps: args.steps || [],
+              system_prompt: args.system_prompt || '',
+              tags: args.tags || [],
+            },
+          });
+          await appendEvent(supabase, runId, { type: 'skill_proposed', name: args.name });
+          toolResultText = `Skill "${args.name}" proposed. The user can approve it from the Skills page to reuse it later.`;
         } else if (name === 'finish') {
           await appendEvent(supabase, runId, { type: 'finish', summary: args.summary || 'Done.', artifacts: args.artifacts || [] });
           await setStatus(supabase, runId, {
