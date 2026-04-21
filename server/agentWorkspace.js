@@ -20,6 +20,13 @@ function getWorkspaceRoot(workspaceRoot) {
   if (resolved === path.parse(resolved).root) {
     throw new Error('Workspace root cannot be the filesystem root');
   }
+  const normalized = resolved.toLowerCase();
+  const systemRoots = process.platform === 'win32'
+    ? ['c:\\windows', 'c:\\program files', 'c:\\program files (x86)']
+    : ['/usr', '/etc', '/bin', '/sbin'];
+  if (systemRoots.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}${path.sep}`))) {
+    throw new Error('Workspace root cannot point to a system directory');
+  }
   return resolved;
 }
 

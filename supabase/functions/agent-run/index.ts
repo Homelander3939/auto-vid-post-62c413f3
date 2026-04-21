@@ -369,9 +369,13 @@ function inferResearchProvider(provider: string, apiKey: string): string {
   // Heuristic only for auto mode. The Settings UI auto-detects providers earlier,
   // so this is just a best-effort fallback when a key exists but the provider was left on auto.
   const key = String(apiKey || '').trim();
+  // Brave Search API keys usually start with BSA...
   if (/^BSA[A-Za-z0-9_-]{10,}$/i.test(key)) return 'brave';
+  // Tavily keys use the tvly- prefix.
   if (/^tvly-[A-Za-z0-9]{10,}$/i.test(key)) return 'tavily';
+  // Serper keys are 64-char hex strings.
   if (/^[a-f0-9]{64}$/i.test(key)) return 'serper';
+  // Firecrawl keys use the fc- prefix.
   if (/^fc-[A-Za-z0-9]{10,}$/i.test(key)) return 'firecrawl';
   return 'local';
 }
@@ -508,11 +512,17 @@ function inferImageProvider(provider: string, apiKey: string): string {
   if (provider && provider !== 'auto') return provider;
   // Heuristic only for auto mode. Prefer the explicit saved provider whenever present.
   const key = String(apiKey || '').trim();
+  // xAI keys use the xai- prefix.
   if (/^xai-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'xai';
+  // NVIDIA NIM keys use the nvapi- prefix.
   if (/^nvapi-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'nvidia';
+  // Google AI Studio keys use the AIza prefix.
   if (/^AIza[A-Za-z0-9_-]{20,}$/.test(key)) return 'google';
+  // OpenAI keys use sk- / sk-proj- prefixes.
   if (/^sk-(proj-)?[A-Za-z0-9_-]{20,}$/.test(key)) return 'openai';
+  // Pexels keys are long mixed-case alphanumeric strings.
   if (/^[A-Za-z0-9]{50,60}$/.test(key) && !/^[a-f0-9]+$/i.test(key)) return 'pexels';
+  // Unsplash access keys are shorter mixed-case tokens.
   if (/^[A-Za-z0-9_-]{40,48}$/.test(key)) return 'unsplash';
   return 'lovable';
 }

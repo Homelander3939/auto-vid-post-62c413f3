@@ -56,7 +56,10 @@ function parseMarkdownSkill(raw: string, sourceUrl: string, filePath: string) {
   }
 
   const headingMatch = text.match(/^#\s+(.+)$/m);
-  const name = frontmatter.name || headingMatch?.[1]?.trim() || filePath.split('/').pop()?.replace(/\.(md|txt)$/i, '') || 'Imported Skill';
+  const fileName = filePath.split('/').pop() || 'Imported Skill';
+  const derivedName = fileName.replace(/\.(md|txt)$/i, '');
+  const headingName = headingMatch?.[1]?.trim();
+  const name = frontmatter.name || headingName || derivedName || 'Imported Skill';
   const description = frontmatter.description
     || text.split('\n').map((line) => line.trim()).find((line) => line && !line.startsWith('#') && !line.startsWith('-') && !line.startsWith('*') && !/^\d+\./.test(line))
     || '';
