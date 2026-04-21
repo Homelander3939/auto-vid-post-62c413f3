@@ -12,7 +12,7 @@ const http = require('http');
 const url = require('url');
 
 const DEFAULT_WORKSPACE_ROOT = path.join(__dirname, 'data', 'agent-workspace');
-const ALLOWED_SHELL = ['npm', 'npx', 'node', 'python', 'python3', 'git', 'dir', 'ls', 'echo', 'type', 'cat'];
+const ALLOWED_SHELL = ['npm', 'npx', 'node', 'python', 'python3', 'py', 'pip', 'pip3', 'git', 'dir', 'ls', 'echo', 'type', 'cat'];
 
 function getWorkspaceRoot(workspaceRoot) {
   const raw = String(workspaceRoot || '').trim();

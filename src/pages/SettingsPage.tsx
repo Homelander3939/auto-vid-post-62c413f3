@@ -1159,7 +1159,7 @@ export default function SettingsPage() {
                   />
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  Allowlisted commands only: npm, npx, node, python, git, ls/dir, echo, cat/type.
+                  Allowlisted commands only: npm, npx, node, python/python3/py, pip/pip3, git, ls/dir, echo, cat/type.
                 </p>
               </div>
             </div>

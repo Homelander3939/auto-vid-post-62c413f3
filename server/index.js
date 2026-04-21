@@ -1386,13 +1386,15 @@ async function processPendingCommands() {
           } else if (cmd.command === 'open_browser') {
             const task = cmd.args?.task || 'Open the browser and navigate to Google';
             const startUrl = cmd.args?.url || null;
+            const silent = cmd.args?.silent === true;
             const settings = await getSettings();
 
             console.log(`[Commands] open_browser: task="${task}"${startUrl ? `, url="${startUrl}"` : ''}`);
-            const { summary } = await runBrowserTask(task, startUrl);
-            await notifyTelegram(settings, summary);
+            const browserResult = await runBrowserTask(task, startUrl);
+            const { summary } = browserResult;
+            if (!silent) await notifyTelegram(settings, summary);
             await supabase.from('pending_commands').update({
-              status: 'completed', result: 'done', completed_at: new Date().toISOString(),
+              status: 'completed', result: JSON.stringify(browserResult), completed_at: new Date().toISOString(),
             }).eq('id', cmd.id);
           } else if (cmd.command === 'image_search') {
             const query = cmd.args?.query || '';

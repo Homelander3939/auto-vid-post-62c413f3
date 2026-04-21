@@ -4,7 +4,7 @@
 // - Streams every step (plan, tool_call, tool_result, thought, file_write, done) into
 //   agent_runs.events so the web UI and Telegram can render a live activity feed.
 // - Tools that need the local Windows PC (write_file, read_file, run_shell, open_in_browser,
-//   serve_preview) are queued for the local worker through pending_commands; the worker
+//   serve_preview, browser_task) are queued for the local worker through pending_commands; the worker
 //   appends results back into agent_runs.events.
 //
 // Two entry modes:
@@ -107,7 +107,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'run_shell',
-      description: 'Run a shell command in the workspace folder (allowlisted: npm, npx, node, python, git, dir, ls). Requires user to have enabled shell access in Settings.',
+      description: 'Run a shell command in the workspace folder (allowlisted: npm, npx, node, python/python3/py, pip/pip3, git, dir, ls). Requires user to have enabled shell access in Settings.',
       parameters: {
         type: 'object',
         properties: {
@@ -136,6 +136,21 @@ const tools = [
       name: 'serve_preview',
       description: 'Start a static preview server for the workspace folder. Returns a URL the user can open. Best for HTML/JS apps.',
       parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_task',
+      description: 'Run a natural-language browser automation task on the user\'s local PC using the existing browser agent. Best for website research, parsing, scraping, or form workflows that need a real browser.',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'Natural-language browser task to perform.' },
+          url: { type: 'string', description: 'Optional starting URL.' },
+        },
+        required: ['task'],
+      },
     },
   },
   {
@@ -726,28 +741,38 @@ async function runAgent(supabase: any, runId: string, lovableKey: string, telegr
   const run = await getRun(supabase, runId);
   if (!run) return;
   const providers = await getProviderMap(supabase);
+  const workspaceSlug = slugify(run.prompt);
 
-  const systemPrompt = `You are an autonomous coding/research agent (like Claude Code or Codex) running inside a video & social-post automation app.
+  const systemPrompt = `You are an elite autonomous local-PC agent inspired by Claude Code, OpenClaw, and Hermes.
 
 # Your environment
-- Workspace folder on the user's local Windows PC (slug: "${slugify(run.prompt)}")${providers.workspaceRoot ? ` rooted at "${providers.workspaceRoot}"` : ''}.
-- Tools to: research the web, generate images, read/write/list files in the workspace, run allowlisted shell commands (${providers.shellEnabled ? 'ENABLED' : 'DISABLED — do not call run_shell'}), open URLs/files in the user's default browser, and start a static preview server.
+- Workspace folder on the user's local Windows PC (slug: "${workspaceSlug}")${providers.workspaceRoot ? ` rooted at "${providers.workspaceRoot}"` : ''}.
+- Tools to: research the web, generate images, read/write/list files in the workspace, run allowlisted shell commands (${providers.shellEnabled ? 'ENABLED' : 'DISABLED — do not call run_shell'}), open URLs/files in the user's default browser, start a static preview server, and run deep browser automation tasks on the PC.
 - Configured providers: chat=${providers.chat.provider}/${providers.chat.model}, research=${providers.research.provider}, image=${providers.image.provider}.
+- Local machine capabilities available through tools: Node.js, npm/npx, Python, git, browser sessions, workspace files, and local previews.
 
-# Workflow (MUST follow)
-1. ALWAYS call \`plan\` FIRST with 3-7 concise steps before doing anything else.
-2. Then execute tools one at a time, observing each result before the next call.
-3. Use \`research_deep\` for anything time-sensitive or factual you don't already know.
-4. For "build me an app/page" requests: write all needed files with \`write_file\`, then \`serve_preview\` and \`open_in_browser\` so the user can see it immediately.
-5. For "open X / browse to Y" requests: use \`open_in_browser\`.
-6. ALWAYS finish with \`finish\` — include a short summary and artifacts (file paths, preview URL, image URLs).
-7. Be DECISIVE. Don't ask the user clarifying questions — make reasonable choices.
-8. Keep file contents production-ready (proper HTML5, modern CSS/JS, valid syntax).
+# Core operating rules (MUST follow)
+1. FIRST response MUST be a single \`plan\` tool call with 3-7 concise steps. No other tool calls in that first response.
+2. After planning, use at most ONE non-\`plan\` tool call per assistant turn. Observe the result before choosing the next action.
+3. Think like a senior operator: inspect, verify, act, check results, then continue.
+4. Prefer reading/listing existing files before rewriting them when the task touches an existing project.
+5. Use \`research_deep\` for time-sensitive facts and \`browser_task\` when the task needs a real browser session, website parsing, scraping, or interactive navigation.
+6. For "build me an app/page/tool" requests: create or inspect files, write production-ready code, run shell commands when needed, then \`serve_preview\` and \`open_in_browser\`.
+7. For local coding/data automation, use Node.js or Python via \`run_shell\` when that is the most reliable path.
+8. Do not stop early. Continue until the task is actually complete, blocked by disabled permissions, or you have a concrete artifact to hand off.
+9. ALWAYS end with \`finish\` including a short summary and useful artifacts (files, URLs, previews, images).
 
 # Quality bar
 - Output is shown live to the user step-by-step. Be concise in tool args.
 - For HTML apps: include Tailwind via CDN, proper meta tags, responsive layout.
 - Image prompts: be specific about style, lighting, composition.
+- When using shell tools, prefer deterministic commands and verify outputs.
+- If shell access is disabled, adapt with file writes, previews, browser tools, and research rather than failing immediately.
+
+# Task styles to emulate
+- Claude-Code style: inspect workspace, plan, edit carefully, run validation, summarize artifacts.
+- OpenClaw/Hermes style: chain research, browser work, file generation, and reusable skill extraction for complex multi-step workflows.
+- For broad automation ideas like website parsing, ad research, or market-data tooling, build reusable local scripts/workflows — do not place trades or take irreversible external actions on the user's behalf unless the user explicitly asks and the tool exists.
 
 User request: ${run.prompt}`;
 
@@ -778,6 +803,7 @@ You can also call \`save_skill\` after a successful novel routine — it propose
     { role: 'system', content: systemPromptFull },
     { role: 'user', content: run.prompt },
   ];
+  let hasPlan = false;
 
   let telegramMsgId: number | null = run.telegram_status_message_id ?? null;
   const updateTelegram = async () => {
@@ -826,7 +852,8 @@ You can also call \`save_skill\` after a successful novel routine — it propose
       }
 
       let finished = false;
-      for (const tc of calls) {
+      for (let callIndex = 0; callIndex < calls.length; callIndex++) {
+        const tc = calls[callIndex];
         let args: any = {};
         try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* */ }
         const name = tc.function.name;
@@ -842,6 +869,7 @@ You can also call \`save_skill\` after a successful novel routine — it propose
             : name === 'run_shell' ? args.command?.slice(0, 80)
             : name === 'open_in_browser' ? args.target
             : name === 'serve_preview' ? 'workspace'
+            : name === 'browser_task' ? args.task?.slice(0, 80)
             : name === 'save_skill' ? args.name
             : name === 'finish' ? 'summary'
             : '',
@@ -852,7 +880,14 @@ You can also call \`save_skill\` after a successful novel routine — it propose
         let toolResultData: any = null;
         let ok = true;
 
-        if (name === 'plan') {
+        if (!hasPlan && name !== 'plan') {
+          ok = false;
+          toolResultText = 'You must call plan first before any other tool. Re-issue your next response as a single plan tool call.';
+        } else if (callIndex > 0 && name !== 'plan') {
+          ok = false;
+          toolResultText = 'Only one non-plan tool call is allowed per turn. Wait for this result, then decide the next tool.';
+        } else if (name === 'plan') {
+          hasPlan = Array.isArray(args.steps) && args.steps.length > 0;
           await appendEvent(supabase, runId, { type: 'plan', steps: args.steps || [] });
           toolResultText = `Plan recorded: ${(args.steps || []).length} steps.`;
         } else if (name === 'research_deep') {
@@ -870,17 +905,25 @@ You can also call \`save_skill\` after a successful novel routine — it propose
             ok = false;
             toolResultText = 'Shell access is disabled in Settings → Agent Workspace. Ask the user to enable it.';
           } else {
-            const slug = slugify(run.prompt);
             const r = await queueLocalCommand(supabase, `agent_${name}`, {
               ...args,
               runId,
-              projectSlug: slug,
+              projectSlug: workspaceSlug,
               workspaceRoot: providers.workspaceRoot || '',
             });
             ok = r.ok;
             toolResultText = typeof r.result === 'string' ? r.result : JSON.stringify(r.result).slice(0, 1500);
             toolResultData = typeof r.result === 'object' ? r.result : null;
           }
+        } else if (name === 'browser_task') {
+          const r = await queueLocalCommand(supabase, 'open_browser', {
+            task: args.task,
+            url: args.url || null,
+            silent: true,
+          });
+          ok = r.ok;
+          toolResultText = typeof r.result === 'string' ? r.result : JSON.stringify(r.result).slice(0, 1500);
+          toolResultData = typeof r.result === 'object' ? r.result : null;
         } else if (name === 'save_skill') {
           await setStatus(supabase, runId, {
             pending_skill: {
