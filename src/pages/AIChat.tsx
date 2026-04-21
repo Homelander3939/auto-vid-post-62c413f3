@@ -10,6 +10,7 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import ReactMarkdown from 'react-markdown';
+import AgentRunPanel from '@/components/AgentRunPanel';
 
 /* ── Types ───────────────────────────────────────────── */
 
