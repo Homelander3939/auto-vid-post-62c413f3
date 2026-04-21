@@ -73,7 +73,8 @@ export default function AgentSkills() {
         body: { action: 'install_github', url: installUrl.trim() },
       });
       if (error || data?.error) throw new Error(data?.error || error?.message);
-      toast.success(`Installed: ${data.skill.name}`);
+      const installedCount = Number(data?.count || (Array.isArray(data?.skills) ? data.skills.length : 0)) || 1;
+      toast.success(installedCount > 1 ? `Installed ${installedCount} skills` : `Installed: ${data.skill.name}`);
       setInstallUrl('');
       load();
     } catch (e: any) {

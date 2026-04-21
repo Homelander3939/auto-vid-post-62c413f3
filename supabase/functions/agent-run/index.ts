@@ -311,6 +311,7 @@ async function getProviderMap(supabase: any) {
       provider: imageProvider,
       apiKey: imageKey,
       model: imageModel,
+      imageKeys: (Array.isArray(s.image_keys) ? s.image_keys : []).filter((k: any) => k && k.enabled !== false),
     },
     shellEnabled: !!s.agent_shell_enabled,
     workspaceRoot: s.agent_workspace_path || '',
@@ -361,90 +362,321 @@ async function callPlanner(messages: any[], chat: any, lovableKey: string): Prom
 
 /* ── Cloud-side tool executors (research + image — done in edge fn) ──── */
 
-async function execResearchDeep(args: any, providers: any, lovableKey: string): Promise<{ ok: boolean; summary: string; data?: any }> {
-  // Try Perplexity if user has a key
-  if (providers.research.provider === 'perplexity' && providers.research.apiKey) {
+type ResearchSource = { title: string; url: string; snippet?: string };
+
+function inferResearchProvider(provider: string, apiKey: string): string {
+  if (provider && provider !== 'auto') return provider;
+  const key = String(apiKey || '').trim();
+  if (/^BSA[A-Za-z0-9_-]{10,}$/i.test(key)) return 'brave';
+  if (/^tvly-[A-Za-z0-9]{10,}$/i.test(key)) return 'tavily';
+  if (/^[a-f0-9]{64}$/i.test(key)) return 'serper';
+  if (/^fc-[A-Za-z0-9]{10,}$/i.test(key)) return 'firecrawl';
+  return 'local';
+}
+
+async function searchBrave(apiKey: string, query: string, count = 6): Promise<ResearchSource[]> {
+  const r = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`, {
+    headers: { 'X-Subscription-Token': apiKey, Accept: 'application/json' },
+  });
+  if (!r.ok) throw new Error(`Brave ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const d = await r.json();
+  return (d?.web?.results || []).map((item: any) => ({ title: item.title, url: item.url, snippet: item.description || '' }));
+}
+
+async function searchTavily(apiKey: string, query: string, count = 6): Promise<ResearchSource[]> {
+  const r = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey, query, max_results: count, search_depth: 'advanced' }),
+  });
+  if (!r.ok) throw new Error(`Tavily ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const d = await r.json();
+  return (d?.results || []).map((item: any) => ({ title: item.title, url: item.url, snippet: item.content || '' }));
+}
+
+async function searchSerper(apiKey: string, query: string, count = 6): Promise<ResearchSource[]> {
+  const r = await fetch('https://google.serper.dev/search', {
+    method: 'POST',
+    headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q: query, num: count }),
+  });
+  if (!r.ok) throw new Error(`Serper ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const d = await r.json();
+  return (d?.organic || []).map((item: any) => ({ title: item.title, url: item.link, snippet: item.snippet || '' }));
+}
+
+async function searchFirecrawl(apiKey: string, query: string, count = 6): Promise<ResearchSource[]> {
+  const r = await fetch('https://api.firecrawl.dev/v1/search', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, limit: count }),
+  });
+  if (!r.ok) throw new Error(`Firecrawl ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const d = await r.json();
+  return (d?.data || []).map((item: any) => ({ title: item.title || item.metadata?.title || item.url, url: item.url, snippet: item.description || item.markdown || '' }));
+}
+
+async function searchLocalViaCommand(supabase: any, query: string, count = 6): Promise<ResearchSource[]> {
+  const queued = await queueLocalCommand(supabase, 'research_search', { query, count });
+  if (!queued.ok) throw new Error(typeof queued.result === 'string' ? queued.result : 'Local research worker failed');
+  const result = queued.result?.results || queued.result?.result?.results || [];
+  return (Array.isArray(result) ? result : []).map((item: any) => ({
+    title: item.title || item.url || 'Untitled result',
+    url: item.url,
+    snippet: item.snippet || '',
+  })).filter((item: ResearchSource) => !!item.url);
+}
+
+async function runResearchSearch(supabase: any, provider: string, apiKey: string, query: string, count = 6): Promise<{ provider: string; sources: ResearchSource[] }> {
+  const chosen = inferResearchProvider(provider, apiKey);
+  const order = chosen === 'local' ? ['local'] : [chosen, 'local'];
+  let lastError: Error | null = null;
+  for (const candidate of order) {
     try {
-      const r = await fetch('https://api.perplexity.ai/chat/completions', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${providers.research.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: args.depth === 'deep' ? 'sonar-reasoning-pro' : 'sonar-pro',
-          messages: [
-            { role: 'system', content: 'You are a research assistant. Provide a concise factual synthesis with concrete details.' },
-            { role: 'user', content: args.query },
-          ],
-        }),
-      });
-      const d = await r.json();
-      const text = d?.choices?.[0]?.message?.content || '';
-      const sources = d?.citations || [];
-      return {
-        ok: r.ok,
-        summary: `${text.slice(0, 220)}…`,
-        data: { findings: text, sources, provider: 'perplexity' },
-      };
-    } catch (e) {
-      console.error('Perplexity research failed:', e);
+      let sources: ResearchSource[] = [];
+      if (candidate === 'brave' && apiKey) sources = await searchBrave(apiKey, query, count);
+      else if (candidate === 'tavily' && apiKey) sources = await searchTavily(apiKey, query, count);
+      else if (candidate === 'serper' && apiKey) sources = await searchSerper(apiKey, query, count);
+      else if (candidate === 'firecrawl' && apiKey) sources = await searchFirecrawl(apiKey, query, count);
+      else if (candidate === 'local') sources = await searchLocalViaCommand(supabase, query, count);
+      if (sources.length > 0) return { provider: candidate, sources };
+    } catch (error) {
+      lastError = error as Error;
     }
   }
-  // Fallback: ask Lovable AI to do best-effort grounded summary
+  if (lastError) throw lastError;
+  return { provider: chosen, sources: [] };
+}
+
+function trimText(value: string, max = 240) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+async function execResearchDeep(args: any, providers: any, lovableKey: string, supabase: any): Promise<{ ok: boolean; summary: string; data?: any }> {
   try {
-    const r = await fetch(LOVABLE_GATEWAY, {
+    const count = args.depth === 'deep' ? 8 : args.depth === 'light' ? 4 : 6;
+    const { provider, sources } = await runResearchSearch(
+      supabase,
+      providers.research.provider,
+      providers.research.apiKey,
+      args.query,
+      count,
+    );
+    if (sources.length === 0) {
+      return { ok: false, summary: 'Research returned no sources.' };
+    }
+
+    const sourceSummary = sources.slice(0, 6)
+      .map((item, index) => `${index + 1}. ${item.title}\n${item.url}\n${trimText(item.snippet || '', 300)}`)
+      .join('\n\n');
+
+    const llmResp = await fetch(LOVABLE_GATEWAY, {
       method: 'POST',
       headers: { Authorization: `Bearer ${lovableKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'google/gemini-2.5-flash',
         messages: [
-          { role: 'system', content: 'You are a research assistant. Synthesize what you know about the topic in 200-400 words. List key facts and any relevant entities. If recent/news, say so.' },
-          { role: 'user', content: args.query },
+          {
+            role: 'system',
+            content: 'You are a research assistant. Synthesize the supplied search results into a concise, useful summary with concrete facts. Do not invent facts or URLs.',
+          },
+          {
+            role: 'user',
+            content: `Research query: ${args.query}\nProvider: ${provider}\n\nSearch results:\n${sourceSummary}`,
+          },
         ],
       }),
     });
-    const d = await r.json();
-    const text = d?.choices?.[0]?.message?.content || '';
-    return { ok: true, summary: `${text.slice(0, 220)}…`, data: { findings: text, sources: [], provider: 'lovable' } };
+    const llmData = await llmResp.json().catch(() => ({}));
+    const findings = llmData?.choices?.[0]?.message?.content
+      || sources.slice(0, 4).map((item) => `• ${item.title} — ${trimText(item.snippet || '', 180)}`).join('\n');
+
+    return {
+      ok: true,
+      summary: `Found ${sources.length} sources via ${provider}.`,
+      data: { findings, sources, provider },
+    };
   } catch (e) {
     return { ok: false, summary: `Research failed: ${(e as Error).message}` };
   }
 }
 
-async function execGenerateImage(args: any, providers: any, lovableKey: string, supabase: any): Promise<{ ok: boolean; summary: string; data?: any }> {
-  // Default to Lovable AI image generation (Nano Banana). Many users haven't set an image key.
-  const model = providers.image.model && providers.image.model.includes('image') ? providers.image.model : 'google/gemini-2.5-flash-image';
+function inferImageProvider(provider: string, apiKey: string): string {
+  if (provider && provider !== 'auto') return provider;
+  const key = String(apiKey || '').trim();
+  if (/^xai-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'xai';
+  if (/^nvapi-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'nvidia';
+  if (/^AIza[A-Za-z0-9_-]{20,}$/.test(key)) return 'google';
+  if (/^sk-(proj-)?[A-Za-z0-9_-]{20,}$/.test(key)) return 'openai';
+  if (/^[A-Za-z0-9]{50,60}$/.test(key) && !/^[a-f0-9]+$/i.test(key)) return 'pexels';
+  if (/^[A-Za-z0-9_-]{40,48}$/.test(key)) return 'unsplash';
+  return 'lovable';
+}
+
+async function findUnsplashImage(key: string, query: string): Promise<{ url: string; credit: string } | null> {
+  const r = await fetch(`https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=1&orientation=squarish`, {
+    headers: { Authorization: `Client-ID ${key}` },
+  });
+  if (!r.ok) throw new Error(`Unsplash ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const d = await r.json();
+  const img = d?.results?.[0];
+  return img ? { url: img.urls?.regular || img.urls?.full, credit: `Photo by ${img.user?.name || 'Unsplash'}` } : null;
+}
+
+async function findPexelsImage(key: string, query: string): Promise<{ url: string; credit: string } | null> {
+  const r = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=1&orientation=square`, {
+    headers: { Authorization: key },
+  });
+  if (!r.ok) throw new Error(`Pexels ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const d = await r.json();
+  const img = d?.photos?.[0];
+  return img ? { url: img.src?.large || img.src?.original, credit: `Photo by ${img.photographer || 'Pexels'}` } : null;
+}
+
+async function generateAIImage(provider: string, key: string, prompt: string, model: string, lovableKey: string): Promise<{ dataUrl: string | null; remoteUrl?: string | null; credit?: string | null; error?: string }> {
   try {
+    if (provider === 'unsplash' && key) {
+      const found = await findUnsplashImage(key, prompt);
+      return { dataUrl: null, remoteUrl: found?.url || null, credit: found?.credit || null };
+    }
+    if (provider === 'pexels' && key) {
+      const found = await findPexelsImage(key, prompt);
+      return { dataUrl: null, remoteUrl: found?.url || null, credit: found?.credit || null };
+    }
+    if (provider === 'openai' && key) {
+      const r = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: model || 'gpt-image-1', prompt, size: '1024x1024', n: 1 }),
+      });
+      if (!r.ok) return { dataUrl: null, error: `OpenAI ${r.status}: ${(await r.text()).slice(0, 200)}` };
+      const d = await r.json();
+      const b64 = d?.data?.[0]?.b64_json;
+      return { dataUrl: b64 ? `data:image/png;base64,${b64}` : null, remoteUrl: d?.data?.[0]?.url || null };
+    }
+    if (provider === 'google' && key) {
+      const imageModel = model || 'gemini-2.5-flash-image';
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(imageModel)}:generateContent?key=${encodeURIComponent(key)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt.slice(0, 1500) }] }],
+          generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
+        }),
+      });
+      if (!r.ok) return { dataUrl: null, error: `Google ${r.status}: ${(await r.text()).slice(0, 200)}` };
+      const d = await r.json();
+      const part = (d?.candidates?.[0]?.content?.parts || []).find((item: any) => item?.inlineData?.data || item?.inline_data?.data);
+      const b64 = part?.inlineData?.data || part?.inline_data?.data;
+      const mime = part?.inlineData?.mimeType || part?.inline_data?.mime_type || 'image/png';
+      return { dataUrl: b64 ? `data:${mime};base64,${b64}` : null };
+    }
+    if (provider === 'nvidia' && key) {
+      const r = await fetch(`https://ai.api.nvidia.com/v1/genai/${model || 'black-forest-labs/flux.1-schnell'}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ prompt: prompt.slice(0, 1500), width: 1024, height: 1024, samples: 1, steps: 4, cfg_scale: 3.5 }),
+      });
+      if (!r.ok) return { dataUrl: null, error: `NVIDIA ${r.status}: ${(await r.text()).slice(0, 200)}` };
+      const d = await r.json();
+      const b64 = d?.image || d?.artifacts?.[0]?.base64 || d?.data?.[0]?.b64_json;
+      return { dataUrl: b64 ? `data:image/png;base64,${b64}` : null, remoteUrl: d?.data?.[0]?.url || null };
+    }
+    if (provider === 'xai' && key) {
+      const r = await fetch('https://api.x.ai/v1/images/generations', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: model || 'grok-2-image-1212', prompt: prompt.slice(0, 1500), n: 1, response_format: 'b64_json' }),
+      });
+      if (!r.ok) return { dataUrl: null, error: `xAI ${r.status}: ${(await r.text()).slice(0, 200)}` };
+      const d = await r.json();
+      const b64 = d?.data?.[0]?.b64_json;
+      return { dataUrl: b64 ? `data:image/png;base64,${b64}` : null, remoteUrl: d?.data?.[0]?.url || null };
+    }
+
     const r = await fetch(LOVABLE_GATEWAY, {
       method: 'POST',
       headers: { Authorization: `Bearer ${lovableKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: args.prompt }],
+        model: model || 'google/gemini-2.5-flash-image',
+        messages: [{ role: 'user', content: prompt }],
         modalities: ['image', 'text'],
       }),
     });
-    if (!r.ok) {
-      const t = await r.text();
-      return { ok: false, summary: `Image gen failed (${r.status}): ${t.slice(0, 120)}` };
-    }
+    if (!r.ok) return { dataUrl: null, error: `Lovable ${r.status}: ${(await r.text()).slice(0, 200)}` };
     const d = await r.json();
-    const imgB64 = d?.choices?.[0]?.message?.images?.[0]?.image_url?.url || '';
-    if (!imgB64) return { ok: false, summary: 'No image returned by model.' };
+    return { dataUrl: d?.choices?.[0]?.message?.images?.[0]?.image_url?.url || null };
+  } catch (e) {
+    return { dataUrl: null, error: (e as Error).message };
+  }
+}
 
-    // imgB64 is "data:image/png;base64,..." — upload to storage
-    const m = imgB64.match(/^data:(image\/\w+);base64,(.+)$/);
-    if (!m) return { ok: false, summary: 'Unrecognized image format.' };
-    const mime = m[1];
-    const b64 = m[2];
+async function uploadAgentImage(supabase: any, dataUrlOrRemoteUrl: string): Promise<{ url: string; path: string } | null> {
+  try {
+    if (/^https?:\/\//i.test(dataUrlOrRemoteUrl)) {
+      const r = await fetch(dataUrlOrRemoteUrl);
+      if (!r.ok) return null;
+      const mime = r.headers.get('content-type') || 'image/jpeg';
+      const ext = mime.split('/')[1]?.split(';')[0] || 'jpg';
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      const path = `agent/${Date.now()}-${crypto.randomUUID().slice(0, 6)}.${ext}`;
+      const { error } = await supabase.storage.from('social-media').upload(path, bytes, { contentType: mime });
+      if (error) return null;
+      const { data } = supabase.storage.from('social-media').getPublicUrl(path);
+      return { url: data.publicUrl, path };
+    }
+
+    const match = dataUrlOrRemoteUrl.match(/^data:(image\/[\w.+-]+);base64,(.+)$/);
+    if (!match) return null;
+    const mime = match[1];
+    const b64 = match[2];
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
     const ext = mime.split('/')[1] || 'png';
     const path = `agent/${Date.now()}-${crypto.randomUUID().slice(0, 6)}.${ext}`;
-    const { error: upErr } = await supabase.storage.from('social-media').upload(path, bytes, { contentType: mime });
-    if (upErr) return { ok: false, summary: `Upload failed: ${upErr.message}` };
-    const { data: url } = supabase.storage.from('social-media').getPublicUrl(path);
-    return { ok: true, summary: 'Image generated and saved.', data: { url: url.publicUrl, prompt: args.prompt } };
-  } catch (e) {
-    return { ok: false, summary: `Image error: ${(e as Error).message}` };
+    const { error } = await supabase.storage.from('social-media').upload(path, bytes, { contentType: mime });
+    if (error) return null;
+    const { data } = supabase.storage.from('social-media').getPublicUrl(path);
+    return { url: data.publicUrl, path };
+  } catch {
+    return null;
   }
+}
+
+async function execGenerateImage(args: any, providers: any, lovableKey: string, supabase: any): Promise<{ ok: boolean; summary: string; data?: any }> {
+  const configuredChain = Array.isArray(providers.image.imageKeys) ? providers.image.imageKeys : [];
+  const chain = configuredChain.length > 0
+    ? configuredChain.map((entry: any) => ({
+      provider: inferImageProvider(entry.provider || 'auto', entry.apiKey || ''),
+      apiKey: entry.apiKey || '',
+      model: entry.model || '',
+      label: entry.label || '',
+    }))
+    : [{
+      provider: inferImageProvider(providers.image.provider, providers.image.apiKey),
+      apiKey: providers.image.apiKey || '',
+      model: providers.image.model || '',
+      label: providers.image.provider || 'primary',
+    }];
+
+  if (!chain.some((entry: any) => entry.provider === 'lovable')) {
+    chain.push({ provider: 'lovable', apiKey: '', model: 'google/gemini-2.5-flash-image', label: 'lovable fallback' });
+  }
+
+  for (const entry of chain) {
+    const generated = await generateAIImage(entry.provider, entry.apiKey || '', args.prompt, entry.model || '', lovableKey);
+    const source = generated.dataUrl || generated.remoteUrl || '';
+    if (!source) continue;
+    const uploaded = await uploadAgentImage(supabase, source);
+    if (!uploaded) continue;
+    return {
+      ok: true,
+      summary: `Image generated via ${entry.provider}.`,
+      data: { url: uploaded.url, path: uploaded.path, prompt: args.prompt, provider: entry.provider, credit: generated.credit || null },
+    };
+  }
+
+  return { ok: false, summary: 'Image generation failed for every configured provider.' };
 }
 
 /* ── Wait helper for local-side tools (poll pending_commands) ────────── */
@@ -484,7 +716,7 @@ async function runAgent(supabase: any, runId: string, lovableKey: string, telegr
   const systemPrompt = `You are an autonomous coding/research agent (like Claude Code or Codex) running inside a video & social-post automation app.
 
 # Your environment
-- Workspace folder on the user's local Windows PC (slug: "${slugify(run.prompt)}").
+- Workspace folder on the user's local Windows PC (slug: "${slugify(run.prompt)}")${providers.workspaceRoot ? ` rooted at "${providers.workspaceRoot}"` : ''}.
 - Tools to: research the web, generate images, read/write/list files in the workspace, run allowlisted shell commands (${providers.shellEnabled ? 'ENABLED' : 'DISABLED — do not call run_shell'}), open URLs/files in the user's default browser, and start a static preview server.
 - Configured providers: chat=${providers.chat.provider}/${providers.chat.model}, research=${providers.research.provider}, image=${providers.image.provider}.
 
@@ -610,7 +842,7 @@ You can also call \`save_skill\` after a successful novel routine — it propose
           await appendEvent(supabase, runId, { type: 'plan', steps: args.steps || [] });
           toolResultText = `Plan recorded: ${(args.steps || []).length} steps.`;
         } else if (name === 'research_deep') {
-          const r = await execResearchDeep(args, providers, lovableKey);
+          const r = await execResearchDeep(args, providers, lovableKey, supabase);
           ok = r.ok;
           toolResultText = ok ? r.data?.findings || r.summary : r.summary;
           toolResultData = r.data;
@@ -625,7 +857,12 @@ You can also call \`save_skill\` after a successful novel routine — it propose
             toolResultText = 'Shell access is disabled in Settings → Agent Workspace. Ask the user to enable it.';
           } else {
             const slug = slugify(run.prompt);
-            const r = await queueLocalCommand(supabase, `agent_${name}`, { ...args, runId, projectSlug: slug });
+            const r = await queueLocalCommand(supabase, `agent_${name}`, {
+              ...args,
+              runId,
+              projectSlug: slug,
+              workspaceRoot: providers.workspaceRoot || '',
+            });
             ok = r.ok;
             toolResultText = typeof r.result === 'string' ? r.result : JSON.stringify(r.result).slice(0, 1500);
             toolResultData = typeof r.result === 'object' ? r.result : null;

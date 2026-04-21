@@ -401,7 +401,7 @@ export default function SettingsPage() {
   const [agentSettings, setAgentSettings] = useState<AgentSettings>({
     researchProvider: 'auto', researchApiKey: '', imageProvider: 'auto', imageApiKey: '', imageModel: '',
     imageKeys: [],
-    researchDepth: 'standard', localAgentUrl: 'http://localhost:3001',
+    researchDepth: 'standard', localAgentUrl: 'http://localhost:3001', shellEnabled: false, workspacePath: '',
   });
   const [savingAgent, setSavingAgent] = useState(false);
   const [testingResearch, setTestingResearch] = useState(false);
@@ -1130,6 +1130,41 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t pt-4">
+            <div className="space-y-2">
+              <Label className="text-xs">Agent workspace root (optional)</Label>
+              <Input
+                value={agentSettings.workspacePath}
+                onChange={(e) => setAgentSettings((s) => ({ ...s, workspacePath: e.target.value }))}
+                placeholder="C:\\Users\\You\\agent-workspace"
+                className="font-mono text-xs"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Leave blank to use the app&apos;s default local workspace folder. Set this to keep Claude-Code-style agent projects in a folder on your Windows PC.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Local shell access</Label>
+              <div className="rounded-lg border p-3 space-y-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">Allow agent to run local build/dev commands</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Needed for npm install, previews, local code generation, and other Claude Code style workflows on your PC.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={agentSettings.shellEnabled}
+                    onCheckedChange={(v) => setAgentSettings((s) => ({ ...s, shellEnabled: v }))}
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Allowlisted commands only: npm, npx, node, python, git, ls/dir, echo, cat/type.
+                </p>
+              </div>
+            </div>
+          </div>
+
           <div className="flex items-center gap-2 flex-wrap pt-1">
             <Button size="sm" onClick={handleSaveAgent} disabled={savingAgent} className="gap-1.5">
               <Check className="w-3.5 h-3.5" />
@@ -1143,6 +1178,7 @@ export default function SettingsPage() {
               {savedAgent?.imageModel && <span className="text-muted-foreground">· {savedAgent.imageModel.split('/').pop()}</span>}
             </Badge>
             <Badge variant="outline" className="text-[11px] font-mono">depth: {savedAgent?.researchDepth || 'standard'}</Badge>
+            <Badge variant="outline" className="text-[11px] font-mono">{savedAgent?.shellEnabled ? 'shell: on' : 'shell: off'}</Badge>
             {(savedAgent?.imageKeys?.length || 0) > 0 && (
               <Badge variant="outline" className="text-[11px] font-mono">↪️ {savedAgent.imageKeys.length} fallback{savedAgent.imageKeys.length === 1 ? '' : 's'}</Badge>
             )}

@@ -239,7 +239,43 @@ function truncatePrompt(s: string, n = 80): string {
   return t.length > n ? t.slice(0, n - 1) + '…' : t;
 }
 
-async function executeTool(supabase: any, name: string, args: any, supabaseUrl: string, serviceKey: string): Promise<string> {
+function buildMessageForModel(message: any) {
+  const images = Array.isArray(message?.images) ? message.images.filter((img: any) => img?.url) : [];
+  const files = Array.isArray(message?.files) ? message.files : [];
+  if (images.length > 0) {
+    const content: any[] = [];
+    if (message?.content) content.push({ type: 'text', text: message.content });
+    for (const img of images) content.push({ type: 'image_url', image_url: { url: img.url } });
+    if (files.length > 0) {
+      const fileSummary = files
+        .filter((file: any) => !file?.isImage)
+        .map((file: any) => `- ${file.name} (${file.type || 'file'}${file.size ? `, ${file.size}` : ''})${file.textContent ? `\n${file.textContent}` : ''}`)
+        .join('\n');
+      if (fileSummary) content.push({ type: 'text', text: `Attached files:\n${fileSummary}` });
+    }
+    return { role: message.role, content };
+  }
+
+  if (files.length > 0) {
+    let fileContext = message.content || '';
+    for (const file of files) {
+      fileContext += `\n\n[Attached file: ${file.name} (${file.type || 'file'}${file.size ? `, ${file.size}` : ''})]`;
+      if (file.textContent) fileContext += `\n${file.textContent}`;
+    }
+    return { role: message.role, content: fileContext.trim() };
+  }
+
+  return { role: message.role, content: message.content };
+}
+
+async function executeTool(
+  supabase: any,
+  name: string,
+  args: any,
+  supabaseUrl: string,
+  serviceKey: string,
+  opts: { telegramChatId?: string | number | null } = {},
+): Promise<string> {
   switch (name) {
     case 'create_upload_job': {
       const platforms = args.target_platforms || [];
@@ -424,13 +460,23 @@ async function executeTool(supabase: any, name: string, args: any, supabaseUrl: 
       }
     }
     case 'research_web': {
-      const { error } = await supabase.from('pending_commands').insert({
-        command: 'research',
-        args: { query: args.query, depth: args.depth || 'standard' },
-        status: 'pending',
-      });
-      if (error) return `❌ Failed to queue research: ${error.message}`;
-      return `🔍 Deep research queued for "${args.query}". Findings + sources will arrive via Telegram in 1-3 minutes.`;
+      try {
+        const task = `Research this topic on the web and produce a sourced summary: "${args.query}". Depth: ${args.depth || 'standard'}. Use the configured research provider first, fall back to the local PC browser if needed, and finish with the most useful findings plus source links.`;
+        const r = await fetch(`${supabaseUrl}/functions/v1/agent-run`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: task,
+            source: opts.telegramChatId ? 'telegram' : 'ai-chat',
+            telegram_chat_id: opts.telegramChatId || null,
+          }),
+        });
+        const d = await r.json();
+        if (!r.ok || !d.runId) return `❌ Research agent failed to start: ${d.error || 'unknown'}`;
+        return `__AGENT_RUN__:${d.runId}\n🔍 Started research agent for "${truncatePrompt(args.query, 100)}". It will search, summarize, and return sourced findings${opts.telegramChatId ? ' in this chat' : ' with live progress below'}.`;
+      } catch (e) {
+        return `❌ Failed to start research agent: ${(e as Error).message}`;
+      }
     }
     case 'check_platform_stats': {
       const { error } = await supabase.from('pending_commands').insert({
@@ -455,11 +501,15 @@ async function executeTool(supabase: any, name: string, args: any, supabaseUrl: 
         const r = await fetch(`${supabaseUrl}/functions/v1/agent-run`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: args.task, source: 'ai-chat' }),
+          body: JSON.stringify({
+            prompt: args.task,
+            source: opts.telegramChatId ? 'telegram' : 'ai-chat',
+            telegram_chat_id: opts.telegramChatId || null,
+          }),
         });
         const d = await r.json();
         if (!r.ok || !d.runId) return `❌ Agent failed to start: ${d.error || 'unknown'}`;
-        return `__AGENT_RUN__:${d.runId}\n🤖 Started agent for: "${truncatePrompt(args.task, 100)}". Watch live steps below — plan, research, file writes, and preview will appear in real-time.`;
+        return `__AGENT_RUN__:${d.runId}\n🤖 Started agent for: "${truncatePrompt(args.task, 100)}". ${opts.telegramChatId ? 'You will get live progress updates in this Telegram chat.' : 'Watch live steps below — plan, research, file writes, browser actions, and preview will appear in real-time.'}`;
       } catch (e) {
         return `❌ Agent start failed: ${(e as Error).message}`;
       }
@@ -540,8 +590,10 @@ ${appContext}
 - **Web research**: research_web — autonomous web research with configured provider or local browser fallback
 - **Stats scraping**: check_platform_stats — queues Playwright scrape on user's local PC, results via Telegram
 - **Generic browser tasks**: open_browser — runs any natural-language browser task locally
+- **Full autonomous local-PC agent**: run_agent — use this for coding, file generation, previews, browser work, deep research, image generation, and multi-step workflows (Claude Code / OpenClaw / Hermes style)
 
 ## Behavior rules
+- For anything involving code, files, local shell commands, browser previews, multi-step web research, or "do this on my PC", ALWAYS call run_agent instead of trying to answer inline.
 - Be PROACTIVE. If the user says "post about X to Twitter at 9pm tomorrow" → call generate_social_post with scheduled_at.
 - CRITICAL — generate_social_post NEVER auto-publishes. It runs the full in-app generation flow (research → image → per-platform variants), saves the result as a DRAFT on /social, and sends a Telegram preview. The user must reply "post" / "edit <text>" / "skip" in Telegram to actually publish, revise, or discard. Always make this clear in your reply ("I'll send you the draft to review — nothing will be posted until you approve").
 - Mirror the in-app experience: when the user asks from Telegram to generate a post, it should produce the same result as opening the Generate Post page, typing the prompt, and clicking Generate — same visual progress feed, same draft, same Telegram preview. Other agentic flows (research, stats, browser tasks) follow the same pattern: queue the task, run it exactly like the in-app button does, and report back via Telegram.
@@ -579,6 +631,7 @@ async function runAgentNonStreaming(
   lovableKey: string,
   supabaseUrl: string,
   serviceKey: string,
+  opts: { telegramChatId?: string | number | null } = {},
   maxSteps = 4,
 ): Promise<string> {
   for (let step = 0; step < maxSteps; step++) {
@@ -601,7 +654,7 @@ async function runAgentNonStreaming(
       for (const tc of msg.tool_calls) {
         let args: any = {};
         try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* ignore */ }
-        const result = await executeTool(supabase, tc.function.name, args, supabaseUrl, serviceKey);
+        const result = await executeTool(supabase, tc.function.name, args, supabaseUrl, serviceKey, opts);
         fullMessages.push({ role: 'tool', tool_call_id: tc.id, content: result });
       }
       continue;
@@ -642,7 +695,7 @@ serve(async (req) => {
       // Pull recent telegram chat history for context
       const { data: history } = await supabase
         .from('telegram_messages')
-        .select('text,is_bot,created_at')
+        .select('text,is_bot,created_at,raw_update')
         .eq('chat_id', telegram_chat_id)
         .order('created_at', { ascending: false })
         .limit(10);
@@ -651,20 +704,26 @@ serve(async (req) => {
       const sys = buildSystemPrompt(ctx, true);
       const historyMsgs = ((history || []) as any[])
         .reverse()
-        .filter((m) => m.text)
-        .map((m) => ({ role: m.is_bot ? 'assistant' : 'user', content: m.text }));
+        .filter((m) => m.text || m.raw_update?.media)
+        .map((m) => buildMessageForModel({
+          role: m.is_bot ? 'assistant' : 'user',
+          content: m.text || '',
+          images: m.raw_update?.media?.images || [],
+          files: m.raw_update?.media?.files || [],
+        }));
 
       const fullMessages = [
         { role: 'system', content: sys },
         ...historyMsgs,
-        { role: 'user', content: telegram_user_text },
       ];
 
       try {
         const reply = await runAgentNonStreaming(
           supabase, fullMessages, 'google/gemini-2.5-flash', LOVABLE_API_KEY, supabaseUrl, serviceKey,
+          { telegramChatId: telegram_chat_id },
         );
-        await sendTelegram(telegram_chat_id, reply, LOVABLE_API_KEY, TELEGRAM_API_KEY);
+        const visibleReply = reply.replace(/__AGENT_RUN__:[0-9a-f-]+\n?/gi, '').trim() || '✅ Done.';
+        await sendTelegram(telegram_chat_id, visibleReply, LOVABLE_API_KEY, TELEGRAM_API_KEY);
 
         // Mirror bot reply to telegram_messages so UI sees it
         await supabase.from('telegram_messages').insert({
@@ -675,7 +734,7 @@ serve(async (req) => {
           raw_update: { source: 'ai-chat-edge' },
         });
 
-        return new Response(JSON.stringify({ ok: true, reply }), {
+        return new Response(JSON.stringify({ ok: true, reply: visibleReply }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       } catch (e) {
@@ -696,24 +755,7 @@ serve(async (req) => {
 
     const appContextPromise = getAppContextFast(supabase);
 
-    const transformedMessages = messages.map((msg: any) => {
-      if (msg.role === 'system') return msg;
-      if (msg.images && msg.images.length > 0) {
-        const content: any[] = [];
-        if (msg.content) content.push({ type: 'text', text: msg.content });
-        for (const img of msg.images) content.push({ type: 'image_url', image_url: { url: img.url } });
-        return { role: msg.role, content };
-      }
-      if (msg.files && msg.files.length > 0) {
-        let fileContext = msg.content || '';
-        for (const file of msg.files) {
-          fileContext += `\n\n[Attached file: ${file.name} (${file.type}, ${file.size})]`;
-          if (file.textContent) fileContext += `\nFile contents:\n\`\`\`\n${file.textContent}\n\`\`\``;
-        }
-        return { role: msg.role, content: fileContext };
-      }
-      return { role: msg.role, content: msg.content };
-    });
+    const transformedMessages = messages.map((msg: any) => msg.role === 'system' ? msg : buildMessageForModel(msg));
 
     const appContext = await appContextPromise;
     const systemPrompt = buildSystemPrompt(appContext, false);

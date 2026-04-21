@@ -65,6 +65,8 @@ export interface AgentSettings {
   imageKeys: ImageKeyEntry[]; // up to 10 fallback keys, tried in order
   researchDepth: string;    // light | standard | deep
   localAgentUrl: string;
+  shellEnabled: boolean;
+  workspacePath: string;
 }
 
 // Heuristic: detect provider from API key prefix.
@@ -137,6 +139,8 @@ export async function getAgentSettings(): Promise<AgentSettings> {
     imageKeys,
     researchDepth: r.research_depth || 'standard',
     localAgentUrl: r.local_agent_url || 'http://localhost:3001',
+    shellEnabled: r.agent_shell_enabled === true,
+    workspacePath: r.agent_workspace_path || '',
   };
 }
 
@@ -154,6 +158,8 @@ export async function saveAgentSettings(s: AgentSettings): Promise<void> {
     image_keys: cleanKeys as any,
     research_depth: s.researchDepth,
     local_agent_url: s.localAgentUrl,
+    agent_shell_enabled: s.shellEnabled === true,
+    agent_workspace_path: s.workspacePath || '',
   } as any).eq('id', 1);
   if (error) throw new Error(error.message);
 }
