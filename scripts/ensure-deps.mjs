@@ -15,7 +15,7 @@ function readPackageJson() {
 }
 
 export function hasMissingDependency(dependencies = {}, modulesPath = nodeModulesPath, pathExists = existsSync) {
-  return Object.keys(dependencies || {}).some((name) => !pathExists(path.join(modulesPath, name)));
+  return Object.keys(dependencies).some((name) => !pathExists(path.join(modulesPath, name)));
 }
 
 export function needsInstall({
@@ -45,7 +45,10 @@ export function ensureDeps(runInstall = () => {
 
   console.log('[setup] Frontend dependencies changed. Running npm install...');
   const install = runInstall();
-  return install.status ?? 1;
+  if (typeof install.status === 'number') {
+    return install.status;
+  }
+  return 1;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
