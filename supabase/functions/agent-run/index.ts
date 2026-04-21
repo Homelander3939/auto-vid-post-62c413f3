@@ -596,6 +596,7 @@ You can also call \`save_skill\` after a successful novel routine — it propose
             : name === 'run_shell' ? args.command?.slice(0, 80)
             : name === 'open_in_browser' ? args.target
             : name === 'serve_preview' ? 'workspace'
+            : name === 'save_skill' ? args.name
             : name === 'finish' ? 'summary'
             : '',
         });
