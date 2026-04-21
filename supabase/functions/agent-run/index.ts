@@ -12,14 +12,13 @@
 //   POST { runId, action: 'cancel' }                       → cancels a running agent.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { DEFAULT_LOVABLE_MODEL, LOVABLE_GATEWAY, resolveChatProviderConfig } from "../_shared/ai-provider.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const LOVABLE_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
-const GOOGLE_OPENAI_GATEWAY = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 const MAX_STEPS = 12;
 
@@ -559,91 +558,62 @@ async function getProviderMap(supabase: any) {
   };
 }
 
-function normalizeGoogleChatModel(model: string): string {
-  return String(model || '')
-    .replace(/^models\//, '')
-    .replace(/^google\//, '')
-    .trim() || 'gemini-2.5-flash';
-}
-
 /* ── Call planner LLM (user's provider, fallback Lovable) ────────────── */
 
 async function callPlanner(messages: any[], chat: any, lovableKey: string): Promise<any> {
-  // Build endpoint + headers + model based on provider
-  let url = LOVABLE_GATEWAY;
-  let key = lovableKey;
-  let model = chat.model || 'google/gemini-3-flash-preview';
-
-  if (chat.provider === 'openai' && chat.apiKey) {
-    url = 'https://api.openai.com/v1/chat/completions';
-    key = chat.apiKey;
-    if (!model || model.startsWith('google/')) model = 'gpt-4o-mini';
-  } else if (chat.provider === 'google' && chat.apiKey) {
-    url = GOOGLE_OPENAI_GATEWAY;
-    key = chat.apiKey;
-    model = normalizeGoogleChatModel(model);
-  } else if (chat.provider === 'nvidia' && chat.apiKey) {
-    url = 'https://integrate.api.nvidia.com/v1/chat/completions';
-    key = chat.apiKey;
-  } else if (chat.provider === 'openrouter' && chat.apiKey) {
-    url = 'https://openrouter.ai/api/v1/chat/completions';
-    key = chat.apiKey;
-  } else if (chat.provider === 'anthropic' && chat.apiKey) {
-    // Anthropic has incompatible API — fall back to Lovable for the agent loop
-    // (deep tool-calling differs). We still use the user's model selection elsewhere.
-    url = LOVABLE_GATEWAY;
-    key = lovableKey;
-    if (!model || model.startsWith('claude')) model = 'google/gemini-3-flash-preview';
-  } else if (chat.provider === 'lmstudio' && chat.apiKey) {
-    // LM Studio exposes OpenAI-compatible endpoint at user-provided URL via apiKey field
-    // For agent reliability, fall back to Lovable. (LM Studio is used via local server.)
-    url = LOVABLE_GATEWAY;
-    key = lovableKey;
-    if (!model || !model.includes('/')) model = 'google/gemini-3-flash-preview';
+  const config = resolveChatProviderConfig(chat, lovableKey);
+  if (config.fallbackReason) {
+    console.warn('callPlanner provider fallback:', config.fallbackReason);
   }
 
-  const body: any = { model, messages, tools, tool_choice: 'auto' };
-  const r = await fetch(url, {
+  const request = (model: string) => fetch(config.url, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    headers: { Authorization: `Bearer ${config.key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, messages, tools, tool_choice: 'auto' }),
   });
+
+  let model = config.model;
+  let r = await request(model);
   if (!r.ok) {
     const t = await r.text();
+    if (config.provider === 'lovable' && model !== DEFAULT_LOVABLE_MODEL && /invalid model/i.test(t)) {
+      model = DEFAULT_LOVABLE_MODEL;
+      r = await request(model);
+      if (r.ok) return await r.json();
+      const retryText = await r.text();
+      throw new Error(`Planner LLM failed (${r.status}): ${retryText.slice(0, 300)}`);
+    }
     throw new Error(`Planner LLM failed (${r.status}): ${t.slice(0, 300)}`);
   }
   return await r.json();
 }
 
 async function callReviewer(messages: any[], chat: any, lovableKey: string): Promise<string> {
-  let url = LOVABLE_GATEWAY;
-  let key = lovableKey;
-  let model = chat.model || 'google/gemini-3-flash-preview';
-
-  if (chat.provider === 'openai' && chat.apiKey) {
-    url = 'https://api.openai.com/v1/chat/completions';
-    key = chat.apiKey;
-    if (!model || model.startsWith('google/')) model = 'gpt-4o-mini';
-  } else if (chat.provider === 'google' && chat.apiKey) {
-    url = GOOGLE_OPENAI_GATEWAY;
-    key = chat.apiKey;
-    model = normalizeGoogleChatModel(model);
-  } else if (chat.provider === 'nvidia' && chat.apiKey) {
-    url = 'https://integrate.api.nvidia.com/v1/chat/completions';
-    key = chat.apiKey;
-  } else if (chat.provider === 'openrouter' && chat.apiKey) {
-    url = 'https://openrouter.ai/api/v1/chat/completions';
-    key = chat.apiKey;
+  const config = resolveChatProviderConfig(chat, lovableKey);
+  if (config.fallbackReason) {
+    console.warn('callReviewer provider fallback:', config.fallbackReason);
   }
 
-  const r = await fetch(url, {
+  const request = (model: string) => fetch(config.url, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${config.key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, messages }),
   });
+
+  let model = config.model;
+  let r = await request(model);
   if (!r.ok) {
     const t = await r.text();
-    throw new Error(`Reviewer LLM failed (${r.status}): ${t.slice(0, 300)}`);
+    if (config.provider === 'lovable' && model !== DEFAULT_LOVABLE_MODEL && /invalid model/i.test(t)) {
+      model = DEFAULT_LOVABLE_MODEL;
+      r = await request(model);
+      if (!r.ok) {
+        const retryText = await r.text();
+        throw new Error(`Reviewer LLM failed (${r.status}): ${retryText.slice(0, 300)}`);
+      }
+    } else {
+      throw new Error(`Reviewer LLM failed (${r.status}): ${t.slice(0, 300)}`);
+    }
   }
   const data = await r.json();
   return data?.choices?.[0]?.message?.content || '';
