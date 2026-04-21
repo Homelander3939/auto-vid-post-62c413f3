@@ -60,9 +60,11 @@ function parseMarkdownSkill(raw: string, sourceUrl: string, filePath: string) {
   const derivedName = fileName.replace(/\.(md|txt)$/i, '');
   const headingName = headingMatch?.[1]?.trim();
   const name = frontmatter.name || headingName || derivedName || 'Imported Skill';
-  const description = frontmatter.description
-    || text.split('\n').map((line) => line.trim()).find((line) => line && !line.startsWith('#') && !line.startsWith('-') && !line.startsWith('*') && !/^\d+\./.test(line))
-    || '';
+  const firstPlainParagraph = text
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith('#') && !line.startsWith('-') && !line.startsWith('*') && !/^\d+\./.test(line));
+  const description = frontmatter.description || firstPlainParagraph || '';
   const steps = text.split('\n')
     .map((line) => line.trim())
     .filter((line) => /^([-*]|\d+\.)\s+/.test(line))
@@ -157,6 +159,8 @@ async function fetchRepoSkills(url: string): Promise<any[]> {
 
   const scoreFile = (filePath: string) => {
     const path = filePath.toLowerCase();
+    // Higher scores mean "more likely to be a deliberate reusable skill manifest".
+    // skill.json wins, then known agent-framework formats, then markdown prompt files.
     if (path.endsWith('skill.json')) return 100;
     if (path.includes('openclaw') && path.endsWith('.json')) return 95;
     if (path.includes('hermes') && path.endsWith('.json')) return 95;

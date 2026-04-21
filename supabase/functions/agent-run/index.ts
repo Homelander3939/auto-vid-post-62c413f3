@@ -367,7 +367,7 @@ type ResearchSource = { title: string; url: string; snippet?: string };
 function inferResearchProvider(provider: string, apiKey: string): string {
   if (provider && provider !== 'auto') return provider;
   // Heuristic only for auto mode. The Settings UI auto-detects providers earlier,
-  // so this is just a best-effort fallback when a key exists but the provider was left on auto.
+  // so these regexes are only best-effort guesses when a key exists but the provider stayed on auto.
   const key = String(apiKey || '').trim();
   // Brave Search API keys usually start with BSA...
   if (/^BSA[A-Za-z0-9_-]{10,}$/i.test(key)) return 'brave';
@@ -510,7 +510,8 @@ async function execResearchDeep(args: any, providers: any, lovableKey: string, s
 
 function inferImageProvider(provider: string, apiKey: string): string {
   if (provider && provider !== 'auto') return provider;
-  // Heuristic only for auto mode. Prefer the explicit saved provider whenever present.
+  // Heuristic only for auto mode. Prefer the explicit saved provider whenever present;
+  // these regexes are only best-effort guesses when the provider stayed on auto.
   const key = String(apiKey || '').trim();
   // xAI keys use the xai- prefix.
   if (/^xai-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'xai';

@@ -724,10 +724,19 @@ serve(async (req) => {
           images: m.raw_update?.media?.images || [],
           files: m.raw_update?.media?.files || [],
         }));
+      const newestTelegramMessage = ((history || []) as any[]).find((m) => !m.is_bot)
+        || { text: telegram_user_text, raw_update: {} };
+      const currentUserMessage = buildMessageForModel({
+        role: 'user',
+        content: newestTelegramMessage.text || telegram_user_text,
+        images: newestTelegramMessage.raw_update?.media?.images || [],
+        files: newestTelegramMessage.raw_update?.media?.files || [],
+      });
 
       const fullMessages = [
         { role: 'system', content: sys },
         ...historyMsgs,
+        currentUserMessage,
       ];
 
       try {
