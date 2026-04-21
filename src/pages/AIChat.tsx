@@ -35,6 +35,14 @@ interface Msg {
 
 const APP_CHAT_STORAGE_KEY = 'ai-chat-browser-history-v1';
 const MAX_STORED_MESSAGES = 200;
+const BROWSER_MIRROR_SOURCE = 'browser-mirror';
+
+function isStoredMessage(value: unknown): value is Msg {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<Msg>;
+  return (record.role === 'user' || record.role === 'assistant')
+    && typeof record.content === 'string';
+}
 
 /* ── Stream helper — routes to cloud ai-chat edge function (Lovable AI Gateway) ── */
 
@@ -204,7 +212,7 @@ export default function AIChat() {
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return;
-      setAppMessages(parsed.filter((msg) => msg && (msg.role === 'user' || msg.role === 'assistant')).slice(-MAX_STORED_MESSAGES));
+      setAppMessages(parsed.filter(isStoredMessage).slice(-MAX_STORED_MESSAGES));
     } catch (error) {
       console.error('Failed to restore browser chat history:', error);
     }
@@ -267,8 +275,15 @@ export default function AIChat() {
       const reader = new FileReader();
       const base64 = await new Promise<string>((resolve, reject) => {
         reader.onload = () => {
-          const result = typeof reader.result === 'string' ? reader.result : '';
-          const [, data = ''] = result.split(',', 2);
+          if (typeof reader.result !== 'string' || !reader.result.includes(',')) {
+            reject(new Error('Invalid image data'));
+            return;
+          }
+          const [, data] = reader.result.split(',', 2);
+          if (!data) {
+            reject(new Error('Invalid image data'));
+            return;
+          }
           resolve(data);
         };
         reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
@@ -334,7 +349,7 @@ export default function AIChat() {
   const messages = useMemo(() => {
     const tgMsgs: Msg[] = (telegramMessages || []).map((m: any) => {
       const mediaFiles = mapTelegramMediaToFiles(m.raw_update);
-      const source = m.raw_update?.source === 'browser-mirror' ? 'app' : 'telegram';
+      const source = m.raw_update?.source === BROWSER_MIRROR_SOURCE ? 'app' : 'telegram';
       return {
         role: m.is_bot ? 'assistant' as const : 'user' as const,
         content: m.text || '',

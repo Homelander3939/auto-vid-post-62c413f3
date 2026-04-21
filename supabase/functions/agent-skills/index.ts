@@ -297,13 +297,14 @@ function parseStructuredSkillFile(raw: string, sourceUrl: string, filePath: stri
 function parseSkillTextFile(text: string, sourceUrl: string, filePath: string): SkillRecord[] {
   try {
     const json = JSON.parse(text);
+    const baseName = slugify(filePath.split('/').pop() || 'skill') || 'skill';
     const records = Array.isArray(json)
       ? json
       : Array.isArray(json.skills) ? json.skills
         : Array.isArray(json.agents) ? json.agents
           : Array.isArray(json.commands) ? json.commands
             : [json];
-    return records.map((record, index) => normalizeSkillRecord(record, sourceUrl, `${filePath.split('/').pop() || 'skill'} ${index + 1}`));
+    return records.map((record, index) => normalizeSkillRecord(record, sourceUrl, `${baseName}-${index + 1}`));
   } catch {
     return [/\.(yaml|yml|toml)$/i.test(filePath)
       ? parseStructuredSkillFile(text, sourceUrl, filePath)
@@ -381,7 +382,7 @@ function parseBundledSkillFiles(files: Array<{ path: string; content: string }>,
     .slice(0, 24);
 
   for (const file of candidates) {
-    const sourceUrl = `zip://${encodeURIComponent(sourceName)}/${file.path.replace(/^\/+/, '')}`;
+    const sourceUrl = `https://zip-import.local/${encodeURIComponent(sourceName)}/${file.path.replace(/^\/+/, '')}`;
     const parsed = parseSkillTextFile(file.content, sourceUrl, file.path)
       .filter((record) => record.system_prompt || record.steps.length > 0);
     installed.push(...parsed);
