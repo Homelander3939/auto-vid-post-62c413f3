@@ -61,6 +61,10 @@ interface AgentMemory {
 }
 
 const IMPORTABLE_ZIP_ENTRY_RE = /\.(json|md|txt|yaml|yml|toml|prompt|skill|agent|instructions)$/i;
+const IMPORTABLE_FILE_ACCEPT = '.json,.md,.txt,.yaml,.yml,.toml,.prompt,.skill,.agent,.instructions';
+const DEFAULT_MEMORY_IMPORTANCE = 60;
+const MIN_MEMORY_IMPORTANCE = 1;
+const MAX_MEMORY_IMPORTANCE = 100;
 
 export default function AgentSkills() {
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -73,7 +77,7 @@ export default function AgentSkills() {
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [running, setRunning] = useState<string | null>(null);
   const [draft, setDraft] = useState({ name: '', description: '', triggers: '', system_prompt: '', steps: '' });
-  const [memoryDraft, setMemoryDraft] = useState({ title: '', content: '', memory_type: 'fact', tags: '', importance: 60 });
+  const [memoryDraft, setMemoryDraft] = useState({ title: '', content: '', memory_type: 'fact', tags: '', importance: DEFAULT_MEMORY_IMPORTANCE });
   const zipInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -271,7 +275,7 @@ export default function AgentSkills() {
       content: memoryDraft.content.trim(),
       memory_type: memoryDraft.memory_type,
       tags: memoryDraft.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
-      importance: Math.min(Math.max(Number(memoryDraft.importance) || 50, 1), 100),
+      importance: Math.min(Math.max(Number(memoryDraft.importance) || DEFAULT_MEMORY_IMPORTANCE, MIN_MEMORY_IMPORTANCE), MAX_MEMORY_IMPORTANCE),
       enabled: true,
     });
     if (error) {
@@ -280,7 +284,7 @@ export default function AgentSkills() {
     }
     toast.success('Memory saved');
     setMemoryOpen(false);
-    setMemoryDraft({ title: '', content: '', memory_type: 'fact', tags: '', importance: 60 });
+    setMemoryDraft({ title: '', content: '', memory_type: 'fact', tags: '', importance: DEFAULT_MEMORY_IMPORTANCE });
     load();
   };
 
@@ -327,7 +331,7 @@ export default function AgentSkills() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".json,.md,.txt,.yaml,.yml,.toml,.prompt,.skill,.agent,.instructions"
+            accept={IMPORTABLE_FILE_ACCEPT}
             className="hidden"
             multiple
             onChange={(e) => {
@@ -514,7 +518,14 @@ export default function AgentSkills() {
               </div>
               <div>
                 <label className="text-xs font-medium">Importance</label>
-                <Input type="number" min={1} max={100} value={memoryDraft.importance} onChange={(e) => setMemoryDraft({ ...memoryDraft, importance: Number(e.target.value) || 50 })} className="sm:w-24" />
+                <Input
+                  type="number"
+                  min={MIN_MEMORY_IMPORTANCE}
+                  max={MAX_MEMORY_IMPORTANCE}
+                  value={memoryDraft.importance}
+                  onChange={(e) => setMemoryDraft({ ...memoryDraft, importance: Number(e.target.value) || DEFAULT_MEMORY_IMPORTANCE })}
+                  className="sm:w-24"
+                />
               </div>
             </div>
           </div>

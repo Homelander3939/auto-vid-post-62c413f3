@@ -78,6 +78,7 @@ interface ChatContextMessage {
 const APP_CHAT_STORAGE_KEY = 'ai-chat-browser-history-v1';
 const MAX_STORED_MESSAGES = 200;
 const BROWSER_MIRROR_SOURCE = 'browser-mirror';
+const MAX_TEXT_ATTACHMENT_CHARS = 10_000;
 const SUGGESTED_PROMPTS = [
   'Check queued jobs',
   'Show scheduled uploads',
@@ -462,7 +463,9 @@ export default function AIChat() {
       if (file.type.startsWith('text/') || /\.(txt|md|csv|json)$/.test(file.name)) {
         try {
           textContent = await file.text();
-          if (textContent.length > 10000) textContent = textContent.slice(0, 10000) + '\n... (truncated)';
+          if (textContent.length > MAX_TEXT_ATTACHMENT_CHARS) {
+            textContent = textContent.slice(0, MAX_TEXT_ATTACHMENT_CHARS) + '\n... (truncated)';
+          }
         } catch {
           textContent = undefined;
         }
