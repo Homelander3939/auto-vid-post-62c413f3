@@ -34,7 +34,7 @@ function getMissingColumnName(error: { message?: string; details?: string } | nu
 async function insertAgentRunCompat(supabase: any, payload: Record<string, unknown>) {
   const nextPayload = { ...payload };
   const removedColumns = new Set<string>();
-  const maxRetries = Math.max(Object.keys(nextPayload).length, 1);
+  const maxRetries = Math.min(Math.max(Object.keys(nextPayload).length, 1), 6);
   let attempts = 0;
 
   while (Object.keys(nextPayload).length > 0 && attempts < maxRetries) {
