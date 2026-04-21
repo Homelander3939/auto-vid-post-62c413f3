@@ -19,7 +19,7 @@ function hasMissingDependency() {
 function needsInstall() {
   if (!existsSync(nodeModulesPath)) return true;
   if (hasMissingDependency()) return true;
-  if (!existsSync(packageLockPath) || !existsSync(installedLockPath)) return false;
+  if (!existsSync(packageLockPath) || !existsSync(installedLockPath)) return true;
   return statSync(packageLockPath).mtimeMs > statSync(installedLockPath).mtimeMs;
 }
 
