@@ -402,6 +402,8 @@ export default function SettingsPage() {
     researchProvider: 'auto', researchApiKey: '', imageProvider: 'auto', imageApiKey: '', imageModel: '',
     imageKeys: [],
     researchDepth: 'standard', localAgentUrl: 'http://localhost:3001',
+    taskMode: 'standard', automationMode: 'safe', memoryEnabled: true, memoryMaxItems: 8,
+    shellEnabled: false, workspacePath: '',
   });
   const [savingAgent, setSavingAgent] = useState(false);
   const [testingResearch, setTestingResearch] = useState(false);
@@ -1130,6 +1132,112 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t pt-4">
+            <div className="space-y-2">
+              <Label className="text-xs">Task orchestration mode</Label>
+              <Select value={agentSettings.taskMode} onValueChange={(v) => setAgentSettings((s) => ({ ...s, taskMode: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="standard">Standard — single-agent loop</SelectItem>
+                  <SelectItem value="multi-agent">Multi-agent — planner → executor → reviewer</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                Multi-agent mode adds a reviewer pass after execution steps so the app can refine plans and improve saved skills more consistently.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Automation mode</Label>
+              <Select value={agentSettings.automationMode} onValueChange={(v) => setAgentSettings((s) => ({ ...s, automationMode: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="safe">Safe — read-only research and website parsing</SelectItem>
+                  <SelectItem value="extended">Extended — broader local automation</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                Safe mode is best for scraping, parsing, analysis, and drafting. It blocks risky browser actions like trading, purchases, or account-changing flows.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t pt-4">
+            <div className="space-y-2">
+              <Label className="text-xs">Persistent agent memory</Label>
+              <div className="rounded-lg border p-3 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">Allow reusable memory across tasks</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Lets the agent remember durable facts, successful workflows, and recurring context like Hermes/OpenClaw-style memory.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={agentSettings.memoryEnabled}
+                    onCheckedChange={(v) => setAgentSettings((s) => ({ ...s, memoryEnabled: v }))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-[11px] text-muted-foreground">Memories injected per run</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={agentSettings.memoryMaxItems}
+                    onChange={(e) => setAgentSettings((s) => ({ ...s, memoryMaxItems: Math.min(Math.max(Number(e.target.value) || 1, 1), 20) }))}
+                    className="w-28 h-8 text-xs"
+                    disabled={!agentSettings.memoryEnabled}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Skill chaining behavior</Label>
+              <div className="rounded-lg border p-3 space-y-2">
+                <p className="text-sm font-medium">Use saved skills as subtask building blocks</p>
+                <p className="text-[11px] text-muted-foreground">
+                  In multi-agent mode the planner can pull in saved skills during a task, reuse them as subtasks, and write back improvements after successful runs.
+                </p>
+                <Badge variant="outline" className="text-[10px]">Requires enabled saved skills</Badge>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t pt-4">
+            <div className="space-y-2">
+              <Label className="text-xs">Agent workspace root (optional)</Label>
+              <Input
+                value={agentSettings.workspacePath}
+                onChange={(e) => setAgentSettings((s) => ({ ...s, workspacePath: e.target.value }))}
+                placeholder="C:\\Users\\You\\agent-workspace"
+                className="font-mono text-xs"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Leave blank to use the app&apos;s default local workspace folder. Set this to keep Claude-Code-style agent projects in a dedicated folder on your local computer.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Local shell access</Label>
+              <div className="rounded-lg border p-3 space-y-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">Allow agent to run local build/dev commands</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Needed for npm install, previews, local code generation, and other Claude Code style workflows on your PC.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={agentSettings.shellEnabled}
+                    onCheckedChange={(v) => setAgentSettings((s) => ({ ...s, shellEnabled: v }))}
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Allowlisted commands only: npm, npx, node, python/python3/py, pip/pip3, git, ls/dir, echo, cat/type.
+                </p>
+              </div>
+            </div>
+          </div>
+
           <div className="flex items-center gap-2 flex-wrap pt-1">
             <Button size="sm" onClick={handleSaveAgent} disabled={savingAgent} className="gap-1.5">
               <Check className="w-3.5 h-3.5" />
@@ -1143,6 +1251,10 @@ export default function SettingsPage() {
               {savedAgent?.imageModel && <span className="text-muted-foreground">· {savedAgent.imageModel.split('/').pop()}</span>}
             </Badge>
             <Badge variant="outline" className="text-[11px] font-mono">depth: {savedAgent?.researchDepth || 'standard'}</Badge>
+            <Badge variant="outline" className="text-[11px] font-mono">mode: {savedAgent?.taskMode || 'standard'}</Badge>
+            <Badge variant="outline" className="text-[11px] font-mono">automation: {savedAgent?.automationMode || 'safe'}</Badge>
+            <Badge variant="outline" className="text-[11px] font-mono">{savedAgent?.memoryEnabled === false ? 'memory: off' : `memory: ${savedAgent?.memoryMaxItems || 8}`}</Badge>
+            <Badge variant="outline" className="text-[11px] font-mono">{savedAgent?.shellEnabled ? 'shell: on' : 'shell: off'}</Badge>
             {(savedAgent?.imageKeys?.length || 0) > 0 && (
               <Badge variant="outline" className="text-[11px] font-mono">↪️ {savedAgent.imageKeys.length} fallback{savedAgent.imageKeys.length === 1 ? '' : 's'}</Badge>
             )}

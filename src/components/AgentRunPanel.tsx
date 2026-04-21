@@ -17,15 +17,20 @@ interface AgentEvent {
   label?: string;
   ok?: boolean;
   summary?: string;
+  count?: number;
   data?: any;
   message?: string;
+  title?: string;
   artifacts?: { kind: string; label: string; value: string }[];
 }
 
 interface AgentRun {
+  automation_mode?: string;
   id: string;
+  memory_snapshot?: any[] | null;
   prompt: string;
   status: string;
+  task_mode?: string;
   events: AgentEvent[];
   result?: { summary: string; artifacts?: any[] } | null;
   error?: string | null;
@@ -41,6 +46,10 @@ const TOOL_ICON: Record<string, any> = {
   run_shell: Terminal,
   open_in_browser: Globe,
   serve_preview: Eye,
+  browser_task: Globe,
+  remember_fact: Brain,
+  chain_skill: Sparkles,
+  improve_skill: Sparkles,
   finish: Sparkles,
 };
 
@@ -100,6 +109,8 @@ export default function AgentRunPanel({ runId }: { runId: string }) {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {run.task_mode === 'multi-agent' && <Badge variant="outline" className="text-[10px]">planner/executor/reviewer</Badge>}
+          {run.automation_mode && <Badge variant="outline" className="text-[10px]">{run.automation_mode}</Badge>}
           {isRunning ? (
             <Badge variant="secondary" className="gap-1 text-[10px]">
               <Loader2 className="w-3 h-3 animate-spin" /> Working
@@ -149,13 +160,25 @@ export default function AgentRunPanel({ runId }: { runId: string }) {
       )}
 
       <div className="px-3 py-2 max-h-72 overflow-y-auto space-y-1.5">
-        {events.filter((e) => ['tool_call', 'tool_result', 'thought', 'error'].includes(e.type)).slice(-20).map((e, i) => {
+        {events.filter((e) => ['tool_call', 'tool_result', 'thought', 'error', 'review', 'memory_saved', 'memory_context', 'phase'].includes(e.type)).slice(-24).map((e, i) => {
           if (e.type === 'thought') {
             return (
               <div key={i} className="text-[11px] text-muted-foreground italic px-1.5 py-1 border-l-2 border-muted ml-1">
                 💭 {e.text}
               </div>
             );
+          }
+          if (e.type === 'review') {
+            return <div key={i} className="text-[11px] text-primary/90 px-1.5 py-1 border-l-2 border-primary/40 ml-1">🧐 {e.text}</div>;
+          }
+          if (e.type === 'phase') {
+            return <div key={i} className="text-[10px] uppercase tracking-wide text-muted-foreground px-1.5 py-0.5">Phase → {e.name}</div>;
+          }
+          if (e.type === 'memory_context') {
+            return <div key={i} className="text-[11px] text-muted-foreground px-1.5 py-1">🧠 Loaded {e.data?.count || e.count || 0} memories</div>;
+          }
+          if (e.type === 'memory_saved') {
+            return <div key={i} className="text-[11px] text-emerald-600 dark:text-emerald-400 px-1.5 py-1">🧠 Saved memory: {e.title}</div>;
           }
           if (e.type === 'error') {
             return <div key={i} className="text-[11px] text-destructive">⚠️ {e.message}</div>;

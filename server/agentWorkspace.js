@@ -11,49 +11,99 @@ const { exec } = require('child_process');
 const http = require('http');
 const url = require('url');
 
-const WORKSPACE_ROOT = path.join(__dirname, 'data', 'agent-workspace');
-const ALLOWED_SHELL = ['npm', 'npx', 'node', 'python', 'python3', 'git', 'dir', 'ls', 'echo', 'type', 'cat'];
+const DEFAULT_WORKSPACE_ROOT = path.join(__dirname, 'data', 'agent-workspace');
+const ALLOWED_SHELL = ['npm', 'npx', 'node', 'python', 'python3', 'py', 'pip', 'pip3', 'git', 'dir', 'ls', 'echo', 'type', 'cat'];
 
-function ensureRoot() {
-  if (!fs.existsSync(WORKSPACE_ROOT)) fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
+function getWorkspaceRoot(workspaceRoot) {
+  const raw = String(workspaceRoot || '').trim();
+  const resolved = path.normalize(raw ? path.resolve(raw) : DEFAULT_WORKSPACE_ROOT);
+  const rootPath = path.normalize(path.parse(resolved).root);
+  const rootCompare = process.platform === 'win32' ? rootPath.toLowerCase() : rootPath;
+  const resolvedCompare = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  if (resolvedCompare === rootCompare) {
+    throw new Error(`Workspace root cannot be the filesystem root (received: ${resolved})`);
+  }
+  const normalized = resolved.toLowerCase();
+  const systemRoots = process.platform === 'win32'
+    ? ['c:\\windows', 'c:\\program files', 'c:\\program files (x86)']
+    : ['/usr', '/etc', '/bin', '/sbin'];
+  const matchedPrefix = systemRoots.find((prefix) => normalized === prefix || normalized.startsWith(`${prefix}${path.sep}`));
+  if (matchedPrefix) {
+    throw new Error(`Workspace root cannot point to a system directory (received: ${resolved}, blocked: ${matchedPrefix})`);
+  }
+  return resolved;
 }
 
-function projectDir(slug) {
-  ensureRoot();
+function ensureRoot(workspaceRoot) {
+  const root = getWorkspaceRoot(workspaceRoot);
+  if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
+  return root;
+}
+
+function projectDir(slug, workspaceRoot) {
+  const root = ensureRoot(workspaceRoot);
   const safe = String(slug || 'task').replace(/[^a-z0-9_-]/gi, '-').slice(0, 60) || 'task';
-  const dir = path.join(WORKSPACE_ROOT, safe);
+  const dir = path.join(root, safe);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-function safeJoin(slug, rel) {
-  const base = projectDir(slug);
+function safeJoin(slug, rel, workspaceRoot) {
+  const base = projectDir(slug, workspaceRoot);
   const target = path.resolve(base, rel || '.');
   if (!target.startsWith(base)) throw new Error('Path escapes workspace');
   return target;
 }
 
 /* ── Static preview server (single shared HTTP server, projects served by slug) ── */
-let previewServer = null;
-let previewPort = 3010;
+const previewServers = new Map();
 
-function startPreviewServer() {
-  if (previewServer) return previewPort;
-  ensureRoot();
-  previewServer = http.createServer((req, res) => {
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderWorkspaceIndex(projects) {
+  const items = projects
+    .map((project) => `<li><a href="/${encodeURIComponent(project)}/">${escapeHtml(project)}</a></li>`)
+    .join('');
+  return [
+    '<!DOCTYPE html>',
+    '<html lang="en">',
+    '<head><meta charset="utf-8"><title>Agent Workspace</title></head>',
+    '<body>',
+    '<main>',
+    '<h1>Agent Workspace</h1>',
+    `<ul aria-label="Available agent projects">${items}</ul>`,
+    '</main>',
+    '</body>',
+    '</html>',
+  ].join('');
+}
+
+async function startPreviewServer(workspaceRoot) {
+  const root = ensureRoot(workspaceRoot);
+  const existing = previewServers.get(root);
+  if (existing) return existing.port;
+
+  const previewServer = http.createServer((req, res) => {
     try {
       const u = url.parse(req.url);
       // Path format: /<slug>/<file...>
       const parts = (u.pathname || '/').split('/').filter(Boolean);
       if (parts.length === 0) {
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        const projects = fs.readdirSync(WORKSPACE_ROOT).filter((d) => fs.statSync(path.join(WORKSPACE_ROOT, d)).isDirectory());
-        res.end(`<h1>Agent Workspace</h1><ul>${projects.map((p) => `<li><a href="/${p}/">${p}</a></li>`).join('')}</ul>`);
+        const projects = fs.readdirSync(root).filter((d) => fs.statSync(path.join(root, d)).isDirectory());
+        res.end(renderWorkspaceIndex(projects));
         return;
       }
       const slug = parts[0];
       const rel = parts.slice(1).join('/') || 'index.html';
-      const filePath = safeJoin(slug, rel);
+      const filePath = safeJoin(slug, rel, root);
       if (!fs.existsSync(filePath)) {
         // Try directory index
         const idx = path.join(filePath, 'index.html');
@@ -71,10 +121,22 @@ function startPreviewServer() {
       res.writeHead(500); res.end(String(e.message || e));
     }
   });
-  previewServer.listen(previewPort, () => {
-    console.log(`[AgentWorkspace] Preview server on http://localhost:${previewPort}`);
+
+  const port = await new Promise((resolve, reject) => {
+    previewServer.once('error', reject);
+    previewServer.listen(0, () => {
+      const address = previewServer.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Could not determine preview server port'));
+        return;
+      }
+      resolve(address.port);
+    });
   });
-  return previewPort;
+
+  console.log(`[AgentWorkspace] Preview server on http://localhost:${port}`);
+  previewServers.set(root, { server: previewServer, port });
+  return port;
 }
 
 function sendFile(res, filePath) {
@@ -91,22 +153,22 @@ function sendFile(res, filePath) {
 
 /* ── Tool implementations ─────────────────────────────────────────── */
 
-async function writeFile({ projectSlug, path: rel, content }) {
-  const target = safeJoin(projectSlug, rel);
+async function writeFile({ projectSlug, path: rel, content, workspaceRoot }) {
+  const target = safeJoin(projectSlug, rel, workspaceRoot);
   await fsp.mkdir(path.dirname(target), { recursive: true });
   await fsp.writeFile(target, content ?? '', 'utf8');
   const size = Buffer.byteLength(content ?? '', 'utf8');
   return { path: target, size, message: `Wrote ${rel} (${size} bytes)` };
 }
 
-async function readFile({ projectSlug, path: rel }) {
-  const target = safeJoin(projectSlug, rel);
+async function readFile({ projectSlug, path: rel, workspaceRoot }) {
+  const target = safeJoin(projectSlug, rel, workspaceRoot);
   const content = await fsp.readFile(target, 'utf8');
   return { path: target, content: content.slice(0, 20000) };
 }
 
-async function listFiles({ projectSlug }) {
-  const base = projectDir(projectSlug);
+async function listFiles({ projectSlug, workspaceRoot }) {
+  const base = projectDir(projectSlug, workspaceRoot);
   const files = [];
   function walk(dir, prefix = '') {
     for (const name of fs.readdirSync(dir)) {
@@ -121,9 +183,9 @@ async function listFiles({ projectSlug }) {
   return { workspace: base, files };
 }
 
-function runShell({ projectSlug, command, timeout_seconds }) {
+function runShell({ projectSlug, command, timeout_seconds, workspaceRoot }) {
   return new Promise((resolve) => {
-    const cwd = projectDir(projectSlug);
+    const cwd = projectDir(projectSlug, workspaceRoot);
     const first = String(command).trim().split(/\s+/)[0]?.toLowerCase();
     if (!ALLOWED_SHELL.includes(first)) {
       return resolve({ ok: false, error: `Command "${first}" not allowed. Allowed: ${ALLOWED_SHELL.join(', ')}` });
@@ -141,12 +203,12 @@ function runShell({ projectSlug, command, timeout_seconds }) {
   });
 }
 
-async function openInBrowser({ projectSlug, target }) {
+async function openInBrowser({ projectSlug, target, workspaceRoot }) {
   let toOpen = target;
   // If it doesn't look like a URL, treat as workspace-relative file path
   if (!/^https?:\/\//i.test(target)) {
     // If preview server running, prefer URL
-    const port = startPreviewServer();
+    const port = await startPreviewServer(workspaceRoot);
     toOpen = `http://localhost:${port}/${projectSlug}/${target.replace(/^\/+/, '')}`;
   }
   return new Promise((resolve) => {
@@ -161,8 +223,8 @@ async function openInBrowser({ projectSlug, target }) {
   });
 }
 
-async function servePreview({ projectSlug }) {
-  const port = startPreviewServer();
+async function servePreview({ projectSlug, workspaceRoot }) {
+  const port = await startPreviewServer(workspaceRoot);
   const previewUrl = `http://localhost:${port}/${projectSlug}/`;
   return { ok: true, url: previewUrl, message: `Preview running at ${previewUrl}` };
 }
@@ -183,7 +245,7 @@ async function handleAgentCommand(command, args) {
 
 module.exports = {
   handleAgentCommand,
-  WORKSPACE_ROOT,
+  WORKSPACE_ROOT: DEFAULT_WORKSPACE_ROOT,
   projectDir,
   startPreviewServer,
 };

@@ -11,49 +11,380 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const SKILL_SCORE = {
+  skillJson: 100,
+  frameworkManifest: 95,
+  claudeCommand: 90,
+  structuredAgentPrompt: 88,
+  markdownSkillFolder: 85,
+  structuredSkillFolder: 84,
+  explicitPromptFile: 83,
+  namedMarkdownAgent: 80,
+  namedStructuredAgent: 79,
+  genericJson: 40,
+  genericStructured: 30,
+  genericMarkdown: 20,
+} as const;
+
 function slugify(s: string): string {
   return (s || 'skill').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'skill';
 }
 
-// Convert a GitHub repo URL or blob URL to a raw URL for skill.json
-function toRawSkillUrl(url: string): string[] {
-  const candidates: string[] = [];
-  if (url.includes('raw.githubusercontent.com')) {
-    candidates.push(url);
-    return candidates;
-  }
-  // https://github.com/{owner}/{repo}  or .../tree/branch/path  or .../blob/branch/path/skill.json
-  const m = url.match(/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/(?:tree|blob)\/([^/]+)(?:\/(.+))?)?$/);
-  if (m) {
-    const [, owner, repo, branch = 'main', path = ''] = m;
-    const base = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}`;
-    if (path.endsWith('skill.json')) {
-      candidates.push(`${base}/${path}`);
-    } else if (path) {
-      candidates.push(`${base}/${path.replace(/\/$/, '')}/skill.json`);
-    } else {
-      candidates.push(`${base}/skill.json`);
-      candidates.push(`${base.replace('/main', '/master')}/skill.json`);
-    }
-  } else {
-    candidates.push(url);
-  }
-  return candidates;
+function parseGitHubRepo(url: string): { owner: string; repo: string; branch?: string; path?: string } | null {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return null; }
+  if (!['github.com', 'www.github.com'].includes(parsed.hostname)) return null;
+  const m = parsed.pathname.match(/^\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/(?:tree|blob)\/([^/]+)(?:\/(.+))?)?\/?$/);
+  if (!m) return null;
+  return {
+    owner: m[1],
+    repo: m[2],
+    branch: m[3],
+    path: m[4] || '',
+  };
 }
 
-async function fetchSkillJson(url: string): Promise<any> {
-  const tries = toRawSkillUrl(url);
-  let lastErr = '';
-  for (const u of tries) {
-    try {
-      const r = await fetch(u);
-      if (!r.ok) { lastErr = `${u} → ${r.status}`; continue; }
-      const text = await r.text();
-      try { return { json: JSON.parse(text), raw_url: u }; }
-      catch { lastErr = `${u} → invalid JSON`; }
-    } catch (e) { lastErr = `${u} → ${(e as Error).message}`; }
+function isRawGitHubContentUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === 'raw.githubusercontent.com';
+  } catch {
+    return false;
   }
-  throw new Error(`Could not load skill.json. Tried: ${tries.join(', ')}. Last error: ${lastErr}`);
+}
+
+function toRawGitHubUrl(owner: string, repo: string, branch: string, filePath: string) {
+  return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath.replace(/^\/+/, '')}`;
+}
+
+function splitListLike(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  return String(value || '')
+    .split(/[,\n]/)
+    .map((item) => item.replace(/^[-*]\s*/, '').trim())
+    .filter(Boolean);
+}
+
+function inferSkillTags(filePath: string, text: string): string[] {
+  const haystack = `${filePath}\n${text}`.toLowerCase();
+  const tags = new Set<string>(['github-import']);
+  if (haystack.includes('openclaw')) tags.add('openclaw');
+  if (haystack.includes('hermes')) tags.add('hermes');
+  if (haystack.includes('claude')) tags.add('claude-style');
+  if (haystack.includes('browser')) tags.add('browser');
+  if (haystack.includes('research')) tags.add('research');
+  if (haystack.includes('coding')) tags.add('coding');
+  return [...tags];
+}
+
+function pathContainsFrameworkName(filePath: string, framework: string): boolean {
+  const lower = filePath.toLowerCase();
+  const segments = lower.split('/').filter(Boolean);
+  const baseName = segments[segments.length - 1] || '';
+  return segments.some((segment) => segment === framework || segment.startsWith(`${framework}.`) || segment.startsWith(`${framework}-`))
+    || baseName === framework
+    || baseName.startsWith(`${framework}.`)
+    || baseName.startsWith(`${framework}-`);
+}
+
+function inferTriggersFromPath(filePath: string, name: string): string[] {
+  const fileName = filePath.split('/').pop() || '';
+  const stem = fileName.replace(/\.(json|md|txt|yaml|yml|toml)$/i, '');
+  return [name, stem, stem.replace(/[-_]+/g, ' ')]
+    .map((item) => item.trim())
+    .filter((item, index, arr) => item.length > 2 && arr.indexOf(item) === index);
+}
+
+function extractMarkdownSection(text: string, heading: string): string {
+  const lines = String(text || '').split('\n');
+  const wanted = heading.toLowerCase();
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^##?\s+(.+)$/);
+    if (match && match[1].trim().toLowerCase() === wanted) {
+      start = i + 1;
+      break;
+    }
+  }
+  if (start === -1) return '';
+  const collected: string[] = [];
+  for (let i = start; i < lines.length; i++) {
+    if (/^##?\s+/.test(lines[i])) break;
+    collected.push(lines[i]);
+  }
+  return collected.join('\n').trim();
+}
+
+function parseLooseKeyValueText(text: string): Record<string, string | string[]> {
+  const parsed: Record<string, string | string[]> = {};
+  let activeKey = '';
+  for (const rawLine of String(text || '').split('\n')) {
+    const line = rawLine.trimEnd();
+    const topLevel = line.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
+    if (topLevel) {
+      activeKey = topLevel[1].toLowerCase();
+      parsed[activeKey] = topLevel[2].trim();
+      continue;
+    }
+    const listItem = line.match(/^\s*-\s+(.+)$/);
+    if (listItem && activeKey) {
+      const existing = parsed[activeKey];
+      parsed[activeKey] = Array.isArray(existing)
+        ? [...existing, listItem[1].trim()]
+        : [String(existing || '').trim()].filter(Boolean).concat(listItem[1].trim());
+    }
+  }
+  return parsed;
+}
+
+function parseMarkdownSkill(raw: string, sourceUrl: string, filePath: string) {
+  let text = String(raw || '');
+  const frontmatterMatch = text.match(/^---\n([\s\S]*?)\n---\n?/);
+  const frontmatter: Record<string, string | string[]> = {};
+  if (frontmatterMatch) {
+    Object.assign(frontmatter, parseLooseKeyValueText(frontmatterMatch[1]));
+    text = text.slice(frontmatterMatch[0].length);
+  }
+
+  const headingMatch = text.match(/^#\s+(.+)$/m);
+  const fileName = filePath.split('/').pop() || 'Imported Skill';
+  const derivedName = fileName.replace(/\.(md|txt)$/i, '');
+  const headingName = headingMatch?.[1]?.trim();
+  const name = String(frontmatter.name || headingName || derivedName || 'Imported Skill').trim();
+  const firstPlainParagraph = text
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith('#') && !line.startsWith('-') && !line.startsWith('*') && !/^\d+\./.test(line));
+  const sectionDescription = extractMarkdownSection(text, 'Description');
+  const description = String(frontmatter.description || sectionDescription || firstPlainParagraph || '').trim();
+  const stepSource = extractMarkdownSection(text, 'Steps') || extractMarkdownSection(text, 'Workflow') || text;
+  const steps = stepSource.split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^([-*]|\d+\.)\s+/.test(line) && !/^(triggers?|tags?|description):/i.test(line))
+    .slice(0, 12)
+    .map((line) => ({ note: line.replace(/^([-*]|\d+\.)\s+/, '').trim() }));
+  const tags = new Set<string>([
+    ...splitListLike(frontmatter.tags),
+    ...inferSkillTags(filePath, text),
+  ]);
+  const systemPrompt = extractMarkdownSection(text, 'System Prompt')
+    || extractMarkdownSection(text, 'Instructions')
+    || extractMarkdownSection(text, 'Prompt')
+    || text.trim();
+  const triggerSection = extractMarkdownSection(text, 'Triggers') || extractMarkdownSection(text, 'Keywords');
+
+  return {
+    name,
+    description,
+    triggers: [
+      ...splitListLike(frontmatter.triggers || frontmatter.keywords || triggerSection),
+      ...inferTriggersFromPath(filePath, name),
+    ].filter((item, index, arr) => arr.indexOf(item) === index),
+    steps,
+    system_prompt: systemPrompt,
+    tags: [...tags],
+    source_url: sourceUrl,
+  };
+}
+
+function normalizeSkillRecord(raw: any, sourceUrl: string, fallbackName: string) {
+  const metadata = raw.metadata || raw.meta || {};
+  const promptMessages = Array.isArray(raw.messages)
+    ? raw.messages.map((msg: any) => msg?.content || msg?.text || '').filter(Boolean).join('\n\n')
+    : '';
+  const systemPromptBlocks = [raw.system_prompt, raw.systemPrompt, raw.prompt, raw.instructions, raw.content, raw.template, raw.prompt_template, metadata.prompt, promptMessages]
+    .filter(Boolean)
+    .map((value) => typeof value === 'string' ? value : JSON.stringify(value));
+  const name = raw.name || raw.title || raw.slug || metadata.name || fallbackName;
+  const description = raw.description || raw.summary || raw.purpose || metadata.description || '';
+  const systemPrompt = systemPromptBlocks.join('\n\n').trim();
+  const triggers = Array.isArray(raw.triggers) ? raw.triggers
+    : Array.isArray(raw.keywords) ? raw.keywords
+      : Array.isArray(metadata.triggers) ? metadata.triggers
+        : typeof raw.triggers === 'string' ? raw.triggers.split(',').map((s: string) => s.trim()).filter(Boolean)
+        : [];
+  const tags = new Set<string>([
+    ...splitListLike(raw.tags),
+    ...splitListLike(metadata.tags),
+    ...inferSkillTags(sourceUrl, JSON.stringify(raw)),
+  ]);
+  if (raw.agent) tags.add(String(raw.agent));
+  if (raw.framework) tags.add(String(raw.framework));
+  if (metadata.framework) tags.add(String(metadata.framework));
+
+  let steps = Array.isArray(raw.steps) ? raw.steps : [];
+  if (steps.length === 0 && Array.isArray(raw.workflow)) {
+    steps = raw.workflow.map((step: any) => ({ note: typeof step === 'string' ? step : step.note || step.description || JSON.stringify(step) }));
+  }
+  if (steps.length === 0 && Array.isArray(raw.actions)) {
+    steps = raw.actions.map((step: any) => ({ note: typeof step === 'string' ? step : step.note || step.description || JSON.stringify(step) }));
+  }
+  if (steps.length === 0 && Array.isArray(raw.commands)) {
+    steps = raw.commands.map((step: any) => ({ note: typeof step === 'string' ? step : step.note || step.command || step.description || JSON.stringify(step) }));
+  }
+  if (steps.length === 0 && Array.isArray(raw.tasks)) {
+    steps = raw.tasks.map((step: any) => ({ note: typeof step === 'string' ? step : step.note || step.task || step.description || JSON.stringify(step) }));
+  }
+
+  return {
+    name,
+    description,
+    triggers: [...triggers, ...inferTriggersFromPath(sourceUrl, String(name))].filter((item, index, arr) => arr.indexOf(item) === index),
+    steps,
+    system_prompt: systemPrompt,
+    tags: [...tags],
+    source_url: sourceUrl,
+  };
+}
+
+function parseStructuredSkillFile(raw: string, sourceUrl: string, filePath: string) {
+  const parsed = parseLooseKeyValueText(raw);
+  const name = String(parsed.name || parsed.title || filePath.split('/').pop()?.replace(/\.(yaml|yml|toml)$/i, '') || 'Imported Skill');
+  const description = String(parsed.description || parsed.summary || parsed.purpose || '').trim();
+  const prompt = String(parsed.system_prompt || parsed.prompt || parsed.instructions || parsed.template || raw).trim();
+  const steps = splitListLike(parsed.steps || parsed.workflow || parsed.tasks || parsed.commands)
+    .slice(0, 12)
+    .map((note) => ({ note }));
+  const triggers = [
+    ...splitListLike(parsed.triggers || parsed.keywords),
+    ...inferTriggersFromPath(filePath, name),
+  ].filter((item, index, arr) => arr.indexOf(item) === index);
+  const tags = [...new Set([...splitListLike(parsed.tags), ...inferSkillTags(filePath, raw)])];
+  return {
+    name,
+    description,
+    triggers,
+    steps,
+    system_prompt: prompt,
+    tags,
+    source_url: sourceUrl,
+  };
+}
+
+async function fetchRepoSkills(url: string): Promise<any[]> {
+  if (isRawGitHubContentUrl(url)) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`Could not fetch ${url}: ${r.status}`);
+    const text = await r.text();
+    try {
+      const json = JSON.parse(text);
+      const records = Array.isArray(json)
+        ? json
+        : Array.isArray(json.skills) ? json.skills
+          : Array.isArray(json.agents) ? json.agents
+            : Array.isArray(json.commands) ? json.commands
+              : [json];
+      return records.map((record, index) => normalizeSkillRecord(record, url, `Imported Skill ${index + 1}`));
+    } catch {
+      const fileName = url.split('/').pop() || 'skill.md';
+      return [/\.(yaml|yml|toml)$/i.test(fileName)
+        ? parseStructuredSkillFile(text, url, fileName)
+        : parseMarkdownSkill(text, url, fileName)];
+    }
+  }
+
+  const parsed = parseGitHubRepo(url);
+  if (!parsed) throw new Error('Unsupported URL. Use a GitHub repo URL, blob URL, or raw file URL.');
+
+  const repoResp = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}`);
+  if (!repoResp.ok) throw new Error(`Could not inspect GitHub repo: ${repoResp.status}`);
+  const repoMeta = await repoResp.json();
+  const branch = parsed.branch || repoMeta.default_branch || 'main';
+
+  const treeResp = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+  if (!treeResp.ok) throw new Error(`Could not list repo files: ${treeResp.status}`);
+  const treeData = await treeResp.json();
+  const tree = Array.isArray(treeData.tree) ? treeData.tree : [];
+  const basePath = parsed.path ? parsed.path.replace(/\/$/, '') : '';
+  const filtered = tree.filter((entry: any) => entry.type === 'blob' && (!basePath || String(entry.path || '').startsWith(basePath)));
+
+  const scoreFile = (filePath: string) => {
+    const normalizedPath = filePath.toLowerCase();
+    // Higher scores mean "more likely to be an explicit reusable skill definition".
+    // This prioritizes canonical manifests first, then known framework layouts, then generic prompts.
+    if (normalizedPath.endsWith('skill.json')) return SKILL_SCORE.skillJson;
+    if (pathContainsFrameworkName(normalizedPath, 'openclaw') && /\.(json|yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.frameworkManifest;
+    if (pathContainsFrameworkName(normalizedPath, 'hermes') && /\.(json|yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.frameworkManifest;
+    if (normalizedPath.includes('.claude/commands/') && normalizedPath.endsWith('.md')) return SKILL_SCORE.claudeCommand;
+    if ((normalizedPath.includes('/commands/') || normalizedPath.includes('/agents/') || normalizedPath.includes('/recipes/')) && /\.(yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.structuredAgentPrompt;
+    if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && normalizedPath.endsWith('.md')) return SKILL_SCORE.markdownSkillFolder;
+    if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && /\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.structuredSkillFolder;
+    if (/(\.prompt|\.skill|\.agent)\.(md|yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.explicitPromptFile;
+    if (/(agents|claude|hermes|openclaw)\.md$/i.test(normalizedPath)) return SKILL_SCORE.namedMarkdownAgent;
+    if (/(agents|claude|hermes|openclaw)\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.namedStructuredAgent;
+    if (normalizedPath.endsWith('.json')) return SKILL_SCORE.genericJson;
+    if (/\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.genericStructured;
+    if (normalizedPath.endsWith('.md')) return SKILL_SCORE.genericMarkdown;
+    return 0;
+  };
+
+  const candidates = filtered
+    .map((entry: any) => ({ ...entry, score: scoreFile(String(entry.path || '')) }))
+    .filter((entry: any) => entry.score > 0)
+    .sort((a: any, b: any) => b.score - a.score)
+    .slice(0, 12);
+
+  if (candidates.length === 0) {
+    throw new Error('No recognizable skill files found in that repository.');
+  }
+
+  const installed: any[] = [];
+  for (const candidate of candidates) {
+    const rawUrl = toRawGitHubUrl(parsed.owner, parsed.repo, branch, candidate.path);
+    const r = await fetch(rawUrl);
+    if (!r.ok) continue;
+      const text = await r.text();
+      try {
+        const json = JSON.parse(text);
+        const records = Array.isArray(json)
+          ? json
+          : Array.isArray(json.skills) ? json.skills
+            : Array.isArray(json.agents) ? json.agents
+              : Array.isArray(json.commands) ? json.commands
+                : [json];
+        for (const [index, record] of records.entries()) {
+          const normalized = normalizeSkillRecord(record, rawUrl, `${candidate.path.split('/').pop() || 'skill'} ${index + 1}`);
+          if (normalized.system_prompt || normalized.steps.length > 0) installed.push(normalized);
+        }
+      } catch {
+        const parsedSkill = /\.(yaml|yml|toml)$/i.test(candidate.path)
+          ? parseStructuredSkillFile(text, rawUrl, candidate.path)
+          : parseMarkdownSkill(text, rawUrl, candidate.path);
+        if (parsedSkill.system_prompt || parsedSkill.steps.length > 0) installed.push(parsedSkill);
+      }
+  }
+
+  if (installed.length === 0) throw new Error('No importable skills found in that repository.');
+  return installed;
+}
+
+async function insertSkills(supabase: any, skillRecords: any[]) {
+  const inserted = [];
+  for (const record of skillRecords) {
+    const slugBase = slugify(record.slug || record.name);
+    let slug = slugBase;
+    let n = 1;
+    while (true) {
+      const { data: existing } = await supabase.from('agent_skills').select('id').eq('slug', slug).maybeSingle();
+      if (!existing) break;
+      n += 1;
+      slug = `${slugBase}-${n}`;
+    }
+    const { data, error } = await supabase.from('agent_skills').insert({
+      name: record.name || 'Imported Skill',
+      slug,
+      description: record.description || '',
+      source: 'github',
+      source_url: record.source_url,
+      triggers: Array.isArray(record.triggers) ? record.triggers : [],
+      steps: Array.isArray(record.steps) ? record.steps : [],
+      system_prompt: record.system_prompt || '',
+      tags: Array.isArray(record.tags) ? record.tags : [],
+    }).select().single();
+    if (error) throw new Error(error.message);
+    inserted.push(data);
+  }
+  return inserted;
 }
 
 serve(async (req) => {
@@ -65,33 +396,15 @@ serve(async (req) => {
     if (body.action === 'install_github') {
       const { url } = body;
       if (!url) throw new Error('url is required');
-      const { json, raw_url } = await fetchSkillJson(url);
+      const imported = await fetchRepoSkills(url);
+      const installed = await insertSkills(supabase, imported);
 
-      const name = json.name || 'Untitled Skill';
-      const slugBase = slugify(json.slug || name);
-      // Ensure unique slug
-      let slug = slugBase;
-      let n = 1;
-      while (true) {
-        const { data: existing } = await supabase.from('agent_skills').select('id').eq('slug', slug).maybeSingle();
-        if (!existing) break;
-        n += 1; slug = `${slugBase}-${n}`;
-      }
-
-      const { data, error } = await supabase.from('agent_skills').insert({
-        name,
-        slug,
-        description: json.description || '',
-        source: 'github',
-        source_url: raw_url,
-        triggers: Array.isArray(json.triggers) ? json.triggers : [],
-        steps: Array.isArray(json.steps) ? json.steps : [],
-        system_prompt: json.system_prompt || json.systemPrompt || '',
-        tags: Array.isArray(json.tags) ? json.tags : [],
-      }).select().single();
-      if (error) throw new Error(error.message);
-
-      return new Response(JSON.stringify({ ok: true, skill: data }), {
+      return new Response(JSON.stringify({
+        ok: true,
+        skill: installed[0],
+        skills: installed,
+        count: installed.length,
+      }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
