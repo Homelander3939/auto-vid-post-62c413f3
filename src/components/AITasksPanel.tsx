@@ -46,6 +46,12 @@ const COMMAND_LABELS: Record<string, string> = {
   open_browser: 'Browser task',
   check_stats: 'Stats check',
 };
+const AGENT_RUN_RECENT_EVENT_TYPES = ['tool_call', 'tool_result', 'thought', 'error', 'review', 'phase', 'finish'];
+const AGENT_RUN_RECENT_EVENT_LIMIT = 8;
+
+function isCountableToolResult(event: AgentRun['events'][number]) {
+  return event.type === 'tool_result' && event.name !== 'plan' && event.name !== 'finish' && event.ok !== false;
+}
 
 function statusColor(status: string): string {
   if (status === 'completed' || status === 'success') return 'bg-emerald-500/15 text-emerald-700 border-emerald-500/30';
@@ -345,8 +351,10 @@ function AgentRunRow({ run, onCancel, onDelete }: { run: AgentRun; onCancel: (id
   const events = Array.isArray(run.events) ? run.events : [];
   const planEvent = [...events].reverse().find((event) => event.type === 'plan');
   const plan = Array.isArray(planEvent?.steps) ? planEvent.steps : [];
-  const recent = events.filter((event) => ['tool_call', 'tool_result', 'thought', 'error', 'review', 'phase', 'finish'].includes(event.type)).slice(-8);
-  const completedToolCount = events.filter((event) => event.type === 'tool_result' && event.name !== 'plan' && event.name !== 'finish' && event.ok !== false).length;
+  const recent = events
+    .filter((event) => AGENT_RUN_RECENT_EVENT_TYPES.includes(event.type))
+    .slice(-AGENT_RUN_RECENT_EVENT_LIMIT);
+  const completedToolCount = events.filter(isCountableToolResult).length;
   const latestToolCall = [...events].reverse().find((event) => event.type === 'tool_call');
   const latestThought = [...events].reverse().find((event) => event.type === 'thought');
   const latestError = [...events].reverse().find((event) => event.type === 'error');
@@ -357,7 +365,7 @@ function AgentRunRow({ run, onCancel, onDelete }: { run: AgentRun; onCancel: (id
     || latestThought?.text
     || latestFinish?.summary
     || (run.status === 'running' ? 'Agent is thinking…' : 'Run completed');
-  const totalCount = Math.max(plan.length || completedToolCount || 1, 1);
+  const totalCount = Math.max(plan.length || completedToolCount, 1);
   const pct = run.status === 'completed'
     ? 100
     : run.status === 'cancelled' || run.status === 'failed'
@@ -433,7 +441,7 @@ function AgentRunRow({ run, onCancel, onDelete }: { run: AgentRun; onCancel: (id
               <div className="space-y-1">
                 <div className="font-medium text-muted-foreground">Plan</div>
                 {plan.map((step, index) => (
-                  <div key={`${run.id}-plan-${index}`} className="flex items-start gap-2">
+                  <div key={`plan-${index}`} className="flex items-start gap-2">
                     <span className="text-muted-foreground">{index + 1}.</span>
                     <span>{step}</span>
                   </div>
@@ -444,7 +452,7 @@ function AgentRunRow({ run, onCancel, onDelete }: { run: AgentRun; onCancel: (id
               <div className="space-y-1">
                 <div className="font-medium text-muted-foreground">Recent activity</div>
                 {recent.map((event, index) => (
-                  <div key={`${run.id}-event-${index}`} className="text-muted-foreground">
+                  <div key={`event-${index}`} className="text-muted-foreground">
                     {event.type === 'tool_call' && <>🔧 {event.name}{event.label ? ` → ${event.label}` : ''}</>}
                     {event.type === 'tool_result' && <>{event.ok === false ? '✗' : '✓'} {event.name}: {event.summary}</>}
                     {event.type === 'thought' && <>💭 {event.text}</>}
