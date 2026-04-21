@@ -65,6 +65,10 @@ export interface AgentSettings {
   imageKeys: ImageKeyEntry[]; // up to 10 fallback keys, tried in order
   researchDepth: string;    // light | standard | deep
   localAgentUrl: string;
+  taskMode: string;         // standard | multi-agent
+  automationMode: string;   // safe | extended
+  memoryEnabled: boolean;
+  memoryMaxItems: number;
   shellEnabled: boolean;
   workspacePath: string;
 }
@@ -139,6 +143,10 @@ export async function getAgentSettings(): Promise<AgentSettings> {
     imageKeys,
     researchDepth: r.research_depth || 'standard',
     localAgentUrl: r.local_agent_url || 'http://localhost:3001',
+    taskMode: r.agent_task_mode || 'standard',
+    automationMode: r.agent_automation_mode || 'safe',
+    memoryEnabled: r.agent_memory_enabled !== false,
+    memoryMaxItems: Math.min(Math.max(Number(r.agent_memory_max_items) || 8, 1), 20),
     shellEnabled: r.agent_shell_enabled === true,
     workspacePath: r.agent_workspace_path || '',
   };
@@ -158,6 +166,10 @@ export async function saveAgentSettings(s: AgentSettings): Promise<void> {
     image_keys: cleanKeys as any,
     research_depth: s.researchDepth,
     local_agent_url: s.localAgentUrl,
+    agent_task_mode: s.taskMode || 'standard',
+    agent_automation_mode: s.automationMode || 'safe',
+    agent_memory_enabled: s.memoryEnabled !== false,
+    agent_memory_max_items: Math.min(Math.max(Number(s.memoryMaxItems) || 8, 1), 20),
     agent_shell_enabled: s.shellEnabled === true,
     agent_workspace_path: s.workspacePath || '',
   } as any).eq('id', 1);

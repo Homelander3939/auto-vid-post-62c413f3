@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Sparkles, Github, Play, Trash2, Plus, CheckCircle2, BookOpen, Loader2 } from 'lucide-react';
+import { Sparkles, Github, Play, Trash2, Plus, CheckCircle2, BookOpen, Loader2, Brain } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Skill {
@@ -34,8 +34,20 @@ interface PendingRun {
   created_at: string;
 }
 
+interface AgentMemory {
+  id: string;
+  title: string;
+  content: string;
+  memory_type: string;
+  tags: string[];
+  enabled: boolean;
+  use_count: number;
+  created_at: string;
+}
+
 export default function AgentSkills() {
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [memories, setMemories] = useState<AgentMemory[]>([]);
   const [pending, setPending] = useState<PendingRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [installUrl, setInstallUrl] = useState('');
@@ -46,11 +58,13 @@ export default function AgentSkills() {
 
   const load = async () => {
     setLoading(true);
-    const [s, p] = await Promise.all([
+    const [s, m, p] = await Promise.all([
       supabase.from('agent_skills').select('*').order('created_at', { ascending: false }),
+      supabase.from('agent_memories').select('*').order('importance', { ascending: false }).order('created_at', { ascending: false }).limit(30),
       supabase.from('agent_runs').select('id,prompt,pending_skill,created_at').not('pending_skill', 'is', null).order('created_at', { ascending: false }).limit(20),
     ]);
     setSkills((s.data as any) || []);
+    setMemories((m.data as any) || []);
     setPending((p.data as any) || []);
     setLoading(false);
   };
@@ -60,6 +74,7 @@ export default function AgentSkills() {
     const ch = supabase
       .channel('agent_skills_changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'agent_skills' }, load)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'agent_memories' }, load)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'agent_runs' }, load)
       .subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -122,9 +137,20 @@ export default function AgentSkills() {
     load();
   };
 
+  const toggleMemory = async (id: string, enabled: boolean) => {
+    await supabase.from('agent_memories').update({ enabled }).eq('id', id);
+    load();
+  };
+
   const remove = async (id: string) => {
     if (!confirm('Delete this skill?')) return;
     await supabase.from('agent_skills').delete().eq('id', id);
+    load();
+  };
+
+  const removeMemory = async (id: string) => {
+    if (!confirm('Delete this memory?')) return;
+    await supabase.from('agent_memories').delete().eq('id', id);
     load();
   };
 
@@ -176,7 +202,7 @@ export default function AgentSkills() {
           <h2 className="text-sm font-medium">Install from GitHub</h2>
         </div>
         <p className="text-xs text-muted-foreground mb-3">
-          Paste a repo URL (looks for <code className="text-[10px] bg-secondary px-1 rounded">skill.json</code> at the root) or a direct raw URL.
+          Paste a repo URL or raw file URL. The importer now scans common skill layouts such as <code className="text-[10px] bg-secondary px-1 rounded">skill.json</code>, <code className="text-[10px] bg-secondary px-1 rounded">skills/</code>, <code className="text-[10px] bg-secondary px-1 rounded">agents/</code>, <code className="text-[10px] bg-secondary px-1 rounded">commands/</code>, and Claude/OpenClaw/Hermes prompt files.
         </p>
         <div className="flex gap-2">
           <Input
@@ -226,6 +252,45 @@ export default function AgentSkills() {
           </div>
         </Card>
       )}
+
+      <div>
+        <h2 className="text-sm font-medium mb-2 flex items-center gap-2">
+          <Brain className="w-4 h-4 text-muted-foreground" /> Persistent Memory ({memories.length})
+        </h2>
+        {memories.length === 0 ? (
+          <Card className="p-6 text-center text-sm text-muted-foreground border-dashed">
+            No persistent memories yet. In multi-agent mode the agent can now save durable facts, workflow notes, and subtask context here.
+          </Card>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {memories.map((memory) => (
+              <Card key={memory.id} className="p-4 flex flex-col">
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <div className="font-medium text-sm min-w-0 truncate">{memory.title}</div>
+                  <Badge variant="outline" className="text-[9px] shrink-0">{memory.memory_type}</Badge>
+                </div>
+                <p className="text-xs text-muted-foreground line-clamp-3 mb-2">{memory.content}</p>
+                {memory.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mb-2">
+                    {memory.tags.slice(0, 5).map((tag, i) => (
+                      <Badge key={i} variant="secondary" className="text-[9px]">{tag}</Badge>
+                    ))}
+                  </div>
+                )}
+                <div className="text-[10px] text-muted-foreground mb-3">
+                  used {memory.use_count} times
+                </div>
+                <div className="mt-auto flex items-center gap-2">
+                  <Switch checked={memory.enabled} onCheckedChange={(v) => toggleMemory(memory.id, v)} />
+                  <Button size="icon" variant="ghost" onClick={() => removeMemory(memory.id)} className="ml-auto">
+                    <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />
+                  </Button>
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Skills list */}
       <div>

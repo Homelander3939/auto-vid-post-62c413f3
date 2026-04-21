@@ -156,6 +156,56 @@ const tools = [
   {
     type: 'function',
     function: {
+      name: 'remember_fact',
+      description: 'Store an important durable memory so future tasks can reuse it. Use for stable facts, preferences, workflows, accounts, constraints, or repeated context worth remembering.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          content: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          memory_type: { type: 'string', enum: ['fact', 'workflow', 'preference', 'subtask'] },
+          importance: { type: 'number', minimum: 1, maximum: 100, default: 60 },
+        },
+        required: ['title', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'chain_skill',
+      description: 'Load a saved skill into the current task as a reusable subtask building block. Use when an existing skill can help complete part of the task.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Skill name, trigger, or short description of what skill to reuse.' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'improve_skill',
+      description: 'Persist an improvement back into an existing saved skill after learning a better workflow, subtask sequence, or durable instruction.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Skill name or trigger to improve.' },
+          note: { type: 'string', description: 'What changed or improved.' },
+          append_step: { type: 'string', description: 'Optional new reusable step to append.' },
+          tags: { type: 'array', items: { type: 'string' } },
+          triggers: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['query', 'note'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'save_skill',
       description: 'Propose saving the routine you just executed as a reusable Skill (like OpenClaw/Hermes skills). The user will review and approve from the Skills page. Use this when the task represents a repeatable workflow worth memorizing.',
       parameters: {
@@ -238,6 +288,143 @@ async function getRun(supabase: any, runId: string) {
   return data;
 }
 
+function tokenize(text: string): string[] {
+  return String(text || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length > 2);
+}
+
+function keywordOverlapScore(query: string, haystack: string): number {
+  const queryTokens = tokenize(query);
+  if (queryTokens.length === 0) return 0;
+  const targetTokens = new Set(tokenize(haystack));
+  return queryTokens.reduce((score, token) => score + (targetTokens.has(token) ? 1 : 0), 0);
+}
+
+async function loadRelevantMemories(supabase: any, prompt: string, limit: number) {
+  const cappedLimit = Math.min(Math.max(Number(limit) || 8, 1), 20);
+  const { data } = await supabase
+    .from('agent_memories')
+    .select('*')
+    .eq('enabled', true)
+    .order('importance', { ascending: false })
+    .order('updated_at', { ascending: false })
+    .limit(80);
+  const scored = (data || [])
+    .map((memory: any) => ({
+      memory,
+      score: keywordOverlapScore(prompt, `${memory.title}\n${memory.content}\n${(memory.tags || []).join(' ')}`) + (Number(memory.importance) || 0) / 25,
+    }))
+    .filter((entry: any) => entry.score > 0)
+    .sort((a: any, b: any) => b.score - a.score)
+    .slice(0, cappedLimit)
+    .map((entry: any) => entry.memory);
+  for (const memory of scored) {
+    await supabase.from('agent_memories').update({
+      use_count: (memory.use_count || 0) + 1,
+      last_used_at: new Date().toISOString(),
+    }).eq('id', memory.id);
+  }
+  return scored;
+}
+
+async function rememberFact(supabase: any, runId: string, args: any) {
+  const payload = {
+    title: String(args.title || '').trim(),
+    content: String(args.content || '').trim(),
+    memory_type: String(args.memory_type || 'fact'),
+    tags: Array.isArray(args.tags) ? args.tags.map((tag: any) => String(tag).trim()).filter(Boolean) : [],
+    importance: Math.min(Math.max(Number(args.importance) || 60, 1), 100),
+    source_run_id: runId,
+  };
+  if (!payload.title || !payload.content) {
+    return { ok: false, summary: 'Memory title and content are required.' };
+  }
+  const { data, error } = await supabase.from('agent_memories').insert(payload).select().single();
+  if (error) return { ok: false, summary: error.message };
+  return { ok: true, summary: `Memory saved: ${data.title}`, data };
+}
+
+async function findSkillForQuery(supabase: any, query: string) {
+  const { data } = await supabase.from('agent_skills').select('*').eq('enabled', true).limit(100);
+  const scored = (data || [])
+    .map((skill: any) => ({
+      skill,
+      score: keywordOverlapScore(query, [
+        skill.name,
+        skill.description,
+        skill.system_prompt,
+        ...(skill.triggers || []),
+        ...(skill.tags || []),
+      ].join('\n')),
+    }))
+    .filter((entry: any) => entry.score > 0)
+    .sort((a: any, b: any) => b.score - a.score);
+  return scored[0]?.skill || null;
+}
+
+async function chainSkill(supabase: any, args: any) {
+  const skill = await findSkillForQuery(supabase, String(args.query || ''));
+  if (!skill) return { ok: false, summary: `No saved skill matched "${args.query || ''}".` };
+  return {
+    ok: true,
+    summary: `Loaded skill "${skill.name}".`,
+    data: {
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      system_prompt: skill.system_prompt,
+      triggers: skill.triggers || [],
+      tags: skill.tags || [],
+      steps: skill.steps || [],
+    },
+  };
+}
+
+async function improveSkill(supabase: any, args: any) {
+  const skill = await findSkillForQuery(supabase, String(args.query || ''));
+  if (!skill) return { ok: false, summary: `No saved skill matched "${args.query || ''}".` };
+
+  const nextSteps = Array.isArray(skill.steps) ? [...skill.steps] : [];
+  if (args.append_step) {
+    const note = String(args.append_step).trim();
+    if (note && !nextSteps.some((step: any) => String(step?.note || '').trim() === note)) {
+      nextSteps.push({ note });
+    }
+  }
+
+  const appendedNote = String(args.note || '').trim();
+  const existingPrompt = String(skill.system_prompt || '').trim();
+  const improvedPrompt = appendedNote
+    ? [existingPrompt, 'Improvement notes:', `- ${appendedNote}`].filter(Boolean).join('\n\n')
+    : existingPrompt;
+
+  const mergedTags = [...new Set([...(skill.tags || []), ...((Array.isArray(args.tags) ? args.tags : []).map((tag: any) => String(tag).trim()).filter(Boolean))])];
+  const mergedTriggers = [...new Set([...(skill.triggers || []), ...((Array.isArray(args.triggers) ? args.triggers : []).map((tag: any) => String(tag).trim()).filter(Boolean))])];
+
+  const { data, error } = await supabase.from('agent_skills').update({
+    steps: nextSteps,
+    system_prompt: improvedPrompt,
+    tags: mergedTags,
+    triggers: mergedTriggers,
+  }).eq('id', skill.id).select().single();
+  if (error) return { ok: false, summary: error.message };
+  return { ok: true, summary: `Improved skill "${data.name}".`, data };
+}
+
+function getAutomationBlockReason(automationMode: string, toolName: string, args: any): string | null {
+  if (automationMode !== 'safe') return null;
+  if (toolName !== 'browser_task') return null;
+  const task = String(args.task || '');
+  if (!task) return null;
+  if (/\b(parse|scrape|extract|research|inspect|review|summarize|compare|collect|crawl|analyze)\b/i.test(task)) return null;
+  if (/\b(trade|buy|sell|order|checkout|payment|wallet|bank|transfer|publish|post|submit|send message|log in|login|sign in)\b/i.test(task)) {
+    return 'Safe automation mode only allows read-only browser research/parsing workflows. Switch Settings → Research & Image Agent → Automation mode to Extended for higher-risk actions.';
+  }
+  return null;
+}
+
 /* ── Telegram live-status (edits a single message in place) ──────────── */
 
 async function tgSend(chatId: string, text: string, lovKey: string, tgKey: string): Promise<number | null> {
@@ -278,7 +465,7 @@ async function tgEdit(chatId: string, messageId: number, text: string, lovKey: s
 function renderTelegramStatus(prompt: string, events: any[], status: string): string {
   const planEvent = [...events].reverse().find((e) => e.type === 'plan');
   const plan = planEvent?.steps as string[] | undefined;
-  const recent = events.filter((e) => ['tool_call', 'tool_result', 'thought', 'finish'].includes(e.type)).slice(-6);
+  const recent = events.filter((e) => ['tool_call', 'tool_result', 'thought', 'finish', 'review', 'memory_saved'].includes(e.type)).slice(-6);
 
   let txt = `🤖 Agent — ${status === 'running' ? '⏳ working' : status === 'completed' ? '✅ done' : '⚠️ ' + status}\n\n`;
   txt += `📝 ${prompt.slice(0, 140)}${prompt.length > 140 ? '…' : ''}\n\n`;
@@ -290,6 +477,8 @@ function renderTelegramStatus(prompt: string, events: any[], status: string): st
     for (const e of recent) {
       if (e.type === 'tool_call') txt += `  🔧 ${e.name}${e.label ? ` — ${e.label}` : ''}\n`;
       else if (e.type === 'tool_result') txt += `  ${e.ok ? '✓' : '✗'} ${e.name}: ${(e.summary || '').slice(0, 100)}\n`;
+      else if (e.type === 'review') txt += `  🧐 ${(e.text || '').slice(0, 100)}\n`;
+      else if (e.type === 'memory_saved') txt += `  🧠 memory saved: ${e.title || 'untitled'}\n`;
       else if (e.type === 'finish') txt += `\n${e.summary || 'Done.'}\n`;
     }
   }
@@ -328,6 +517,10 @@ async function getProviderMap(supabase: any) {
       model: imageModel,
       imageKeys: (Array.isArray(s.image_keys) ? s.image_keys : []).filter((k: any) => k && k.enabled !== false),
     },
+    taskMode: s.agent_task_mode || 'standard',
+    automationMode: s.agent_automation_mode || 'safe',
+    memoryEnabled: s.agent_memory_enabled !== false,
+    memoryMaxItems: Math.min(Math.max(Number(s.agent_memory_max_items) || 8, 1), 20),
     shellEnabled: !!s.agent_shell_enabled,
     workspaceRoot: s.agent_workspace_path || '',
   };
@@ -373,6 +566,33 @@ async function callPlanner(messages: any[], chat: any, lovableKey: string): Prom
     throw new Error(`Planner LLM failed (${r.status}): ${t.slice(0, 300)}`);
   }
   return await r.json();
+}
+
+async function callReviewer(messages: any[], chat: any, lovableKey: string): Promise<string> {
+  let url = LOVABLE_GATEWAY;
+  let key = lovableKey;
+  let model = chat.model || 'google/gemini-3-flash-preview';
+
+  if (chat.provider === 'openai' && chat.apiKey) {
+    url = 'https://api.openai.com/v1/chat/completions';
+    key = chat.apiKey;
+    if (!model || model.startsWith('google/')) model = 'gpt-4o-mini';
+  } else if (chat.provider === 'openrouter' && chat.apiKey) {
+    url = 'https://openrouter.ai/api/v1/chat/completions';
+    key = chat.apiKey;
+  }
+
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, messages }),
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`Reviewer LLM failed (${r.status}): ${t.slice(0, 300)}`);
+  }
+  const data = await r.json();
+  return data?.choices?.[0]?.message?.content || '';
 }
 
 /* ── Cloud-side tool executors (research + image — done in edge fn) ──── */
@@ -761,6 +981,26 @@ async function runAgent(supabase: any, runId: string, lovableKey: string, telegr
   if (!run) return;
   const providers = await getProviderMap(supabase);
   const workspaceSlug = slugify(run.prompt);
+  const multiAgentEnabled = providers.taskMode === 'multi-agent';
+  const relevantMemories = providers.memoryEnabled ? await loadRelevantMemories(supabase, run.prompt, providers.memoryMaxItems) : [];
+
+  await setStatus(supabase, runId, {
+    task_mode: providers.taskMode,
+    automation_mode: providers.automationMode,
+    memory_snapshot: relevantMemories.map((memory: any) => ({
+      id: memory.id,
+      title: memory.title,
+      memory_type: memory.memory_type,
+      tags: memory.tags || [],
+    })),
+  });
+  if (relevantMemories.length > 0) {
+    await appendEvent(supabase, runId, {
+      type: 'memory_context',
+      count: relevantMemories.length,
+      titles: relevantMemories.map((memory: any) => memory.title),
+    });
+  }
 
   const systemPrompt = `You are an elite autonomous local-PC agent inspired by Claude Code, OpenClaw, and Hermes.
 
@@ -769,6 +1009,7 @@ async function runAgent(supabase: any, runId: string, lovableKey: string, telegr
 - Tools to: research the web, generate images, read/write/list files in the workspace, run allowlisted shell commands (${providers.shellEnabled ? 'ENABLED' : 'DISABLED — do not call run_shell'}), open URLs/files in the user's default browser, start a static preview server, and run deep browser automation tasks on the PC.
 - Configured providers: chat=${providers.chat.provider}/${providers.chat.model}, research=${providers.research.provider}, image=${providers.image.provider}.
 - Local machine capabilities available through tools: Node.js, npm/npx, Python, git, browser sessions, workspace files, and local previews.
+- Runtime modes: task_mode=${providers.taskMode}, automation_mode=${providers.automationMode}, persistent_memory=${providers.memoryEnabled ? `enabled (${providers.memoryMaxItems} recalled)` : 'disabled'}.
 
 # Core operating rules (MUST follow)
 1. FIRST response MUST be a single \`plan\` tool call with 3-7 concise steps. No other tool calls in that first response.
@@ -780,6 +1021,9 @@ async function runAgent(supabase: any, runId: string, lovableKey: string, telegr
 7. For local coding/data automation, use Node.js or Python via \`run_shell\` when that is the most reliable path.
 8. Do not stop early. Continue until the task is actually complete, blocked by disabled permissions, or you have a concrete artifact to hand off.
 9. ALWAYS end with \`finish\` including a short summary and useful artifacts (files, URLs, previews, images).
+10. When you learn a durable fact or stable workflow, call \`remember_fact\`.
+11. When a saved skill can solve part of the task, call \`chain_skill\` to reuse it as a subtask.
+12. After discovering a better repeatable workflow, call \`improve_skill\` and/or \`save_skill\`.
 
 # Quality bar
 - Output is shown live to the user step-by-step. Be concise in tool args.
@@ -787,11 +1031,13 @@ async function runAgent(supabase: any, runId: string, lovableKey: string, telegr
 - Image prompts: be specific about style, lighting, composition.
 - When using shell tools, prefer deterministic commands and verify outputs.
 - If shell access is disabled, adapt with file writes, previews, browser tools, and research rather than failing immediately.
+- In safe automation mode, keep browser automation read-only: research, parse, inspect, extract, summarize, compare, and draft. Do not execute trades, purchases, payments, or account-changing actions.
 
 # Task styles to emulate
 - Claude-Code style: inspect workspace, plan, edit carefully, run validation, summarize artifacts.
 - OpenClaw/Hermes style: chain research, browser work, file generation, and reusable skill extraction for complex multi-step workflows.
 - For broad automation ideas like website parsing, ad research, or market-data tooling, build reusable local scripts/workflows — do not place trades or take irreversible external actions on the user's behalf unless the user explicitly asks and the tool exists.
+- In multi-agent mode, separate responsibilities mentally: Planner designs the approach, Executor performs tools, Reviewer critiques results and suggests course corrections.
 
 User request: ${run.prompt}`;
 
@@ -815,7 +1061,11 @@ ${(sk.steps || []).map((s: any, j: number) => `  ${j + 1}. ${s.note || s.tool}`)
     await appendEvent(supabase, runId, { type: 'skill_matched', name: matched[0].name, id: matched[0].id });
   }
 
-  const systemPromptFull = systemPrompt + skillContext + `\n\n# Skills system
+  const memoryContext = relevantMemories.length > 0
+    ? `\n\n# Relevant persistent memory\n${relevantMemories.map((memory: any, index: number) => `## Memory ${index + 1}: ${memory.title}\nType: ${memory.memory_type}\nTags: ${(memory.tags || []).join(', ') || 'none'}\n${memory.content}`).join('\n\n')}`
+    : '';
+
+  const systemPromptFull = systemPrompt + skillContext + memoryContext + `\n\n# Skills system
 You can also call \`save_skill\` after a successful novel routine — it proposes saving the workflow so the user can approve and reuse it later. Only propose when the task is genuinely repeatable.`;
 
   const messages: any[] = [
@@ -823,6 +1073,9 @@ You can also call \`save_skill\` after a successful novel routine — it propose
     { role: 'user', content: run.prompt },
   ];
   let hasPlan = false;
+  if (multiAgentEnabled) {
+    await appendEvent(supabase, runId, { type: 'phase', name: 'planner' });
+  }
 
   let telegramMsgId: number | null = run.telegram_status_message_id ?? null;
   const updateTelegram = async () => {
@@ -889,6 +1142,9 @@ You can also call \`save_skill\` after a successful novel routine — it propose
             : name === 'open_in_browser' ? args.target
             : name === 'serve_preview' ? 'workspace'
             : name === 'browser_task' ? args.task?.slice(0, 80)
+            : name === 'remember_fact' ? args.title
+            : name === 'chain_skill' ? args.query
+            : name === 'improve_skill' ? args.query
             : name === 'save_skill' ? args.name
             : name === 'finish' ? 'summary'
             : '',
@@ -904,6 +1160,9 @@ You can also call \`save_skill\` after a successful novel routine — it propose
           ok = false;
           toolResultText = plannerViolation;
         } else if (name === 'plan') {
+          if (multiAgentEnabled) {
+            await appendEvent(supabase, runId, { type: 'phase', name: 'executor' });
+          }
           hasPlan = Array.isArray(args.steps) && args.steps.length > 0;
           await appendEvent(supabase, runId, { type: 'plan', steps: args.steps || [] });
           toolResultText = `Plan recorded: ${(args.steps || []).length} steps.`;
@@ -933,14 +1192,45 @@ You can also call \`save_skill\` after a successful novel routine — it propose
             toolResultData = typeof r.result === 'object' ? r.result : null;
           }
         } else if (name === 'browser_task') {
-          const r = await queueLocalCommand(supabase, 'open_browser', {
-            task: args.task,
-            url: args.url || null,
-            silent: true,
-          });
+          const blockReason = getAutomationBlockReason(providers.automationMode, name, args);
+          if (blockReason) {
+            ok = false;
+            toolResultText = blockReason;
+          } else {
+            const r = await queueLocalCommand(supabase, 'open_browser', {
+              task: args.task,
+              url: args.url || null,
+              silent: true,
+            });
+            ok = r.ok;
+            toolResultText = typeof r.result === 'string' ? r.result : JSON.stringify(r.result).slice(0, 1500);
+            toolResultData = typeof r.result === 'object' ? r.result : null;
+          }
+        } else if (name === 'remember_fact') {
+          if (!providers.memoryEnabled) {
+            ok = false;
+            toolResultText = 'Persistent memory is disabled in Settings → Research & Image Agent.';
+          } else {
+            const r = await rememberFact(supabase, runId, args);
+            ok = r.ok;
+            toolResultText = r.summary;
+            toolResultData = r.data || null;
+            if (ok) await appendEvent(supabase, runId, { type: 'memory_saved', title: args.title });
+          }
+        } else if (name === 'chain_skill') {
+          const r = await chainSkill(supabase, args);
           ok = r.ok;
-          toolResultText = typeof r.result === 'string' ? r.result : JSON.stringify(r.result).slice(0, 1500);
-          toolResultData = typeof r.result === 'object' ? r.result : null;
+          toolResultText = ok
+            ? `Loaded skill "${r.data.name}".\nDescription: ${r.data.description || 'n/a'}\nSteps:\n${(r.data.steps || []).map((step: any, index: number) => `${index + 1}. ${step.note || step.tool || JSON.stringify(step)}`).join('\n')}\n\nInstructions:\n${r.data.system_prompt || ''}`.slice(0, 6000)
+            : r.summary;
+          toolResultData = r.data || null;
+          if (ok) await appendEvent(supabase, runId, { type: 'skill_chained', name: r.data.name, id: r.data.id });
+        } else if (name === 'improve_skill') {
+          const r = await improveSkill(supabase, args);
+          ok = r.ok;
+          toolResultText = r.summary;
+          toolResultData = r.data || null;
+          if (ok) await appendEvent(supabase, runId, { type: 'skill_improved', name: r.data.name, id: r.data.id });
         } else if (name === 'save_skill') {
           await setStatus(supabase, runId, {
             pending_skill: {
@@ -982,6 +1272,30 @@ You can also call \`save_skill\` after a successful novel routine — it propose
           tool_call_id: tc.id,
           content: toolResultText.slice(0, 6000),
         });
+
+        if (multiAgentEnabled && name !== 'plan' && name !== 'finish') {
+          try {
+            await appendEvent(supabase, runId, { type: 'phase', name: 'reviewer' });
+            const reviewText = await callReviewer([
+              {
+                role: 'system',
+                content: 'You are the Reviewer agent in a planner/executor/reviewer workflow. Briefly assess the latest executor step. Reply in 2-4 short bullet-style lines covering: what happened, any risk, next best step, and whether memory or skill improvement should be stored.',
+              },
+              {
+                role: 'user',
+                content: `User request: ${run.prompt}\nTool: ${name}\nSuccess: ${ok}\nResult summary: ${toolResultText.slice(0, 1200)}`,
+              },
+            ], providers.chat, lovableKey);
+            if (reviewText.trim()) {
+              await appendEvent(supabase, runId, { type: 'review', text: reviewText.slice(0, 600) });
+              messages.push({ role: 'system', content: `Reviewer notes:\n${reviewText.slice(0, 600)}` });
+              await appendEvent(supabase, runId, { type: 'phase', name: 'executor' });
+              await updateTelegram();
+            }
+          } catch (reviewError) {
+            console.warn('Reviewer step failed:', reviewError);
+          }
+        }
       }
 
       if (finished) {
@@ -1055,6 +1369,9 @@ serve(async (req) => {
       status: 'running',
       events: [{ type: 'started', ts: Date.now() }],
       model: providers.chat.model,
+      task_mode: providers.taskMode,
+      automation_mode: providers.automationMode,
+      memory_snapshot: [],
       workspace_path: slug,
       source: source || 'web',
       telegram_chat_id: telegram_chat_id || null,
