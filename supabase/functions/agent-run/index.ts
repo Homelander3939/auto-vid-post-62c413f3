@@ -22,6 +22,35 @@ const LOVABLE_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 const MAX_STEPS = 12;
 
+function getMissingColumnName(error: { message?: string; details?: string } | null | undefined): string | null {
+  const text = [error?.message, error?.details].filter(Boolean).join(' ');
+  const quoted = text.match(/Could not find the '([^']+)' column/i);
+  if (quoted?.[1]) return quoted[1];
+  const doubleQuoted = text.match(/column "([^"]+)"/i);
+  if (doubleQuoted?.[1]) return doubleQuoted[1];
+  return null;
+}
+
+async function insertAgentRunCompat(supabase: any, payload: Record<string, unknown>) {
+  const nextPayload = { ...payload };
+  const removedColumns = new Set<string>();
+
+  while (Object.keys(nextPayload).length > 0) {
+    const result = await supabase.from('agent_runs').insert(nextPayload).select('id').single();
+    if (!result.error) return result;
+
+    const missingColumn = getMissingColumnName(result.error);
+    if (!missingColumn || !(missingColumn in nextPayload) || removedColumns.has(missingColumn)) {
+      throw new Error(result.error.message);
+    }
+
+    removedColumns.add(missingColumn);
+    delete nextPayload[missingColumn];
+  }
+
+  throw new Error('Could not create agent run');
+}
+
 /* ── Tool catalog exposed to the planner LLM ─────────────────────────── */
 const tools = [
   {
@@ -538,6 +567,9 @@ async function callPlanner(messages: any[], chat: any, lovableKey: string): Prom
     url = 'https://api.openai.com/v1/chat/completions';
     key = chat.apiKey;
     if (!model || model.startsWith('google/')) model = 'gpt-4o-mini';
+  } else if (chat.provider === 'nvidia' && chat.apiKey) {
+    url = 'https://integrate.api.nvidia.com/v1/chat/completions';
+    key = chat.apiKey;
   } else if (chat.provider === 'openrouter' && chat.apiKey) {
     url = 'https://openrouter.ai/api/v1/chat/completions';
     key = chat.apiKey;
@@ -577,6 +609,9 @@ async function callReviewer(messages: any[], chat: any, lovableKey: string): Pro
     url = 'https://api.openai.com/v1/chat/completions';
     key = chat.apiKey;
     if (!model || model.startsWith('google/')) model = 'gpt-4o-mini';
+  } else if (chat.provider === 'nvidia' && chat.apiKey) {
+    url = 'https://integrate.api.nvidia.com/v1/chat/completions';
+    key = chat.apiKey;
   } else if (chat.provider === 'openrouter' && chat.apiKey) {
     url = 'https://openrouter.ai/api/v1/chat/completions';
     key = chat.apiKey;
@@ -1366,7 +1401,7 @@ serve(async (req) => {
 
     const providers = await getProviderMap(supabase);
     const slug = slugify(prompt);
-    const { data: row, error } = await supabase.from('agent_runs').insert({
+    const { data: row } = await insertAgentRunCompat(supabase, {
       prompt,
       status: 'running',
       events: [{ type: 'started', ts: Date.now() }],
@@ -1377,8 +1412,7 @@ serve(async (req) => {
       workspace_path: slug,
       source: source || 'web',
       telegram_chat_id: telegram_chat_id || null,
-    }).select('id').single();
-    if (error) throw new Error(error.message);
+    });
 
     // Fire-and-forget the loop so the HTTP response returns immediately
     EdgeRuntime.waitUntil(runAgent(supabase, row.id, LOVABLE_API_KEY, TELEGRAM_API_KEY));
