@@ -1439,6 +1439,23 @@ async function processPendingCommands() {
                 status: 'failed', result: err.message, completed_at: new Date().toISOString(),
               }).eq('id', cmd.id);
             }
+          } else if (cmd.command && cmd.command.startsWith('agent_')) {
+            // Agent workspace tools (write_file, read_file, list_files, run_shell, open_in_browser, serve_preview)
+            try {
+              const { handleAgentCommand } = require('./agentWorkspace');
+              const result = await handleAgentCommand(cmd.command, cmd.args || {});
+              await supabase.from('pending_commands').update({
+                status: result && result.ok === false ? 'failed' : 'completed',
+                result: JSON.stringify(result),
+                completed_at: new Date().toISOString(),
+              }).eq('id', cmd.id);
+              console.log(`[Commands] ${cmd.command} → ${result && result.ok === false ? 'failed' : 'ok'}`);
+            } catch (err) {
+              await supabase.from('pending_commands').update({
+                status: 'failed', result: JSON.stringify({ ok: false, error: err.message }),
+                completed_at: new Date().toISOString(),
+              }).eq('id', cmd.id);
+            }
           } else {
             await supabase.from('pending_commands').update({
               status: 'failed', result: `Unknown command: ${cmd.command}`, completed_at: new Date().toISOString(),
