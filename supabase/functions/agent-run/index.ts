@@ -387,13 +387,13 @@ function inferResearchProvider(provider: string, apiKey: string): string {
   // If nothing matches confidently, we fall back to the local browser-backed search worker.
   const key = String(apiKey || '').trim();
   // Brave Search API keys usually start with BSA...
-  if (/^BSA[A-Za-z0-9_-]{10,}$/i.test(key)) return 'brave';
+  if (/^BSA[A-Za-z0-9_-]{10,}$/.test(key)) return 'brave';
   // Tavily keys use the tvly- prefix.
-  if (/^tvly-[A-Za-z0-9]{10,}$/i.test(key)) return 'tavily';
+  if (/^tvly-[A-Za-z0-9]{10,}$/.test(key)) return 'tavily';
   // Serper keys are often 64-char hex strings; this is still only a heuristic and may false-positive.
   if (/^[a-f0-9]{64}$/i.test(key)) return 'serper';
   // Firecrawl keys use the fc- prefix.
-  if (/^fc-[A-Za-z0-9]{10,}$/i.test(key)) return 'firecrawl';
+  if (/^fc-[A-Za-z0-9]{10,}$/.test(key)) return 'firecrawl';
   return 'local';
 }
 
@@ -538,9 +538,9 @@ function inferImageProvider(provider: string, apiKey: string): string {
   // The final Pexels/Unsplash checks are intentionally low-confidence fallbacks based mostly on token shape.
   const key = String(apiKey || '').trim();
   // xAI keys use the xai- prefix.
-  if (/^xai-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'xai';
+  if (/^xai-[A-Za-z0-9_-]{20,}$/.test(key)) return 'xai';
   // NVIDIA NIM keys use the nvapi- prefix.
-  if (/^nvapi-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'nvidia';
+  if (/^nvapi-[A-Za-z0-9_-]{20,}$/.test(key)) return 'nvidia';
   // Google AI Studio keys use the AIza prefix.
   if (/^AIza[A-Za-z0-9_-]{20,}$/.test(key)) return 'google';
   // OpenAI keys use sk- / sk-proj- prefixes.

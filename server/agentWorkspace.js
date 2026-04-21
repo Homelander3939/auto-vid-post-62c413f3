@@ -21,14 +21,15 @@ function getWorkspaceRoot(workspaceRoot) {
   const rootCompare = process.platform === 'win32' ? rootPath.toLowerCase() : rootPath;
   const resolvedCompare = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
   if (resolvedCompare === rootCompare) {
-    throw new Error('Workspace root cannot be the filesystem root');
+    throw new Error(`Workspace root cannot be the filesystem root (received: ${resolved})`);
   }
   const normalized = resolved.toLowerCase();
   const systemRoots = process.platform === 'win32'
     ? ['c:\\windows', 'c:\\program files', 'c:\\program files (x86)']
     : ['/usr', '/etc', '/bin', '/sbin'];
-  if (systemRoots.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}${path.sep}`))) {
-    throw new Error('Workspace root cannot point to a system directory');
+  const matchedPrefix = systemRoots.find((prefix) => normalized === prefix || normalized.startsWith(`${prefix}${path.sep}`));
+  if (matchedPrefix) {
+    throw new Error(`Workspace root cannot point to a system directory (received: ${resolved}, blocked: ${matchedPrefix})`);
   }
   return resolved;
 }
