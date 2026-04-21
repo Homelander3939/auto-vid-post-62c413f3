@@ -34,7 +34,8 @@ Automated video uploader for YouTube, TikTok, and Instagram with Telegram notifi
 
 That's it! The launcher will:
 - Pull latest updates from GitHub
-- Install dependencies if missing (including Playwright browser)
+- Verify frontend dependencies after pulling updates and install any missing or outdated packages
+- Install server dependencies if missing (including Playwright browser)
 - Start the backend server and frontend
 - Open Brave Browser (or default browser) at `http://localhost:8081`
 
