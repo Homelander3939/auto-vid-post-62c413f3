@@ -98,6 +98,8 @@ async function updateAppSettingsCompat(payload: Record<string, unknown>): Promis
     removedColumns.add(missingColumn);
     delete nextPayload[missingColumn];
   }
+
+  throw new Error('Could not update agent settings');
 }
 
 // Heuristic: detect provider from API key prefix.
