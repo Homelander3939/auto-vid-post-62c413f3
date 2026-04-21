@@ -19,6 +19,7 @@ const corsHeaders = {
 };
 
 const LOVABLE_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
+const GOOGLE_OPENAI_GATEWAY = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 const MAX_STEPS = 12;
 
@@ -558,6 +559,13 @@ async function getProviderMap(supabase: any) {
   };
 }
 
+function normalizeGoogleChatModel(model: string): string {
+  return String(model || '')
+    .replace(/^models\//, '')
+    .replace(/^google\//, '')
+    .trim() || 'gemini-2.5-flash';
+}
+
 /* ── Call planner LLM (user's provider, fallback Lovable) ────────────── */
 
 async function callPlanner(messages: any[], chat: any, lovableKey: string): Promise<any> {
@@ -570,6 +578,10 @@ async function callPlanner(messages: any[], chat: any, lovableKey: string): Prom
     url = 'https://api.openai.com/v1/chat/completions';
     key = chat.apiKey;
     if (!model || model.startsWith('google/')) model = 'gpt-4o-mini';
+  } else if (chat.provider === 'google' && chat.apiKey) {
+    url = GOOGLE_OPENAI_GATEWAY;
+    key = chat.apiKey;
+    model = normalizeGoogleChatModel(model);
   } else if (chat.provider === 'nvidia' && chat.apiKey) {
     url = 'https://integrate.api.nvidia.com/v1/chat/completions';
     key = chat.apiKey;
@@ -612,6 +624,10 @@ async function callReviewer(messages: any[], chat: any, lovableKey: string): Pro
     url = 'https://api.openai.com/v1/chat/completions';
     key = chat.apiKey;
     if (!model || model.startsWith('google/')) model = 'gpt-4o-mini';
+  } else if (chat.provider === 'google' && chat.apiKey) {
+    url = GOOGLE_OPENAI_GATEWAY;
+    key = chat.apiKey;
+    model = normalizeGoogleChatModel(model);
   } else if (chat.provider === 'nvidia' && chat.apiKey) {
     url = 'https://integrate.api.nvidia.com/v1/chat/completions';
     key = chat.apiKey;
