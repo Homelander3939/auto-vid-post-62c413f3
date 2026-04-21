@@ -1,13 +1,13 @@
 // AI agent that researches a topic, finds/generates an image, and writes per-platform posts.
 // Streams every reasoning + tool step via SSE so the UI can show a true agentic timeline.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.0';
+import { resolveChatProviderConfig } from '../_shared/ai-provider.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const LOVABLE_GATEWAY = 'https://ai.gateway.lovable.dev/v1/chat/completions';
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 
 interface Body {
@@ -935,27 +935,20 @@ Deno.serve(async (req) => {
   const { data: settings } = await supabase.from('app_settings').select('*').eq('id', 1).single();
   const s: any = settings || {};
 
-  const provider = s.ai_provider || 'lovable';
-  const customKey = s.ai_api_key || '';
-  const configuredModel = s.ai_model || 'google/gemini-3-flash-preview';
-  const useCustom = provider !== 'lovable' && customKey;
-  const apiKey = useCustom ? customKey : Deno.env.get('LOVABLE_API_KEY');
+  const config = resolveChatProviderConfig({
+    provider: s.ai_provider,
+    apiKey: s.ai_api_key,
+    model: s.ai_model,
+  }, Deno.env.get('LOVABLE_API_KEY') || '');
+  if (config.fallbackReason) {
+    console.warn('generate-social-post provider fallback:', config.fallbackReason);
+  }
+  const apiKey = config.key;
   if (!apiKey) {
     return new Response(JSON.stringify({ error: 'No AI API key. Configure one in Settings.' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
-  let endpoint = LOVABLE_GATEWAY;
-  let textModel = configuredModel;
-  let googleMode = false;
-  if (useCustom) {
-    if (provider === 'openai') endpoint = 'https://api.openai.com/v1/chat/completions';
-    else if (provider === 'openrouter') endpoint = 'https://openrouter.ai/api/v1/chat/completions';
-    else if (provider === 'anthropic') { endpoint = 'https://openrouter.ai/api/v1/chat/completions'; if (!textModel.startsWith('anthropic/')) textModel = `anthropic/${textModel}`; }
-    else if (provider === 'nvidia') endpoint = 'https://integrate.api.nvidia.com/v1/chat/completions';
-    else if (provider === 'google') googleMode = true;
-  }
-
-  const llm: LLMOpts = { endpoint, apiKey, model: textModel, googleMode };
+  const llm: LLMOpts = { endpoint: config.url, apiKey, model: config.model, googleMode: config.googleMode };
   const researchProvider = s.research_provider || 'auto';
   const researchKey = s.research_api_key || '';
   const imageProvider = s.image_provider || 'auto';

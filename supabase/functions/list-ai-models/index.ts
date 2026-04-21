@@ -1,3 +1,5 @@
+import { LOVABLE_MODELS } from '../_shared/ai-provider.ts';
+
 // List available AI models for a given provider using the user's API key.
 // Used by Settings UI so the user can pick from a real, live list of models.
 const corsHeaders = {
@@ -49,18 +51,6 @@ async function fetchAnthropic(apiKey: string): Promise<ModelInfo[]> {
   return arr.map((m: any) => ({ id: m.id, label: m.display_name || m.id }));
 }
 
-const LOVABLE_MODELS: ModelInfo[] = [
-  { id: 'google/gemini-3-flash-preview', label: 'Gemini 3 Flash (preview) — default' },
-  { id: 'google/gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (preview)' },
-  { id: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-  { id: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-  { id: 'google/gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite' },
-  { id: 'openai/gpt-5', label: 'GPT-5' },
-  { id: 'openai/gpt-5-mini', label: 'GPT-5 Mini' },
-  { id: 'openai/gpt-5-nano', label: 'GPT-5 Nano' },
-  { id: 'openai/gpt-5.2', label: 'GPT-5.2' },
-];
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
   try {
@@ -73,7 +63,7 @@ Deno.serve(async (req) => {
 
     let models: ModelInfo[] = [];
     if (provider === 'lovable') {
-      models = LOVABLE_MODELS;
+      models = [...LOVABLE_MODELS];
     } else {
       if (!apiKey) {
         return new Response(JSON.stringify({ error: 'API key is required for this provider' }), {
