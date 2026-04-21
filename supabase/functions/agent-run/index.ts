@@ -107,7 +107,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'run_shell',
-      description: 'Run a shell command in the workspace folder (allowlisted: npm, npx, node, python/python3/py, pip/pip3, git, dir, ls). Requires user to have enabled shell access in Settings.',
+      description: 'Run a shell command in the workspace folder (allowed commands: npm, npx, node, python/python3/py, pip/pip3, git, dir, ls). Requires user to have enabled shell access in Settings.',
       parameters: {
         type: 'object',
         properties: {
@@ -679,6 +679,7 @@ async function runResearchSearch(supabase: any, provider: string, apiKey: string
   const chosen = inferResearchProvider(provider, apiKey);
   const order = chosen === 'local' ? ['local'] : [chosen, 'local'];
   let lastError: Error | null = null;
+  const failures: string[] = [];
   for (const candidate of order) {
     try {
       let sources: ResearchSource[] = [];
@@ -690,9 +691,10 @@ async function runResearchSearch(supabase: any, provider: string, apiKey: string
       if (sources.length > 0) return { provider: candidate, sources };
     } catch (error) {
       lastError = error as Error;
+      failures.push(`${candidate}: ${(error as Error).message}`);
     }
   }
-  if (lastError) throw lastError;
+  if (lastError) throw new Error(`Research failed after trying ${order.join(', ')}. ${failures.join(' | ')}`);
   return { provider: chosen, sources: [] };
 }
 

@@ -299,22 +299,22 @@ async function fetchRepoSkills(url: string): Promise<any[]> {
   const filtered = tree.filter((entry: any) => entry.type === 'blob' && (!basePath || String(entry.path || '').startsWith(basePath)));
 
   const scoreFile = (filePath: string) => {
-    const path = filePath.toLowerCase();
+    const normalizedPath = filePath.toLowerCase();
     // Higher scores mean "more likely to be an explicit reusable skill definition".
     // This prioritizes canonical manifests first, then known framework layouts, then generic prompts.
-    if (path.endsWith('skill.json')) return SKILL_SCORE.skillJson;
-    if (pathContainsFrameworkName(path, 'openclaw') && /\.(json|yaml|yml|md)$/i.test(path)) return SKILL_SCORE.frameworkManifest;
-    if (pathContainsFrameworkName(path, 'hermes') && /\.(json|yaml|yml|md)$/i.test(path)) return SKILL_SCORE.frameworkManifest;
-    if (path.includes('.claude/commands/') && path.endsWith('.md')) return SKILL_SCORE.claudeCommand;
-    if ((path.includes('/commands/') || path.includes('/agents/') || path.includes('/recipes/')) && /\.(yaml|yml|md)$/i.test(path)) return SKILL_SCORE.structuredAgentPrompt;
-    if ((path.includes('/skills/') || path.includes('/prompts/') || path.includes('/agents/')) && path.endsWith('.md')) return SKILL_SCORE.markdownSkillFolder;
-    if ((path.includes('/skills/') || path.includes('/prompts/') || path.includes('/agents/')) && /\.(yaml|yml|toml)$/i.test(path)) return SKILL_SCORE.structuredSkillFolder;
-    if (/(\.prompt|\.skill|\.agent)\.(md|yaml|yml|toml)$/i.test(path)) return SKILL_SCORE.explicitPromptFile;
-    if (/(agents|claude|hermes|openclaw)\.md$/i.test(path)) return SKILL_SCORE.namedMarkdownAgent;
-    if (/(agents|claude|hermes|openclaw)\.(yaml|yml|toml)$/i.test(path)) return SKILL_SCORE.namedStructuredAgent;
-    if (path.endsWith('.json')) return SKILL_SCORE.genericJson;
-    if (/\.(yaml|yml|toml)$/i.test(path)) return SKILL_SCORE.genericStructured;
-    if (path.endsWith('.md')) return SKILL_SCORE.genericMarkdown;
+    if (normalizedPath.endsWith('skill.json')) return SKILL_SCORE.skillJson;
+    if (pathContainsFrameworkName(normalizedPath, 'openclaw') && /\.(json|yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.frameworkManifest;
+    if (pathContainsFrameworkName(normalizedPath, 'hermes') && /\.(json|yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.frameworkManifest;
+    if (normalizedPath.includes('.claude/commands/') && normalizedPath.endsWith('.md')) return SKILL_SCORE.claudeCommand;
+    if ((normalizedPath.includes('/commands/') || normalizedPath.includes('/agents/') || normalizedPath.includes('/recipes/')) && /\.(yaml|yml|md)$/i.test(normalizedPath)) return SKILL_SCORE.structuredAgentPrompt;
+    if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && normalizedPath.endsWith('.md')) return SKILL_SCORE.markdownSkillFolder;
+    if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && /\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.structuredSkillFolder;
+    if (/(\.prompt|\.skill|\.agent)\.(md|yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.explicitPromptFile;
+    if (/(agents|claude|hermes|openclaw)\.md$/i.test(normalizedPath)) return SKILL_SCORE.namedMarkdownAgent;
+    if (/(agents|claude|hermes|openclaw)\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.namedStructuredAgent;
+    if (normalizedPath.endsWith('.json')) return SKILL_SCORE.genericJson;
+    if (/\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.genericStructured;
+    if (normalizedPath.endsWith('.md')) return SKILL_SCORE.genericMarkdown;
     return 0;
   };
 

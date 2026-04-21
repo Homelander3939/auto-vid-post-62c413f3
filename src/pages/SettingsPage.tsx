@@ -1213,7 +1213,7 @@ export default function SettingsPage() {
                 className="font-mono text-xs"
               />
               <p className="text-[11px] text-muted-foreground">
-                Leave blank to use the app&apos;s default local workspace folder. Set this to keep Claude-Code-style agent projects in a folder on your Windows PC.
+                Leave blank to use the app&apos;s default local workspace folder. Set this to keep Claude-Code-style agent projects in a dedicated folder on your local computer.
               </p>
             </div>
             <div className="space-y-2">
