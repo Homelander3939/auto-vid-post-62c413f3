@@ -14,8 +14,61 @@ export type Database = {
   }
   public: {
     Tables: {
+      agent_runs: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          error: string | null
+          events: Json
+          id: string
+          model: string
+          prompt: string
+          result: Json | null
+          source: string
+          status: string
+          telegram_chat_id: string | null
+          telegram_status_message_id: number | null
+          updated_at: string
+          workspace_path: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          events?: Json
+          id?: string
+          model?: string
+          prompt?: string
+          result?: Json | null
+          source?: string
+          status?: string
+          telegram_chat_id?: string | null
+          telegram_status_message_id?: number | null
+          updated_at?: string
+          workspace_path?: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          events?: Json
+          id?: string
+          model?: string
+          prompt?: string
+          result?: Json | null
+          source?: string
+          status?: string
+          telegram_chat_id?: string | null
+          telegram_status_message_id?: number | null
+          updated_at?: string
+          workspace_path?: string
+        }
+        Relationships: []
+      }
       app_settings: {
         Row: {
+          agent_shell_enabled: boolean
+          agent_workspace_path: string
           ai_api_key: string
           ai_model: string
           ai_provider: string
@@ -47,6 +100,8 @@ export type Database = {
           youtube_password: string
         }
         Insert: {
+          agent_shell_enabled?: boolean
+          agent_workspace_path?: string
           ai_api_key?: string
           ai_model?: string
           ai_provider?: string
@@ -78,6 +133,8 @@ export type Database = {
           youtube_password?: string
         }
         Update: {
+          agent_shell_enabled?: boolean
+          agent_workspace_path?: string
           ai_api_key?: string
           ai_model?: string
           ai_provider?: string
