@@ -891,12 +891,28 @@ serve(async (req) => {
             })),
           });
 
+          const directToolReplyNames = new Set(['generate_social_post', 'research_web', 'check_platform_stats', 'open_browser', 'run_agent']);
+          const directToolReplies: string[] = [];
+
           for (const tc of toolCalls) {
             let args: any = {};
             try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* */ }
             console.log(`Tool: ${tc.function.name}`, args);
             const result = await executeTool(supabase, tc.function.name, args, supabaseUrl, serviceKey);
             fullMessages.push({ role: 'tool', tool_call_id: tc.id || 'call_0', content: result });
+            if (directToolReplyNames.has(tc.function.name)) {
+              directToolReplies.push(result);
+            }
+          }
+
+          if (directToolReplies.length > 0) {
+            const directReply = directToolReplies.join('\n\n').trim();
+            if (directReply) {
+              const chunk = JSON.stringify({ choices: [{ delta: { content: directReply } }] });
+              await writer.write(encoder.encode(`data: ${chunk}\n\n`));
+            }
+            await writer.write(encoder.encode('data: [DONE]\n\n'));
+            return;
           }
 
           const resp2 = await fetch(AI_GATEWAY, {

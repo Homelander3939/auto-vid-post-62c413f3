@@ -26,7 +26,7 @@ const SKILL_SCORE = {
   genericMarkdown: 20,
 } as const;
 
-const IMPORTABLE_TEXT_FILE_RE = /\.(json|md|txt|yaml|yml|toml)$/i;
+const IMPORTABLE_TEXT_FILE_RE = /\.(json|md|txt|yaml|yml|toml|prompt|skill|agent|instructions)$/i;
 
 type SkillRecord = {
   name: string;
@@ -43,17 +43,25 @@ function slugify(s: string): string {
   return (s || 'skill').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'skill';
 }
 
-function parseGitHubRepo(url: string): { owner: string; repo: string; branch?: string; path?: string } | null {
+function parseGitHubRepo(url: string): { owner: string; repo: string; branch?: string; path?: string; mode?: 'tree' | 'blob' } | null {
   let parsed: URL;
   try { parsed = new URL(url); } catch { return null; }
   if (!['github.com', 'www.github.com'].includes(parsed.hostname)) return null;
-  const m = parsed.pathname.match(/^\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/(?:tree|blob)\/([^/]+)(?:\/(.+))?)?\/?$/);
-  if (!m) return null;
+  const segments = parsed.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (segments.length < 2) return null;
+  const owner = segments[0];
+  const repo = (segments[1] || '').replace(/\.git$/, '');
+  if (!owner || !repo) return null;
+
+  const mode = segments[2] === 'tree' || segments[2] === 'blob' ? segments[2] : undefined;
+  const remainder = mode ? segments.slice(3) : [];
+
   return {
-    owner: m[1],
-    repo: m[2],
-    branch: m[3],
-    path: m[4] || '',
+    owner,
+    repo,
+    branch: remainder[0],
+    path: remainder.slice(1).join('/'),
+    mode,
   };
 }
 
@@ -82,6 +90,7 @@ function scoreSkillPath(filePath: string) {
   if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && normalizedPath.endsWith('.md')) return SKILL_SCORE.markdownSkillFolder;
   if ((normalizedPath.includes('/skills/') || normalizedPath.includes('/prompts/') || normalizedPath.includes('/agents/')) && /\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.structuredSkillFolder;
   if (/(\.prompt|\.skill|\.agent)\.(md|yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.explicitPromptFile;
+  if (/\.(prompt|skill|agent|instructions)$/i.test(normalizedPath)) return SKILL_SCORE.explicitPromptFile;
   if (/(agents|claude|hermes|openclaw)\.md$/i.test(normalizedPath)) return SKILL_SCORE.namedMarkdownAgent;
   if (/(agents|claude|hermes|openclaw)\.(yaml|yml|toml)$/i.test(normalizedPath)) return SKILL_SCORE.namedStructuredAgent;
   if (normalizedPath.endsWith('.json')) return SKILL_SCORE.genericJson;
@@ -421,6 +430,16 @@ async function fetchRepoSkills(url: string): Promise<SkillRecord[]> {
 
   const candidateBranches = [parsed.branch, defaultBranch, 'main', 'master']
     .filter((branch, index, arr): branch is string => !!branch && arr.indexOf(branch) === index);
+
+  if (parsed.mode && parsed.path) {
+    const combined = [parsed.branch, parsed.path].filter(Boolean).join('/');
+    if (combined) {
+      const combinedDirect = await tryFetchSkillCandidates(parsed.owner, parsed.repo, candidateBranches, [combined]);
+      if (combinedDirect.length > 0) return combinedDirect;
+      const combinedProbable = await tryFetchSkillCandidates(parsed.owner, parsed.repo, candidateBranches, buildProbableRepoPaths(combined));
+      if (combinedProbable.length > 0) return combinedProbable;
+    }
+  }
 
   if (parsed.path && IMPORTABLE_TEXT_FILE_RE.test(parsed.path)) {
     const direct = await tryFetchSkillCandidates(parsed.owner, parsed.repo, candidateBranches, [parsed.path]);

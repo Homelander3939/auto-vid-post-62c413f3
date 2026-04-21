@@ -349,6 +349,35 @@ export interface GenerationJob {
   completed_at: string | null;
 }
 
+export interface AgentRunEvent {
+  type: string;
+  ts?: number;
+  name?: string;
+  label?: string;
+  text?: string;
+  summary?: string;
+  message?: string;
+  steps?: string[];
+  ok?: boolean;
+  data?: any;
+  artifacts?: { kind: string; label: string; value: string }[];
+}
+
+export interface AgentRun {
+  id: string;
+  prompt: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  source: string;
+  automation_mode?: string;
+  task_mode?: string;
+  events: AgentRunEvent[];
+  result: Record<string, unknown> | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
 export async function listGenerationJobs(): Promise<GenerationJob[]> {
   const { data } = await (supabase as any).from('generation_jobs')
     .select('*').order('created_at', { ascending: false }).limit(10);
@@ -385,6 +414,24 @@ export async function cancelAllRunningJobs(): Promise<number> {
 // Delete a single generation job from the queue (any status).
 export async function deleteGenerationJob(id: string): Promise<void> {
   const { error } = await (supabase as any).from('generation_jobs').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
+export async function listAgentRuns(): Promise<AgentRun[]> {
+  const { data } = await (supabase as any).from('agent_runs')
+    .select('*').order('created_at', { ascending: false }).limit(10);
+  return (data || []) as AgentRun[];
+}
+
+export async function cancelAgentRun(id: string): Promise<void> {
+  const { data, error } = await supabase.functions.invoke('agent-run', {
+    body: { action: 'cancel', runId: id },
+  });
+  if (error || data?.error) throw new Error(data?.error || error?.message || 'Failed to cancel agent run');
+}
+
+export async function deleteAgentRun(id: string): Promise<void> {
+  const { error } = await (supabase as any).from('agent_runs').delete().eq('id', id);
   if (error) throw new Error(error.message);
 }
 

@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Sparkles, Search, Image as ImageIcon, ExternalLink, ChevronDown, ChevronUp, Cpu, Globe, FileText, Hash, Loader2, CheckCircle2, AlertTriangle, X as XIcon, Trash2 } from 'lucide-react';
 import { useState } from 'react';
-import { listSocialPosts, getSocialImageUrl, listGenerationJobs, cancelGenerationJob, cancelAllRunningJobs, deleteGenerationJob, deletePendingCommand, deleteSocialPost, type SocialPost, type GenerationJob } from '@/lib/socialPosts';
+import { listSocialPosts, getSocialImageUrl, listGenerationJobs, cancelGenerationJob, cancelAllRunningJobs, deleteGenerationJob, deletePendingCommand, deleteSocialPost, listAgentRuns, cancelAgentRun, deleteAgentRun, type SocialPost, type GenerationJob, type AgentRun } from '@/lib/socialPosts';
 import { useToast } from '@/hooks/use-toast';
 import { Link } from 'react-router-dom';
 
@@ -339,6 +339,131 @@ function GenerationJobRow({ job, onCancel, onDelete }: { job: GenerationJob; onC
   );
 }
 
+function AgentRunRow({ run, onCancel, onDelete }: { run: AgentRun; onCancel: (id: string) => void; onDelete: (id: string) => void }) {
+  const [expanded, setExpanded] = useState(run.status === 'running');
+  const [cancelling, setCancelling] = useState(false);
+  const events = Array.isArray(run.events) ? run.events : [];
+  const planEvent = [...events].reverse().find((event) => event.type === 'plan');
+  const plan = Array.isArray(planEvent?.steps) ? planEvent.steps : [];
+  const recent = events.filter((event) => ['tool_call', 'tool_result', 'thought', 'error', 'review', 'phase', 'finish'].includes(event.type)).slice(-8);
+  const completedToolCount = events.filter((event) => event.type === 'tool_result' && event.name !== 'plan' && event.name !== 'finish' && event.ok !== false).length;
+  const latestToolCall = [...events].reverse().find((event) => event.type === 'tool_call');
+  const latestThought = [...events].reverse().find((event) => event.type === 'thought');
+  const latestError = [...events].reverse().find((event) => event.type === 'error');
+  const latestFinish = [...events].reverse().find((event) => event.type === 'finish');
+  const currentLabel = latestError?.message
+    || latestToolCall?.label
+    || latestToolCall?.name
+    || latestThought?.text
+    || latestFinish?.summary
+    || (run.status === 'running' ? 'Agent is thinking…' : 'Run completed');
+  const totalCount = Math.max(plan.length || completedToolCount || 1, 1);
+  const pct = run.status === 'completed'
+    ? 100
+    : run.status === 'cancelled' || run.status === 'failed'
+      ? Math.min(99, Math.round((completedToolCount / totalCount) * 100))
+      : Math.round((completedToolCount / totalCount) * 100);
+  const sourceLabel = run.source === 'ai-chat' ? 'chat' : run.source;
+
+  return (
+    <Card className={`border bg-card/60 ${run.status === 'running' ? 'border-primary/40 shadow-[0_0_0_1px_hsl(var(--primary)/0.15)]' : ''}`}>
+      <CardContent className="p-3 space-y-2">
+        <div className="flex items-start gap-3">
+          <div className="w-8 h-8 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
+            <Cpu className="w-4 h-4 text-primary" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap mb-1">
+              <span className="text-xs font-medium">Autonomous Agent</span>
+              <Badge variant="outline" className={`text-[10px] h-5 ${statusColor(run.status)} gap-1`}>
+                {run.status === 'running' ? <Loader2 className="w-2.5 h-2.5 animate-spin text-primary" /> : run.status === 'completed' ? <CheckCircle2 className="w-2.5 h-2.5 text-emerald-500" /> : <AlertTriangle className="w-2.5 h-2.5" />}
+                {run.status}
+              </Badge>
+              <Badge variant="secondary" className="text-[10px] h-5 capitalize">{sourceLabel}</Badge>
+              {run.automation_mode && <Badge variant="secondary" className="text-[10px] h-5">{run.automation_mode}</Badge>}
+              <span className="text-[10px] text-muted-foreground ml-auto">
+                {new Date(run.created_at).toLocaleString()}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground italic line-clamp-1">"{run.prompt}"</p>
+            {currentLabel && (
+              <p className="text-[11px] mt-1 truncate">
+                <span className="mr-1">{run.status === 'failed' ? '⚠️' : run.status === 'completed' ? '✅' : '🤖'}</span>
+                {currentLabel}
+              </p>
+            )}
+            <div className="flex items-center gap-2 mt-1.5">
+              <Progress value={pct} className="h-1.5 flex-1" />
+              <span className="text-[10px] text-muted-foreground tabular-nums">
+                {Math.min(completedToolCount, totalCount)}/{totalCount}
+              </span>
+            </div>
+          </div>
+          <div className="flex flex-col gap-1 items-end">
+            {run.status === 'running' && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-[11px] gap-1 border-destructive/40 text-destructive hover:bg-destructive/10"
+                disabled={cancelling}
+                onClick={async () => {
+                  setCancelling(true);
+                  try { await onCancel(run.id); } finally { setCancelling(false); }
+                }}
+              >
+                <XIcon className="w-3 h-3" /> {cancelling ? 'Cancelling…' : 'Cancel'}
+              </Button>
+            )}
+            <div className="flex items-center gap-1">
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                title="Delete from queue"
+                onClick={() => onDelete(run.id)}>
+                <Trash2 className="w-3.5 h-3.5" />
+              </Button>
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground"
+                onClick={() => setExpanded((value) => !value)}>
+                {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </Button>
+            </div>
+          </div>
+        </div>
+        {expanded && (
+          <div className="border-t pt-2 space-y-2 text-[11px]">
+            {plan.length > 0 && (
+              <div className="space-y-1">
+                <div className="font-medium text-muted-foreground">Plan</div>
+                {plan.map((step, index) => (
+                  <div key={`${run.id}-plan-${index}`} className="flex items-start gap-2">
+                    <span className="text-muted-foreground">{index + 1}.</span>
+                    <span>{step}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {recent.length > 0 && (
+              <div className="space-y-1">
+                <div className="font-medium text-muted-foreground">Recent activity</div>
+                {recent.map((event, index) => (
+                  <div key={`${run.id}-event-${index}`} className="text-muted-foreground">
+                    {event.type === 'tool_call' && <>🔧 {event.name}{event.label ? ` → ${event.label}` : ''}</>}
+                    {event.type === 'tool_result' && <>{event.ok === false ? '✗' : '✓'} {event.name}: {event.summary}</>}
+                    {event.type === 'thought' && <>💭 {event.text}</>}
+                    {event.type === 'review' && <>🧐 {event.text}</>}
+                    {event.type === 'phase' && <>→ phase: {event.name}</>}
+                    {event.type === 'finish' && <>✨ {event.summary}</>}
+                    {event.type === 'error' && <span className="text-destructive">⚠️ {event.message}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {run.error && <div className="text-destructive">{run.error}</div>}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AITasksPanel() {
   const [showAll, setShowAll] = useState(false);
   const [cancellingAll, setCancellingAll] = useState(false);
@@ -355,18 +480,34 @@ export default function AITasksPanel() {
     // Poll quickly while a job is running so the progress bar feels live.
     refetchInterval: (q) => ((q.state.data as GenerationJob[] | undefined)?.some((j) => j.status === 'running') ? 1500 : 8000),
   });
+  const { data: agentRuns = [] } = useQuery({
+    queryKey: ['agent_runs'], queryFn: listAgentRuns,
+    refetchInterval: (q) => ((q.state.data as AgentRun[] | undefined)?.some((run) => run.status === 'running') ? 1500 : 8000),
+  });
 
   const runningJobs = genJobs.filter((j) => j.status === 'running');
+  const runningAgentRuns = agentRuns.filter((run) => run.status === 'running');
+  const recentAgentRuns = showAll ? agentRuns : [...runningAgentRuns, ...agentRuns.filter((run) => run.status !== 'running').slice(0, 2)];
   const recentJobs = showAll ? genJobs : [...runningJobs, ...genJobs.filter((j) => j.status !== 'running').slice(0, 2)];
   const recentPosts = posts.slice(0, showAll ? posts.length : 4);
   const recentCommands = commands.slice(0, showAll ? commands.length : 4);
-  const total = posts.length + commands.length + genJobs.length;
+  const total = posts.length + commands.length + genJobs.length + agentRuns.length;
 
   const handleCancel = async (id: string) => {
     try {
       await cancelGenerationJob(id);
       toast({ title: 'Cancelled', description: 'The agent will stop within a couple of seconds.' });
       queryClient.invalidateQueries({ queryKey: ['generation_jobs'] });
+    } catch (e: any) {
+      toast({ title: 'Could not cancel', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const handleCancelAgentRun = async (id: string) => {
+    try {
+      await cancelAgentRun(id);
+      toast({ title: 'Cancelled', description: 'The autonomous agent is stopping.' });
+      queryClient.invalidateQueries({ queryKey: ['agent_runs'] });
     } catch (e: any) {
       toast({ title: 'Could not cancel', description: e.message, variant: 'destructive' });
     }
@@ -389,6 +530,15 @@ export default function AITasksPanel() {
     try {
       await deleteGenerationJob(id);
       queryClient.invalidateQueries({ queryKey: ['generation_jobs'] });
+    } catch (e: any) {
+      toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteAgentRun = async (id: string) => {
+    try {
+      await deleteAgentRun(id);
+      queryClient.invalidateQueries({ queryKey: ['agent_runs'] });
     } catch (e: any) {
       toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
     }
@@ -419,9 +569,9 @@ export default function AITasksPanel() {
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
           <Sparkles className="w-4 h-4 text-primary" /> AI Agent Tasks ({total})
-          {runningJobs.length > 0 && (
+          {(runningJobs.length + runningAgentRuns.length) > 0 && (
             <Badge variant="outline" className="h-5 text-[10px] gap-1 border-primary/40 text-primary">
-              <Loader2 className="w-2.5 h-2.5 animate-spin" /> {runningJobs.length} live
+              <Loader2 className="w-2.5 h-2.5 animate-spin" /> {runningJobs.length + runningAgentRuns.length} live
             </Badge>
           )}
         </h2>
@@ -451,6 +601,7 @@ export default function AITasksPanel() {
         </div>
       </div>
       <div className="space-y-2">
+        {recentAgentRuns.map((run) => <AgentRunRow key={run.id} run={run} onCancel={handleCancelAgentRun} onDelete={handleDeleteAgentRun} />)}
         {recentJobs.map((j) => <GenerationJobRow key={j.id} job={j} onCancel={handleCancel} onDelete={handleDeleteJob} />)}
         {recentPosts.map((p) => <PostRow key={p.id} post={p} onDelete={handleDeletePost} />)}
         {recentCommands.map((c) => <CommandRow key={c.id} cmd={c} onDelete={handleDeleteCommand} />)}
