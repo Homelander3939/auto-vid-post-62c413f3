@@ -364,7 +364,7 @@ function buildProbableRepoPaths(basePath: string): string[] {
 function dedupeSkillRecords(skillRecords: SkillRecord[]): SkillRecord[] {
   const seen = new Set<string>();
   return skillRecords.filter((record) => {
-    const key = `${record.source_url || ''}:${record.name || ''}:${record.system_prompt || ''}`;
+    const key = JSON.stringify([record.source_url || '', record.name || '', record.system_prompt || '']);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

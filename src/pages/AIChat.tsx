@@ -34,6 +34,7 @@ interface Msg {
 }
 
 const APP_CHAT_STORAGE_KEY = 'ai-chat-browser-history-v1';
+const MAX_STORED_MESSAGES = 200;
 
 /* ── Stream helper — routes to cloud ai-chat edge function (Lovable AI Gateway) ── */
 
@@ -203,7 +204,7 @@ export default function AIChat() {
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return;
-      setAppMessages(parsed.filter((msg) => msg && (msg.role === 'user' || msg.role === 'assistant')).slice(-200));
+      setAppMessages(parsed.filter((msg) => msg && (msg.role === 'user' || msg.role === 'assistant')).slice(-MAX_STORED_MESSAGES));
     } catch (error) {
       console.error('Failed to restore browser chat history:', error);
     }
@@ -211,7 +212,7 @@ export default function AIChat() {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(APP_CHAT_STORAGE_KEY, JSON.stringify(appMessages.slice(-200)));
+      window.localStorage.setItem(APP_CHAT_STORAGE_KEY, JSON.stringify(appMessages.slice(-MAX_STORED_MESSAGES)));
     } catch (error) {
       console.error('Failed to persist browser chat history:', error);
     }
@@ -225,7 +226,7 @@ export default function AIChat() {
         .from('telegram_messages')
         .select('*')
         .order('created_at', { ascending: true })
-        .limit(200);
+        .limit(MAX_STORED_MESSAGES);
       if (settings?.telegram_chat_id) {
         query = query.eq('chat_id', Number(settings.telegram_chat_id));
       }

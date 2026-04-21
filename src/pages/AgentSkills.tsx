@@ -46,6 +46,8 @@ interface AgentMemory {
   created_at: string;
 }
 
+const IMPORTABLE_ZIP_ENTRY_RE = /\.(json|md|txt|yaml|yml|toml)$/i;
+
 export default function AgentSkills() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [memories, setMemories] = useState<AgentMemory[]>([]);
@@ -108,7 +110,7 @@ export default function AgentSkills() {
       const importableEntries = Object.values(zip.files)
         .filter((entry) => !entry.dir)
         .filter((entry) => !entry.name.startsWith('__MACOSX/'))
-        .filter((entry) => /\.(json|md|txt|yaml|yml|toml)$/i.test(entry.name))
+        .filter((entry) => IMPORTABLE_ZIP_ENTRY_RE.test(entry.name))
         .slice(0, 40);
 
       if (importableEntries.length === 0) {
