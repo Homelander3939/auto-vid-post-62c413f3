@@ -18,6 +18,7 @@ import {
   type AgentTool,
   type AIStreamEvent,
   type PlatformVariant,
+  type AIProviderOverride,
 } from '@/lib/socialPosts';
 
 const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
@@ -150,8 +151,21 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
     try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
     setActiveJobId(null);
 
+    // When LM Studio is configured, forward the complete settings in the request
+    // body. The edge function reads ai_base_url from the DB, but that column may
+    // not exist yet — passing it explicitly ensures the correct URL is always used.
+    const aiOverride: AIProviderOverride | undefined =
+      aiSettings?.provider === 'lmstudio' && aiSettings.baseUrl
+        ? {
+            provider: aiSettings.provider,
+            apiKey: aiSettings.apiKey || 'lm-studio',
+            model: aiSettings.model || '',
+            baseUrl: aiSettings.baseUrl,
+          }
+        : undefined;
+
     try {
-      await generatePostStream({ prompt, platforms, includeImage }, consumeEvent);
+      await generatePostStream({ prompt, platforms, includeImage }, consumeEvent, undefined, aiOverride);
     } catch (e: any) {
       toast({ title: 'AI generation failed', description: e.message, variant: 'destructive' });
     } finally {

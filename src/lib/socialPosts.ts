@@ -138,18 +138,41 @@ export function detectProviderFromKey(key: string): { research?: string; image?:
 }
 
 // --- AI settings (extended app_settings columns) ---
+
+// localStorage key used as a client-side fallback so settings survive page
+// reloads even when the ai_base_url DB column has not yet been applied.
+const AI_SETTINGS_LS_KEY = 'avp_ai_settings';
+
 export async function getAISettings(): Promise<AISettings> {
   const { data } = await supabase.from('app_settings').select('*').eq('id', 1).single();
   const row = (data || {}) as any;
+
+  // Read localStorage fallback — used when the DB is missing a column (e.g.
+  // ai_base_url before the migration is applied).
+  let ls: Partial<AISettings> = {};
+  try {
+    const raw = localStorage.getItem(AI_SETTINGS_LS_KEY);
+    if (raw) ls = JSON.parse(raw);
+  } catch { /* ignore */ }
+
+  const provider = row.ai_provider || ls.provider || 'lovable';
+  const dbBaseUrl: string = row.ai_base_url || '';
+  // Use the localStorage baseUrl when the DB value is absent and the provider
+  // matches — prevents the URL field from going blank after a page reload.
+  const baseUrl = dbBaseUrl || (ls.provider === provider ? (ls.baseUrl || '') : '');
+
   return {
-    provider: row.ai_provider || 'lovable',
-    apiKey: row.ai_api_key || '',
-    model: row.ai_model || 'google/gemini-3-flash-preview',
-    baseUrl: row.ai_base_url || '',
+    provider,
+    apiKey: row.ai_api_key || ls.apiKey || '',
+    model: row.ai_model || ls.model || 'google/gemini-3-flash-preview',
+    baseUrl,
   };
 }
 
 export async function saveAISettings(s: AISettings): Promise<void> {
+  // Persist to localStorage first so the UI stays consistent even if the DB
+  // column is missing and gets silently dropped by updateAppSettingsCompat.
+  try { localStorage.setItem(AI_SETTINGS_LS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
   await updateAppSettingsCompat({
     ai_provider: s.provider,
     ai_api_key: s.apiKey,
@@ -478,11 +501,22 @@ export async function deletePendingCommand(id: string): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
+// Optional AI provider override forwarded to the generate-social-post edge function.
+// Used when the configured provider (e.g. LM Studio) has settings that may not
+// have been persisted to the DB yet (e.g. ai_base_url column missing).
+export interface AIProviderOverride {
+  provider: string;
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+}
+
 // Streaming generation via SSE — calls the edge function and emits parsed events as they arrive.
 export async function generatePostStream(
   input: AIGenerateInput,
   onEvent: (e: AIStreamEvent) => void,
   signal?: AbortSignal,
+  aiOverride?: AIProviderOverride,
 ): Promise<void> {
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-social-post`;
   const resp = await fetch(url, {
@@ -491,7 +525,7 @@ export async function generatePostStream(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
     },
-    body: JSON.stringify({ ...input, stream: true }),
+    body: JSON.stringify({ ...input, stream: true, ...(aiOverride ? { aiOverride } : {}) }),
     signal,
   });
   if (!resp.ok || !resp.body) {
