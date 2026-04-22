@@ -45,6 +45,7 @@ export interface AISettings {
   provider: string;
   apiKey: string;
   model: string;
+  baseUrl: string; // Custom endpoint base URL for OpenAI-compatible providers like LM Studio
 }
 
 export interface ImageKeyEntry {
@@ -59,7 +60,7 @@ export interface ImageKeyEntry {
 export interface AgentSettings {
   researchProvider: string; // auto | brave | tavily | serper | firecrawl | local
   researchApiKey: string;
-  imageProvider: string;    // legacy primary — auto | unsplash | pexels | openai | google | nvidia | xai | lovable
+  imageProvider: string;    // legacy primary — auto | unsplash | pexels | openai | google | nvidia | xai | lovable | comfyui
   imageApiKey: string;
   imageModel: string;       // legacy primary model id
   imageKeys: ImageKeyEntry[]; // up to 10 fallback keys, tried in order
@@ -71,6 +72,7 @@ export interface AgentSettings {
   memoryMaxItems: number;
   shellEnabled: boolean;
   workspacePath: string;
+  comfyuiBaseUrl: string;   // ComfyUI base URL for local image generation
 }
 
 function getMissingColumnName(error: { message?: string; details?: string } | null | undefined): string | null {
@@ -143,15 +145,17 @@ export async function getAISettings(): Promise<AISettings> {
     provider: row.ai_provider || 'lovable',
     apiKey: row.ai_api_key || '',
     model: row.ai_model || 'google/gemini-3-flash-preview',
+    baseUrl: row.ai_base_url || '',
   };
 }
 
 export async function saveAISettings(s: AISettings): Promise<void> {
-  const { error } = await supabase
-    .from('app_settings')
-    .update({ ai_provider: s.provider, ai_api_key: s.apiKey, ai_model: s.model } as any)
-    .eq('id', 1);
-  if (error) throw new Error(error.message);
+  await updateAppSettingsCompat({
+    ai_provider: s.provider,
+    ai_api_key: s.apiKey,
+    ai_model: s.model,
+    ai_base_url: s.baseUrl || '',
+  });
 }
 
 export async function getAgentSettings(): Promise<AgentSettings> {
@@ -181,6 +185,7 @@ export async function getAgentSettings(): Promise<AgentSettings> {
     memoryMaxItems: Math.min(Math.max(Number(r.agent_memory_max_items) || 8, 1), 20),
     shellEnabled: r.agent_shell_enabled === true,
     workspacePath: r.agent_workspace_path || '',
+    comfyuiBaseUrl: r.comfyui_base_url || 'http://localhost:8188',
   };
 }
 
@@ -204,6 +209,7 @@ export async function saveAgentSettings(s: AgentSettings): Promise<void> {
     agent_memory_max_items: Math.min(Math.max(Number(s.memoryMaxItems) || 8, 1), 20),
     agent_shell_enabled: s.shellEnabled === true,
     agent_workspace_path: s.workspacePath || '',
+    comfyui_base_url: s.comfyuiBaseUrl || 'http://localhost:8188',
   });
 }
 
@@ -535,11 +541,69 @@ export async function listAIModels(provider: string, apiKey: string): Promise<AI
   return (data.models || []) as AIModel[];
 }
 
+const LM_STUDIO_DEFAULT_URL = 'http://localhost:1234/v1';
+const LM_STUDIO_DEFAULT_KEY = 'lm-studio';
+
+// Direct browser-side call to LM Studio (OpenAI-compatible). Bypasses edge functions so
+// it works with localhost:1234 — the browser can reach it even though cloud functions cannot.
+export async function listLMStudioModels(baseUrl: string, apiKey: string): Promise<AIModel[]> {
+  const url = `${(baseUrl || LM_STUDIO_DEFAULT_URL).replace(/\/+$/, '')}/models`;
+  const headers: Record<string, string> = {};
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+  const resp = await fetch(url, { headers });
+  if (!resp.ok) throw new Error(`LM Studio returned ${resp.status}: ${(await resp.text()).slice(0, 120)}`);
+  const data = await resp.json();
+  const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
+  return arr.map((m: any) => ({ id: m.id || m.name, label: m.id || m.name })).filter((m: AIModel) => m.id);
+}
+
 export interface ConnectionTestResult { ok: boolean; error?: string; latency?: number; provider?: string; model?: string; sample?: string }
 export async function testAIConnection(provider: string, apiKey: string, model: string): Promise<ConnectionTestResult> {
   const { data, error } = await supabase.functions.invoke('test-ai-connection', { body: { provider, apiKey, model } });
   if (error) return { ok: false, error: error.message };
   return data as ConnectionTestResult;
+}
+
+// Direct browser-side connection test to LM Studio. Works for localhost.
+export async function testLMStudioConnection(baseUrl: string, apiKey: string, model: string): Promise<ConnectionTestResult> {
+  const url = `${(baseUrl || LM_STUDIO_DEFAULT_URL).replace(/\/+$/, '')}/chat/completions`;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+  const t0 = Date.now();
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model: model || '', messages: [{ role: 'user', content: 'ping' }], max_tokens: 5 }),
+    });
+    const latency = Date.now() - t0;
+    if (!resp.ok) {
+      const t = await resp.text();
+      return { ok: false, error: `${resp.status}: ${t.slice(0, 120)}`, latency };
+    }
+    return { ok: true, provider: 'lmstudio', model, latency };
+  } catch (e: any) {
+    return { ok: false, error: e.message || 'LM Studio not reachable — is it running?', latency: Date.now() - t0 };
+  }
+}
+
+// Direct browser-side connection test to ComfyUI. Works for localhost.
+const COMFYUI_DEFAULT_URL = 'http://localhost:8188';
+export async function testComfyUIConnection(baseUrl: string): Promise<ConnectionTestResult> {
+  const url = `${(baseUrl || COMFYUI_DEFAULT_URL).replace(/\/+$/, '')}/system_stats`;
+  const t0 = Date.now();
+  try {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const latency = Date.now() - t0;
+    if (!resp.ok) return { ok: false, error: `ComfyUI returned ${resp.status}`, latency };
+    const data = await resp.json().catch(() => ({}));
+    const gpuName = (data?.system as any)?.gpus?.[0]?.name;
+    const pythonVer = (data?.system as any)?.python_version;
+    const sample = gpuName || (pythonVer ? `Python ${pythonVer}` : 'ComfyUI running');
+    return { ok: true, provider: 'comfyui', latency, sample };
+  } catch (e: any) {
+    return { ok: false, error: e.message || 'ComfyUI not reachable — is it running at ' + baseUrl + '?', latency: Date.now() - t0 };
+  }
 }
 
 export async function testAgentConnection(

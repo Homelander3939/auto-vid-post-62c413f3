@@ -536,6 +536,7 @@ async function getProviderMap(supabase: any) {
   const rawProvider = (s.ai_provider || 'lovable') as string;
   const rawApiKey = (s.ai_api_key || '') as string;
   const rawModel = (s.ai_model || DEFAULT_LOVABLE_MODEL) as string;
+  const rawBaseUrl = (s.ai_base_url || '') as string;
   // For the lovable provider (or when no custom API key is available), ensure the model is
   // always a valid Lovable Gateway model. This prevents raw user-entered models like
   // "qwen/qwen3.5-397b-a17b" from being sent to the Lovable Gateway and rejected.
@@ -548,6 +549,7 @@ async function getProviderMap(supabase: any) {
       provider: rawProvider,
       apiKey: rawApiKey,
       model: chatModel,
+      baseUrl: rawBaseUrl,
     },
     research: {
       provider: s.research_provider || 'auto',

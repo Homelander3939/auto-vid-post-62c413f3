@@ -10,6 +10,7 @@ const corsHeaders = {
 interface Body {
   provider: string;
   apiKey?: string;
+  baseUrl?: string; // For OpenAI-compatible providers like LM Studio
 }
 
 interface ModelInfo {
@@ -54,7 +55,7 @@ async function fetchAnthropic(apiKey: string): Promise<ModelInfo[]> {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
   try {
-    const { provider, apiKey } = (await req.json()) as Body;
+    const { provider, apiKey, baseUrl } = (await req.json()) as Body;
     if (!provider) {
       return new Response(JSON.stringify({ error: 'provider is required' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -64,6 +65,20 @@ Deno.serve(async (req) => {
     let models: ModelInfo[] = [];
     if (provider === 'lovable') {
       models = [...LOVABLE_MODELS];
+    } else if (provider === 'lmstudio') {
+      if (!baseUrl) {
+        return new Response(JSON.stringify({ error: 'LM Studio base URL is required. Configure it in Settings → AI Post Generator.' }), {
+          status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const endpoint = `${(baseUrl as string).replace(/\/+$/, '')}/models`;
+      try {
+        models = await fetchOpenAICompat(endpoint, apiKey || 'lm-studio');
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: `LM Studio unreachable at ${baseUrl}: ${e.message}` }), {
+          status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
     } else {
       if (!apiKey) {
         return new Response(JSON.stringify({ error: 'API key is required for this provider' }), {
