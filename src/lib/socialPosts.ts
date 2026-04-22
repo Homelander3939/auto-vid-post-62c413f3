@@ -164,11 +164,16 @@ export async function getAISettings(): Promise<AISettings> {
     if (raw) ls = JSON.parse(raw);
   } catch { /* ignore */ }
 
-  const provider = row.ai_provider || ls.provider || 'lovable';
+  const dbProvider: string = row.ai_provider || '';
+  const provider = dbProvider || ls.provider || 'lovable';
   const dbBaseUrl: string = row.ai_base_url || '';
-  // Use the localStorage baseUrl when the DB value is absent and the provider
-  // matches — prevents the URL field from going blank after a page reload.
-  const baseUrl = dbBaseUrl || (ls.provider === provider ? (ls.baseUrl || '') : '');
+  // Only use the localStorage baseUrl when:
+  //   1. The DB has no baseUrl (column missing or empty), AND
+  //   2. The cached provider explicitly matches the resolved provider.
+  // We check ls.provider (not the resolved `provider`) to avoid applying a
+  // cached LM Studio URL when the provider has changed in the DB.
+  const lsProviderMatches = !!ls.provider && ls.provider === provider;
+  const baseUrl = dbBaseUrl || (lsProviderMatches ? (ls.baseUrl || '') : '');
 
   return {
     provider,
