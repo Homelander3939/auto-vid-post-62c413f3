@@ -20,11 +20,12 @@ export interface ChatProviderConfigInput {
   provider?: string | null;
   apiKey?: string | null;
   model?: string | null;
+  baseUrl?: string | null; // Custom base URL for OpenAI-compatible providers like LM Studio
 }
 
 export interface ResolvedChatProviderConfig {
   requestedProvider: string;
-  provider: 'lovable' | 'openai' | 'google' | 'nvidia' | 'openrouter';
+  provider: 'lovable' | 'openai' | 'google' | 'nvidia' | 'openrouter' | 'lmstudio';
   url: string;
   key: string;
   model: string;
@@ -58,6 +59,20 @@ export function resolveChatProviderConfig(
   const provider = normalizeProvider(chat.provider);
   const apiKey = String(chat.apiKey || '').trim();
   const requestedModel = String(chat.model || '').trim();
+  const baseUrl = String(chat.baseUrl || '').trim();
+
+  if (provider === 'lmstudio' && baseUrl) {
+    // LM Studio uses an OpenAI-compatible API. API key is optional (any value works).
+    const endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+    return {
+      requestedProvider: provider,
+      provider: 'lmstudio',
+      url: endpoint,
+      key: apiKey || 'lm-studio',
+      model: requestedModel || '',
+      googleMode: false,
+    };
+  }
 
   if (provider === 'openai' && apiKey) {
     return {
@@ -104,7 +119,9 @@ export function resolveChatProviderConfig(
   }
 
   let fallbackReason: string | undefined;
-  if ((provider === 'anthropic' || provider === 'lmstudio') && apiKey) {
+  if (provider === 'lmstudio' && !baseUrl) {
+    fallbackReason = 'LM Studio is selected but no base URL is configured. Set the LM Studio URL in Settings → AI Post Generator.';
+  } else if (provider === 'anthropic' && apiKey) {
     fallbackReason = `${provider} falls back to Lovable for autonomous tool-calling, so the model must be Lovable-compatible.`;
   } else if (provider !== 'lovable' && !apiKey) {
     fallbackReason = `${provider} is selected but no saved API key is available, so the agent is using Lovable instead.`;

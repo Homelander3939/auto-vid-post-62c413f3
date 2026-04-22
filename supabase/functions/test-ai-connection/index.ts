@@ -8,17 +8,58 @@ interface Body {
   provider: string;
   apiKey?: string;
   model?: string;
+  baseUrl?: string; // For OpenAI-compatible providers like LM Studio
 }
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
   try {
-    const { provider, apiKey: customKey, model } = (await req.json()) as Body;
+    const { provider, apiKey: customKey, model, baseUrl } = (await req.json()) as Body;
     if (!provider) {
       return new Response(JSON.stringify({ ok: false, error: 'provider required' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
+    }
+
+    // LM Studio: OpenAI-compatible, uses custom base URL, API key is optional
+    if (provider === 'lmstudio') {
+      if (!baseUrl) {
+        return new Response(JSON.stringify({ ok: false, error: 'LM Studio base URL is required. Configure it in Settings → AI Post Generator.' }), {
+          status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      if (!model) {
+        return new Response(JSON.stringify({ ok: false, error: 'model is required for testing' }), {
+          status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const t0 = Date.now();
+      const endpoint = `${(baseUrl as string).replace(/\/+$/, '')}/chat/completions`;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (customKey) headers['Authorization'] = `Bearer ${customKey}`;
+      else headers['Authorization'] = 'Bearer lm-studio';
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 5 }),
+        });
+        const latency = Date.now() - t0;
+        if (!resp.ok) {
+          const t = await resp.text();
+          return new Response(JSON.stringify({ ok: false, error: `Status ${resp.status}: ${t.slice(0, 200)}`, latency }), {
+            status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ ok: true, provider, model, latency }), {
+          status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ ok: false, error: `LM Studio unreachable: ${e.message}`, latency: Date.now() - t0 }), {
+          status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
     }
 
     const useCustom = provider !== 'lovable' && customKey;

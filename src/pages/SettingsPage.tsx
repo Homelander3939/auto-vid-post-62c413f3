@@ -15,7 +15,7 @@ import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import SocialAccountCard from '@/components/SocialAccountCard';
 import ImageFallbackKeyRow from '@/components/ImageFallbackKeyRow';
-import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, testAIConnection, testAgentConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, detectProviderFromKey, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption, type ImageKeyEntry } from '@/lib/socialPosts';
+import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, listLMStudioModels, testAIConnection, testLMStudioConnection, testAgentConnection, testComfyUIConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, detectProviderFromKey, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption, type ImageKeyEntry } from '@/lib/socialPosts';
 import { Search as SearchIcon, Image as ImageIcon, Bot, Loader2, CheckCircle2, XCircle, ExternalLink } from 'lucide-react';
 
 function PasswordInput({
@@ -391,7 +391,7 @@ export default function SettingsPage() {
 
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [saving, setSaving] = useState(false);
-  const [aiSettings, setAiSettings] = useState<AISettings>({ provider: 'lovable', apiKey: '', model: 'google/gemini-3-flash-preview' });
+  const [aiSettings, setAiSettings] = useState<AISettings>({ provider: 'lovable', apiKey: '', model: 'google/gemini-3-flash-preview', baseUrl: '' });
   const [savingAI, setSavingAI] = useState(false);
   const [aiModels, setAiModels] = useState<AIModel[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
@@ -403,7 +403,7 @@ export default function SettingsPage() {
     imageKeys: [],
     researchDepth: 'standard', localAgentUrl: 'http://localhost:3001',
     taskMode: 'standard', automationMode: 'safe', memoryEnabled: true, memoryMaxItems: 8,
-    shellEnabled: false, workspacePath: '',
+    shellEnabled: false, workspacePath: '', comfyuiBaseUrl: 'http://localhost:8188',
   });
   const [savingAgent, setSavingAgent] = useState(false);
   const [testingResearch, setTestingResearch] = useState(false);
@@ -434,6 +434,13 @@ export default function SettingsPage() {
   const handleTestImage = async () => {
     setTestingImage(true); setImageTest(null);
     try {
+      if (agentSettings.imageProvider === 'comfyui') {
+        const r = await testComfyUIConnection(agentSettings.comfyuiBaseUrl || 'http://localhost:8188');
+        setImageTest(r);
+        if (r.ok) toast({ title: '✅ ComfyUI connected', description: `${r.sample || 'ComfyUI running'} · ${r.latency}ms` });
+        else toast({ title: 'ComfyUI test failed', description: r.error, variant: 'destructive' });
+        return;
+      }
       const provider = agentSettings.imageProvider === 'auto'
         ? (agentSettings.imageApiKey ? 'unsplash' : 'lovable')
         : agentSettings.imageProvider;
@@ -469,12 +476,17 @@ export default function SettingsPage() {
     } finally { setLoadingImageModels(false); }
   };
 
-  const loadModels = async (provider: string, apiKey: string) => {
+  const loadModels = async (provider: string, apiKey: string, baseUrl?: string) => {
     setLoadingModels(true);
     setModelsError(null);
     try {
-      const models = await listAIModels(provider, apiKey);
-      setAiModels(models);
+      if (provider === 'lmstudio') {
+        const models = await listLMStudioModels(baseUrl || aiSettings.baseUrl || 'http://localhost:1234/v1', apiKey);
+        setAiModels(models);
+      } else {
+        const models = await listAIModels(provider, apiKey);
+        setAiModels(models);
+      }
     } catch (e: any) {
       setModelsError(e.message || 'Failed to load models');
       setAiModels([]);
@@ -487,9 +499,14 @@ export default function SettingsPage() {
     setTesting(true);
     setTestResult(null);
     try {
-      const r = await testAIConnection(aiSettings.provider, aiSettings.apiKey, aiSettings.model);
+      let r: ConnectionTestResult;
+      if (aiSettings.provider === 'lmstudio') {
+        r = await testLMStudioConnection(aiSettings.baseUrl || 'http://localhost:1234/v1', aiSettings.apiKey, aiSettings.model);
+      } else {
+        r = await testAIConnection(aiSettings.provider, aiSettings.apiKey, aiSettings.model);
+      }
       setTestResult(r);
-      if (r.ok) toast({ title: '✅ Connected', description: `${r.model} responded in ${r.latency}ms` });
+      if (r.ok) toast({ title: '✅ Connected', description: `${r.model || aiSettings.model} responded in ${r.latency}ms` });
       else toast({ title: 'Connection failed', description: r.error, variant: 'destructive' });
     } catch (e: any) {
       setTestResult({ ok: false, error: e.message });
@@ -528,6 +545,9 @@ export default function SettingsPage() {
   useEffect(() => {
     if (aiSettings.provider === 'lovable') {
       loadModels('lovable', '');
+    } else if (aiSettings.provider === 'lmstudio') {
+      if (aiSettings.baseUrl) loadModels('lmstudio', aiSettings.apiKey, aiSettings.baseUrl);
+      else { setAiModels([]); setModelsError(null); }
     } else if (aiSettings.apiKey) {
       loadModels(aiSettings.provider, aiSettings.apiKey);
     } else {
@@ -724,6 +744,7 @@ export default function SettingsPage() {
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="lovable">Lovable AI (default)</SelectItem>
+                  <SelectItem value="lmstudio">🏠 LM Studio (Local)</SelectItem>
                   <SelectItem value="openai">OpenAI</SelectItem>
                   <SelectItem value="google">Google (Gemini)</SelectItem>
                   <SelectItem value="nvidia">NVIDIA</SelectItem>
@@ -735,10 +756,10 @@ export default function SettingsPage() {
             <div className="space-y-2">
               <Label className="text-xs flex items-center justify-between">
                 <span>Model</span>
-                {aiSettings.provider !== 'lovable' && aiSettings.apiKey && (
+                {(aiSettings.provider !== 'lovable') && (aiSettings.apiKey || aiSettings.provider === 'lmstudio') && (
                   <button
                     type="button"
-                    onClick={() => loadModels(aiSettings.provider, aiSettings.apiKey)}
+                    onClick={() => loadModels(aiSettings.provider, aiSettings.apiKey, aiSettings.baseUrl)}
                     className="text-[10px] text-primary hover:underline"
                     disabled={loadingModels}
                   >
@@ -759,7 +780,11 @@ export default function SettingsPage() {
                 <Input
                   value={aiSettings.model}
                   onChange={(e) => setAiSettings((s) => ({ ...s, model: e.target.value }))}
-                  placeholder={aiSettings.provider === 'lovable' ? 'google/gemini-3-flash-preview' : 'Enter API key to load models'}
+                  placeholder={
+                    aiSettings.provider === 'lovable' ? 'google/gemini-3-flash-preview' :
+                    aiSettings.provider === 'lmstudio' ? 'Enter LM Studio URL below to load models' :
+                    'Enter API key to load models'
+                  }
                   disabled={loadingModels}
                 />
               )}
@@ -768,7 +793,45 @@ export default function SettingsPage() {
               )}
             </div>
           </div>
-          {aiSettings.provider !== 'lovable' && (
+          {aiSettings.provider === 'lmstudio' && (
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <Label className="text-xs">LM Studio URL</Label>
+                <Input
+                  value={aiSettings.baseUrl}
+                  onChange={(e) => setAiSettings((s) => ({ ...s, baseUrl: e.target.value }))}
+                  placeholder="http://localhost:1234/v1"
+                  className="font-mono text-xs"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  The OpenAI-compatible API base URL shown in LM Studio → Developer → Local Server. Default: <code>http://localhost:1234/v1</code>
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs">API Key <span className="text-muted-foreground">(optional)</span></Label>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <PasswordInput
+                      value={aiSettings.apiKey}
+                      onChange={(v) => setAiSettings((s) => ({ ...s, apiKey: v }))}
+                      placeholder="lm-studio (any value works)"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => loadModels('lmstudio', aiSettings.apiKey, aiSettings.baseUrl)}
+                    disabled={!aiSettings.baseUrl || loadingModels}
+                  >
+                    {loadingModels ? 'Loading…' : 'Load models'}
+                  </Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">LM Studio does not require a real API key — any non-empty value works.</p>
+              </div>
+            </div>
+          )}
+          {aiSettings.provider !== 'lovable' && aiSettings.provider !== 'lmstudio' && (
             <div className="space-y-2">
               <Label className="text-xs">API Key</Label>
               <div className="flex gap-2">
@@ -812,7 +875,7 @@ export default function SettingsPage() {
               size="sm"
               variant="outline"
               onClick={handleTestConnection}
-              disabled={testing || !aiSettings.model || (aiSettings.provider !== 'lovable' && !aiSettings.apiKey)}
+              disabled={testing || !aiSettings.model || (aiSettings.provider !== 'lovable' && aiSettings.provider !== 'lmstudio' && !aiSettings.apiKey) || (aiSettings.provider === 'lmstudio' && !aiSettings.baseUrl)}
               className="gap-1.5"
             >
               {testing ? '⏳ Testing…' : '🔌 Test connection'}
@@ -829,7 +892,11 @@ export default function SettingsPage() {
           </div>
           <div className="text-xs text-muted-foreground border-t pt-3 mt-1">
             <span className="font-medium">Currently active in AI Post Generator:</span>{' '}
-            <span className="font-mono text-foreground">{savedAi?.provider || 'lovable'} · {savedAi?.model || 'default'}</span>
+            <span className="font-mono text-foreground">
+              {savedAi?.provider || 'lovable'}
+              {savedAi?.provider === 'lmstudio' && savedAi?.baseUrl ? ` · ${savedAi.baseUrl}` : ''}
+              {savedAi?.model ? ` · ${savedAi.model}` : ' · default'}
+            </span>
           </div>
         </CardContent>
       </Card>
@@ -965,9 +1032,10 @@ export default function SettingsPage() {
                   <SelectItem value="nvidia">🟢 NVIDIA NIM (FLUX, SDXL, SD3)</SelectItem>
                   <SelectItem value="xai">⚡ xAI Grok (Grok 2 Image)</SelectItem>
                   <SelectItem value="lovable">✨ Lovable AI (Nano Banana, included)</SelectItem>
+                  <SelectItem value="comfyui">🖥️ ComfyUI (Local)</SelectItem>
                 </SelectContent>
               </Select>
-              {agentSettings.imageProvider !== 'lovable' && (
+              {agentSettings.imageProvider !== 'lovable' && agentSettings.imageProvider !== 'comfyui' && (
                 <PasswordInput
                   value={agentSettings.imageApiKey}
                   onChange={(v) => {
@@ -998,6 +1066,14 @@ export default function SettingsPage() {
                   }
                 />
               )}
+              {agentSettings.imageProvider === 'comfyui' && (
+                <Input
+                  value={agentSettings.comfyuiBaseUrl}
+                  onChange={(e) => { setAgentSettings((s) => ({ ...s, comfyuiBaseUrl: e.target.value })); setImageTest(null); }}
+                  placeholder="http://localhost:8188"
+                  className="font-mono text-xs"
+                />
+              )}
             </div>
 
             {/* Image model selector — appears after "Show models" succeeds */}
@@ -1023,11 +1099,12 @@ export default function SettingsPage() {
               <Button
                 type="button" size="sm" variant="outline"
                 onClick={handleTestImage}
-                disabled={testingImage || (agentSettings.imageProvider !== 'lovable' && agentSettings.imageProvider !== 'auto' && !agentSettings.imageApiKey)}
+                disabled={testingImage || (agentSettings.imageProvider !== 'lovable' && agentSettings.imageProvider !== 'auto' && agentSettings.imageProvider !== 'comfyui' && !agentSettings.imageApiKey)}
                 className="gap-1.5 h-8"
               >
                 {testingImage ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : '🔌'} Test connection
               </Button>
+              {agentSettings.imageProvider !== 'comfyui' && (
               <Button
                 type="button" size="sm" variant="outline"
                 onClick={handleLoadImageModels}
@@ -1037,12 +1114,13 @@ export default function SettingsPage() {
                 {loadingImageModels ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5" />}
                 Show models
               </Button>
+              )}
               {imageTest?.ok && imageTest.sample && (
                 <span className="text-[11px] text-muted-foreground italic truncate max-w-[280px]">
                   → {imageTest.sample}
                 </span>
               )}
-              {agentSettings.imageProvider !== 'lovable' && agentSettings.imageProvider !== 'auto' && (
+              {agentSettings.imageProvider !== 'lovable' && agentSettings.imageProvider !== 'auto' && agentSettings.imageProvider !== 'comfyui' && (
                 <a href={
                   agentSettings.imageProvider === 'unsplash' ? 'https://unsplash.com/oauth/applications' :
                   agentSettings.imageProvider === 'pexels' ? 'https://www.pexels.com/api/' :
@@ -1056,7 +1134,9 @@ export default function SettingsPage() {
               )}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              In Auto mode the agent picks real photos for news/events and generated images for abstract/conceptual prompts. Use <strong>Google</strong>, <strong>NVIDIA</strong>, or <strong>xAI</strong> with your key, or <strong>Lovable AI</strong> for built-in Nano Banana (no key required).
+              {agentSettings.imageProvider === 'comfyui' && 'ComfyUI runs locally on your PC. Enter the URL shown in the ComfyUI terminal (default: http://localhost:8188). Your existing workflows are used for generation.'}
+              {agentSettings.imageProvider !== 'comfyui' && 'In Auto mode the agent picks real photos for news/events and generated images for abstract/conceptual prompts. Use '}
+              {agentSettings.imageProvider !== 'comfyui' && <><strong>Google</strong>, <strong>NVIDIA</strong>, or <strong>xAI</strong> with your key, or <strong>Lovable AI</strong> for built-in Nano Banana (no key required).</>}
             </p>
           </div>
 

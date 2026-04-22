@@ -939,6 +939,7 @@ Deno.serve(async (req) => {
     provider: s.ai_provider,
     apiKey: s.ai_api_key,
     model: s.ai_model,
+    baseUrl: s.ai_base_url,
   }, Deno.env.get('LOVABLE_API_KEY') || '');
   if (config.fallbackReason) {
     console.warn('generate-social-post provider fallback:', config.fallbackReason);
