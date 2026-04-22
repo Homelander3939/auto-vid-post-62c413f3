@@ -141,7 +141,16 @@ export function detectProviderFromKey(key: string): { research?: string; image?:
 
 // localStorage key used as a client-side fallback so settings survive page
 // reloads even when the ai_base_url DB column has not yet been applied.
+// Only non-sensitive fields (provider, model, baseUrl) are stored here.
+// API keys are intentionally excluded to avoid clear-text key storage.
 const AI_SETTINGS_LS_KEY = 'avp_ai_settings';
+
+/** Shape stored in localStorage — no sensitive fields. */
+interface AISettingsCache {
+  provider: string;
+  model: string;
+  baseUrl: string;
+}
 
 export async function getAISettings(): Promise<AISettings> {
   const { data } = await supabase.from('app_settings').select('*').eq('id', 1).single();
@@ -149,7 +158,7 @@ export async function getAISettings(): Promise<AISettings> {
 
   // Read localStorage fallback — used when the DB is missing a column (e.g.
   // ai_base_url before the migration is applied).
-  let ls: Partial<AISettings> = {};
+  let ls: Partial<AISettingsCache> = {};
   try {
     const raw = localStorage.getItem(AI_SETTINGS_LS_KEY);
     if (raw) ls = JSON.parse(raw);
@@ -163,16 +172,18 @@ export async function getAISettings(): Promise<AISettings> {
 
   return {
     provider,
-    apiKey: row.ai_api_key || ls.apiKey || '',
+    apiKey: row.ai_api_key || '',
     model: row.ai_model || ls.model || 'google/gemini-3-flash-preview',
     baseUrl,
   };
 }
 
 export async function saveAISettings(s: AISettings): Promise<void> {
-  // Persist to localStorage first so the UI stays consistent even if the DB
-  // column is missing and gets silently dropped by updateAppSettingsCompat.
-  try { localStorage.setItem(AI_SETTINGS_LS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+  // Persist non-sensitive fields to localStorage so the UI stays consistent
+  // even if the DB column is missing and gets silently dropped.
+  // API key is deliberately excluded — it remains DB-only.
+  const cache: AISettingsCache = { provider: s.provider, model: s.model, baseUrl: s.baseUrl || '' };
+  try { localStorage.setItem(AI_SETTINGS_LS_KEY, JSON.stringify(cache)); } catch { /* ignore */ }
   await updateAppSettingsCompat({
     ai_provider: s.provider,
     ai_api_key: s.apiKey,
@@ -576,7 +587,7 @@ export async function listAIModels(provider: string, apiKey: string): Promise<AI
 }
 
 const LM_STUDIO_DEFAULT_URL = 'http://localhost:1234/v1';
-const LM_STUDIO_DEFAULT_KEY = 'lm-studio';
+export const LM_STUDIO_DEFAULT_KEY = 'lm-studio';
 
 // Direct browser-side call to LM Studio (OpenAI-compatible). Bypasses edge functions so
 // it works with localhost:1234 — the browser can reach it even though cloud functions cannot.

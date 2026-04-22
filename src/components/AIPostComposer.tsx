@@ -19,6 +19,7 @@ import {
   type AIStreamEvent,
   type PlatformVariant,
   type AIProviderOverride,
+  LM_STUDIO_DEFAULT_KEY,
 } from '@/lib/socialPosts';
 
 const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
@@ -158,7 +159,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
       aiSettings?.provider === 'lmstudio' && aiSettings.baseUrl
         ? {
             provider: aiSettings.provider,
-            apiKey: aiSettings.apiKey || 'lm-studio',
+            apiKey: aiSettings.apiKey || LM_STUDIO_DEFAULT_KEY,
             model: aiSettings.model || '',
             baseUrl: aiSettings.baseUrl,
           }
