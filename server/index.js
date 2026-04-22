@@ -28,7 +28,7 @@ const { checkPlatformStats, formatStatsForTelegram, runBrowserTask } = require('
 const { sendTelegram } = require('./telegram');
 const { scanFolder, scanAllFiles } = require('./folderWatcher');
 const { parseTextFile } = require('./textParser');
-const { processTelegramAIResponse, streamLMStudio, LM_STUDIO_URL } = require('./ai-handler');
+const { processTelegramAIResponse, streamLMStudio, callLMStudioJson, LM_STUDIO_URL } = require('./ai-handler');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
@@ -1451,6 +1451,45 @@ async function processPendingCommands() {
             } catch (err) {
               await supabase.from('pending_commands').update({
                 status: 'failed', result: err.message, completed_at: new Date().toISOString(),
+              }).eq('id', cmd.id);
+            }
+          } else if (cmd.command === 'lmstudio_chat_json') {
+            const stage = cmd.args?.stage || 'llm';
+            const model = cmd.args?.model || '';
+            console.log(`[Commands] lmstudio_chat_json: stage=${stage}${model ? ` model=${model}` : ''}`);
+            try {
+              const result = await callLMStudioJson({
+                systemPrompt: cmd.args?.systemPrompt || '',
+                userPrompt: cmd.args?.userPrompt || '',
+                schema: cmd.args?.schema || { type: 'object', properties: {} },
+                toolName: cmd.args?.toolName || 'structured_output',
+              }, {
+                baseUrl: cmd.args?.baseUrl,
+                apiKey: cmd.args?.apiKey,
+                model: cmd.args?.model,
+              });
+              await supabase.from('pending_commands').update({
+                status: 'completed',
+                result: JSON.stringify({
+                  ok: true,
+                  stage,
+                  model: result.model,
+                  baseUrl: result.baseUrl,
+                  data: result.data,
+                }),
+                completed_at: new Date().toISOString(),
+              }).eq('id', cmd.id);
+              console.log(`[Commands] lmstudio_chat_json done: stage=${stage}`);
+            } catch (err) {
+              await supabase.from('pending_commands').update({
+                status: 'failed',
+                result: JSON.stringify({
+                  ok: false,
+                  stage,
+                  error: err.message,
+                  details: err.details || null,
+                }),
+                completed_at: new Date().toISOString(),
               }).eq('id', cmd.id);
             }
           } else if (cmd.command && cmd.command.startsWith('agent_')) {

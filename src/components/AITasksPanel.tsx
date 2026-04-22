@@ -8,43 +8,90 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { Sparkles, Search, Image as ImageIcon, ExternalLink, ChevronDown, ChevronUp, Cpu, Globe, FileText, Hash, Loader2, CheckCircle2, AlertTriangle, X as XIcon, Trash2 } from 'lucide-react';
+import { Sparkles, Search, Image as ImageIcon, ExternalLink, ChevronDown, ChevronUp, Cpu, Globe, FileText, Hash, Loader2, CheckCircle2, AlertTriangle, X as XIcon, Trash2, type LucideIcon } from 'lucide-react';
 import { useState } from 'react';
 import { listSocialPosts, getSocialImageUrl, listGenerationJobs, cancelGenerationJob, cancelAllRunningJobs, deleteGenerationJob, deletePendingCommand, deleteSocialPost, listAgentRuns, cancelAgentRun, deleteAgentRun, type SocialPost, type GenerationJob, type AgentRun } from '@/lib/socialPosts';
 import { useToast } from '@/hooks/use-toast';
 import { Link } from 'react-router-dom';
 
+interface PendingCommandArgs extends Record<string, unknown> {
+  query?: string;
+  stage?: string;
+  model?: string;
+}
+
 interface PendingCommand {
   id: string;
   command: string;
-  args: any;
+  args: PendingCommandArgs | null;
   status: string;
   result: string | null;
   created_at: string;
   completed_at: string | null;
 }
 
+interface GenerationEventSummary {
+  type: string;
+  id?: string;
+  status?: string;
+  kind?: string;
+  name?: string;
+  detail?: string;
+  title?: string;
+  url?: string;
+  platform?: string;
+  description?: string;
+  hashtags?: string[];
+  label?: string;
+  emoji?: string;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error || 'Unknown error');
+}
+
+function getPendingCommandResultPreview(result: string | null): { preview: string; count: number } {
+  if (!result) return { preview: '', count: 0 };
+  try {
+    const parsed: unknown = JSON.parse(result);
+    if (!parsed || typeof parsed !== 'object') return { preview: result.slice(0, 80), count: 0 };
+    const maybeResults = 'results' in parsed ? parsed.results : undefined;
+    const results = Array.isArray(maybeResults) ? maybeResults : [];
+    const first = results[0];
+    const firstTitle = first && typeof first === 'object' && 'title' in first && typeof first.title === 'string'
+      ? first.title
+      : '';
+    const stage = 'stage' in parsed && typeof parsed.stage === 'string' ? parsed.stage : '';
+    const error = 'error' in parsed && typeof parsed.error === 'string' ? parsed.error : '';
+    return { preview: firstTitle || stage || error || result.slice(0, 80), count: results.length };
+  } catch {
+    return { preview: result.slice(0, 80), count: 0 };
+  }
+}
+
 async function listRecentCommands(): Promise<PendingCommand[]> {
-  const { data } = await (supabase as any)
+  const { data } = await supabase
     .from('pending_commands')
     .select('*')
-    .in('command', ['research_search', 'image_search', 'open_browser', 'check_stats'])
+    .in('command', ['research_search', 'image_search', 'open_browser', 'check_stats', 'lmstudio_chat_json'])
     .order('created_at', { ascending: false })
     .limit(8);
   return (data || []) as PendingCommand[];
 }
 
-const COMMAND_ICONS: Record<string, any> = {
+const COMMAND_ICONS: Record<string, LucideIcon> = {
   research_search: Search,
   image_search: ImageIcon,
   open_browser: Globe,
   check_stats: Hash,
+  lmstudio_chat_json: Cpu,
 };
 const COMMAND_LABELS: Record<string, string> = {
   research_search: 'Web research',
   image_search: 'Image search',
   open_browser: 'Browser task',
   check_stats: 'Stats check',
+  lmstudio_chat_json: 'LM Studio JSON stage',
 };
 const AGENT_RUN_RECENT_EVENT_TYPES = ['tool_call', 'tool_result', 'thought', 'error', 'review', 'phase', 'finish'];
 const AGENT_RUN_RECENT_EVENT_LIMIT = 8;
@@ -125,7 +172,7 @@ function PostRow({ post, onDelete }: { post: SocialPost; onDelete: (id: string) 
             {variantCount > 0 && (
               <div className="space-y-1">
                 <div className="font-medium text-muted-foreground">Variants:</div>
-                {Object.entries(post.platform_variants).map(([p, v]: [string, any]) => (
+                {Object.entries(post.platform_variants).map(([p, v]) => (
                   <div key={p} className="rounded bg-muted/40 px-2 py-1">
                     <span className="capitalize font-medium">{p}:</span>{' '}
                     <span className="text-muted-foreground">{v.description?.slice(0, 120)}…</span>
@@ -137,7 +184,7 @@ function PostRow({ post, onDelete }: { post: SocialPost; onDelete: (id: string) 
               <div>
                 <span className="font-medium text-muted-foreground">Sources:</span>
                 <div className="space-y-0.5 mt-1">
-                  {(post.ai_sources || []).slice(0, 5).map((s: any, i: number) => (
+                  {(post.ai_sources || []).slice(0, 5).map((s: { title?: string; url: string }, i: number) => (
                     <a key={i} href={s.url} target="_blank" rel="noreferrer"
                       className="flex items-center gap-1 text-primary hover:underline truncate">
                       <ExternalLink className="w-2.5 h-2.5 shrink-0" />
@@ -170,15 +217,7 @@ function CommandRow({ cmd, onDelete }: { cmd: PendingCommand; onDelete: (id: str
   const [expanded, setExpanded] = useState(false);
   const Icon = COMMAND_ICONS[cmd.command] || Cpu;
   const label = COMMAND_LABELS[cmd.command] || cmd.command;
-  let resultPreview = '';
-  let resultCount = 0;
-  try {
-    if (cmd.result) {
-      const parsed = JSON.parse(cmd.result);
-      if (Array.isArray(parsed?.results)) resultCount = parsed.results.length;
-      resultPreview = parsed?.results?.[0]?.title || cmd.result.slice(0, 80);
-    }
-  } catch { resultPreview = cmd.result?.slice(0, 80) || ''; }
+  const { preview: resultPreview, count: resultCount } = getPendingCommandResultPreview(cmd.result);
 
   return (
     <Card className="border bg-card/60">
@@ -202,6 +241,11 @@ function CommandRow({ cmd, onDelete }: { cmd: PendingCommand; onDelete: (id: str
             </div>
             {cmd.args?.query && (
               <p className="text-xs text-muted-foreground line-clamp-1">"{cmd.args.query}"</p>
+            )}
+            {!cmd.args?.query && cmd.args?.stage && (
+              <p className="text-xs text-muted-foreground line-clamp-1">
+                stage={cmd.args.stage}{cmd.args?.model ? ` · ${cmd.args.model}` : ''}
+              </p>
             )}
             {resultPreview && cmd.status === 'completed' && (
               <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">→ {resultPreview}</p>
@@ -236,10 +280,10 @@ function CommandRow({ cmd, onDelete }: { cmd: PendingCommand; onDelete: (id: str
 function GenerationJobRow({ job, onCancel, onDelete }: { job: GenerationJob; onCancel: (id: string) => void; onDelete: (id: string) => void }) {
   const [expanded, setExpanded] = useState(job.status === 'running');
   const [cancelling, setCancelling] = useState(false);
-  const events = (job.events || []) as any[];
-  const steps = events.filter((e) => e.type === 'step') as any[];
+  const events = (job.events || []) as GenerationEventSummary[];
+  const steps = events.filter((e) => e.type === 'step');
   // Reduce to latest status per step id
-  const stepMap = new Map<string, any>();
+  const stepMap = new Map<string, GenerationEventSummary>();
   for (const s of steps) stepMap.set(s.id, s);
   const stepList = Array.from(stepMap.values());
   const doneCount = stepList.filter((s) => s.status === 'done').length;
@@ -506,8 +550,8 @@ export default function AITasksPanel() {
       await cancelGenerationJob(id);
       toast({ title: 'Cancelled', description: 'The agent will stop within a couple of seconds.' });
       queryClient.invalidateQueries({ queryKey: ['generation_jobs'] });
-    } catch (e: any) {
-      toast({ title: 'Could not cancel', description: e.message, variant: 'destructive' });
+    } catch (e: unknown) {
+      toast({ title: 'Could not cancel', description: getErrorMessage(e), variant: 'destructive' });
     }
   };
 
@@ -516,8 +560,8 @@ export default function AITasksPanel() {
       await cancelAgentRun(id);
       toast({ title: 'Cancelled', description: 'The autonomous agent is stopping.' });
       queryClient.invalidateQueries({ queryKey: ['agent_runs'] });
-    } catch (e: any) {
-      toast({ title: 'Could not cancel', description: e.message, variant: 'destructive' });
+    } catch (e: unknown) {
+      toast({ title: 'Could not cancel', description: getErrorMessage(e), variant: 'destructive' });
     }
   };
 
@@ -527,8 +571,8 @@ export default function AITasksPanel() {
       const n = await cancelAllRunningJobs();
       toast({ title: `Cancelled ${n} job${n === 1 ? '' : 's'}` });
       queryClient.invalidateQueries({ queryKey: ['generation_jobs'] });
-    } catch (e: any) {
-      toast({ title: 'Could not cancel', description: e.message, variant: 'destructive' });
+    } catch (e: unknown) {
+      toast({ title: 'Could not cancel', description: getErrorMessage(e), variant: 'destructive' });
     } finally {
       setCancellingAll(false);
     }
@@ -538,8 +582,8 @@ export default function AITasksPanel() {
     try {
       await deleteGenerationJob(id);
       queryClient.invalidateQueries({ queryKey: ['generation_jobs'] });
-    } catch (e: any) {
-      toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
+    } catch (e: unknown) {
+      toast({ title: 'Could not delete', description: getErrorMessage(e), variant: 'destructive' });
     }
   };
 
@@ -547,8 +591,8 @@ export default function AITasksPanel() {
     try {
       await deleteAgentRun(id);
       queryClient.invalidateQueries({ queryKey: ['agent_runs'] });
-    } catch (e: any) {
-      toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
+    } catch (e: unknown) {
+      toast({ title: 'Could not delete', description: getErrorMessage(e), variant: 'destructive' });
     }
   };
 
@@ -556,8 +600,8 @@ export default function AITasksPanel() {
     try {
       await deleteSocialPost(id);
       queryClient.invalidateQueries({ queryKey: ['social_posts'] });
-    } catch (e: any) {
-      toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
+    } catch (e: unknown) {
+      toast({ title: 'Could not delete', description: getErrorMessage(e), variant: 'destructive' });
     }
   };
 
@@ -565,8 +609,8 @@ export default function AITasksPanel() {
     try {
       await deletePendingCommand(id);
       queryClient.invalidateQueries({ queryKey: ['pending_commands_recent'] });
-    } catch (e: any) {
-      toast({ title: 'Could not delete', description: e.message, variant: 'destructive' });
+    } catch (e: unknown) {
+      toast({ title: 'Could not delete', description: getErrorMessage(e), variant: 'destructive' });
     }
   };
 
