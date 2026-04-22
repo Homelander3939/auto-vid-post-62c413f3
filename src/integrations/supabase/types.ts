@@ -16,13 +16,11 @@ export type Database = {
     Tables: {
       agent_runs: {
         Row: {
-          automation_mode: string
           completed_at: string | null
           created_at: string
           error: string | null
           events: Json
           id: string
-          memory_snapshot: Json
           model: string
           pending_skill: Json | null
           prompt: string
@@ -30,20 +28,17 @@ export type Database = {
           skill_id: string | null
           source: string
           status: string
-          task_mode: string
           telegram_chat_id: string | null
           telegram_status_message_id: number | null
           updated_at: string
           workspace_path: string
         }
         Insert: {
-          automation_mode?: string
           completed_at?: string | null
           created_at?: string
           error?: string | null
           events?: Json
           id?: string
-          memory_snapshot?: Json
           model?: string
           pending_skill?: Json | null
           prompt?: string
@@ -51,20 +46,17 @@ export type Database = {
           skill_id?: string | null
           source?: string
           status?: string
-          task_mode?: string
           telegram_chat_id?: string | null
           telegram_status_message_id?: number | null
           updated_at?: string
           workspace_path?: string
         }
         Update: {
-          automation_mode?: string
           completed_at?: string | null
           created_at?: string
           error?: string | null
           events?: Json
           id?: string
-          memory_snapshot?: Json
           model?: string
           pending_skill?: Json | null
           prompt?: string
@@ -72,66 +64,12 @@ export type Database = {
           skill_id?: string | null
           source?: string
           status?: string
-          task_mode?: string
           telegram_chat_id?: string | null
           telegram_status_message_id?: number | null
           updated_at?: string
           workspace_path?: string
         }
         Relationships: []
-      }
-      agent_memories: {
-        Row: {
-          content: string
-          created_at: string
-          enabled: boolean
-          id: string
-          importance: number
-          last_used_at: string | null
-          memory_type: string
-          source_run_id: string | null
-          tags: string[]
-          title: string
-          updated_at: string
-          use_count: number
-        }
-        Insert: {
-          content?: string
-          created_at?: string
-          enabled?: boolean
-          id?: string
-          importance?: number
-          last_used_at?: string | null
-          memory_type?: string
-          source_run_id?: string | null
-          tags?: string[]
-          title: string
-          updated_at?: string
-          use_count?: number
-        }
-        Update: {
-          content?: string
-          created_at?: string
-          enabled?: boolean
-          id?: string
-          importance?: number
-          last_used_at?: string | null
-          memory_type?: string
-          source_run_id?: string | null
-          tags?: string[]
-          title?: string
-          updated_at?: string
-          use_count?: number
-        }
-        Relationships: [
-          {
-            foreignKeyName: "agent_memories_source_run_id_fkey"
-            columns: ["source_run_id"]
-            isOneToOne: false
-            referencedRelation: "agent_runs"
-            referencedColumns: ["id"]
-          },
-        ]
       }
       agent_skills: {
         Row: {
@@ -198,11 +136,7 @@ export type Database = {
       }
       app_settings: {
         Row: {
-          agent_automation_mode: string
-          agent_memory_enabled: boolean
-          agent_memory_max_items: number
           agent_shell_enabled: boolean
-          agent_task_mode: string
           agent_workspace_path: string
           ai_api_key: string
           ai_model: string
@@ -235,11 +169,7 @@ export type Database = {
           youtube_password: string
         }
         Insert: {
-          agent_automation_mode?: string
-          agent_memory_enabled?: boolean
-          agent_memory_max_items?: number
           agent_shell_enabled?: boolean
-          agent_task_mode?: string
           agent_workspace_path?: string
           ai_api_key?: string
           ai_model?: string
@@ -272,11 +202,7 @@ export type Database = {
           youtube_password?: string
         }
         Update: {
-          agent_automation_mode?: string
-          agent_memory_enabled?: boolean
-          agent_memory_max_items?: number
           agent_shell_enabled?: boolean
-          agent_task_mode?: string
           agent_workspace_path?: string
           ai_api_key?: string
           ai_model?: string
