@@ -966,16 +966,17 @@ Deno.serve(async (req) => {
   // (e.g. ai_base_url not yet migrated). Client values take precedence so that
   // LM Studio (and other local providers) work even before the migration runs.
   const ov = body.aiOverride || {};
+  const requestedBaseUrl = String(ov.baseUrl ?? s.ai_base_url ?? '');
   const config = resolveChatProviderConfig({
     provider: ov.provider ?? s.ai_provider,
     apiKey: ov.apiKey ?? s.ai_api_key,
     model: ov.model ?? s.ai_model,
-    baseUrl: ov.baseUrl ?? s.ai_base_url,
+    baseUrl: requestedBaseUrl,
   }, Deno.env.get('LOVABLE_API_KEY') || '');
   if (config.fallbackReason) {
     console.warn('generate-social-post provider fallback:', config.fallbackReason);
   }
-  if (config.provider === 'lmstudio' || isLocalUrl(config.url)) {
+  if (config.provider === 'lmstudio' || isLocalUrl(requestedBaseUrl)) {
     return new Response(JSON.stringify({
       error: 'AI Post Generator runs in the cloud and cannot reach your local LM Studio server. Use a cloud chat provider here, or use AI Chat with LM Studio for local conversations.',
     }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });

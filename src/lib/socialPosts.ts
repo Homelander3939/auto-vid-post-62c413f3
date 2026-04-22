@@ -189,6 +189,8 @@ export async function getAISettings(): Promise<AISettings> {
   // cached LM Studio URL when the provider has changed in the DB.
   const lsProviderMatches = !!ls.provider && ls.provider === provider;
   const dbModel: string = row.ai_model || '';
+  // Non-Lovable providers either require an explicit user-picked model (LM Studio)
+  // or can fall back to the provider's own server-side default when left blank.
   const fallbackModel = provider === 'lovable' ? 'google/gemini-3-flash-preview' : '';
   const cachedModel = lsProviderMatches ? (ls.model || '') : '';
   const cachedBaseUrl = lsProviderMatches ? (ls.baseUrl || '') : '';

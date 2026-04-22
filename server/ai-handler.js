@@ -37,7 +37,7 @@ function normalizeLMStudioBaseUrl(baseUrl) {
     throw new Error('LM Studio URL must use http or https');
   }
   if (!isPrivateHost(parsed.hostname)) {
-    throw new Error('LM Studio URL must point to localhost or a private LAN address');
+    throw new Error('LM Studio URL must point to localhost or a private LAN address (127.0.0.1, localhost, 192.168.x.x, 10.x.x.x, or 172.16-31.x.x) so the local worker cannot be redirected to the public internet');
   }
   const normalized = trimTrailingSlashes(parsed.toString());
   return normalized.toLowerCase().endsWith('/v1') ? normalized : `${normalized}/v1`;

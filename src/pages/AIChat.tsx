@@ -262,7 +262,7 @@ async function streamChatViaLocalWorker({
   onError,
 }: {
   serverUrl: string;
-  aiSettings: { baseUrl: string; apiKey: string; model: string };
+  aiSettings: { apiKey?: string; model?: string };
   messages: ChatContextMessage[];
   onDelta: (text: string) => void;
   onDone: () => void;
@@ -703,10 +703,10 @@ export default function AIChat() {
         const agentPrompt = buildAgentRunPrompt(text, pendingFiles);
         const aiOverride = aiSettings
           ? {
-              provider: aiSettings.provider,
-              apiKey: aiSettings.apiKey || '',
-              model: aiSettings.model || '',
-              baseUrl: aiSettings.baseUrl || '',
+              provider: aiSettings.provider || undefined,
+              apiKey: aiSettings.apiKey || undefined,
+              model: aiSettings.model || undefined,
+              baseUrl: aiSettings.baseUrl || undefined,
             }
           : undefined;
         const { data, error } = await supabase.functions.invoke('agent-run', {
@@ -771,9 +771,8 @@ Open the activity panel on the right if you want to follow the process flow whil
           await streamChatViaLocalWorker({
             serverUrl: agentSettings?.localAgentUrl || 'http://localhost:3001',
             aiSettings: {
-              baseUrl: aiSettings!.baseUrl,
               apiKey: aiSettings!.apiKey || 'lm-studio',
-              model: aiSettings!.model || '',
+              model: aiSettings!.model || undefined,
             },
             messages: contextMsgs,
             onDelta: upsert,
