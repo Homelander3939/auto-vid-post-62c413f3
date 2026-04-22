@@ -189,8 +189,8 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
     toast({ title: 'All variants loaded' });
   };
 
-  const currentAi = meta.model || aiSettings?.model || 'google/gemini-3-flash-preview';
   const currentProvider = meta.provider || aiSettings?.provider || 'lovable';
+  const currentAi = meta.model || aiSettings?.model || (currentProvider === 'lovable' ? 'google/gemini-3-flash-preview' : 'default');
   const finalSources = sources.length ? sources : liveSources;
 
   return (

@@ -519,7 +519,10 @@ function renderTelegramStatus(prompt: string, events: any[], status: string): st
 
 /* ── Provider map: read user's configured keys ───────────────────────── */
 
-async function getProviderMap(supabase: any) {
+async function getProviderMap(
+  supabase: any,
+  chatOverride: { provider?: string; apiKey?: string; model?: string; baseUrl?: string } = {},
+) {
   const { data } = await supabase.from('app_settings').select('*').eq('id', 1).single();
   const s = data || {};
   // Pick best image key: prefer image_keys[] entries with apiKey, else image_api_key
@@ -533,10 +536,10 @@ async function getProviderMap(supabase: any) {
   } catch { /* ignore */ }
   if (!imageKey) imageKey = s.image_api_key || '';
 
-  const rawProvider = (s.ai_provider || 'lovable') as string;
-  const rawApiKey = (s.ai_api_key || '') as string;
-  const rawModel = (s.ai_model || DEFAULT_LOVABLE_MODEL) as string;
-  const rawBaseUrl = (s.ai_base_url || '') as string;
+  const rawProvider = (chatOverride.provider ?? s.ai_provider ?? 'lovable') as string;
+  const rawApiKey = (chatOverride.apiKey ?? s.ai_api_key ?? '') as string;
+  const rawModel = (chatOverride.model ?? s.ai_model ?? DEFAULT_LOVABLE_MODEL) as string;
+  const rawBaseUrl = (chatOverride.baseUrl ?? s.ai_base_url ?? '') as string;
   // For the lovable provider (or when no custom API key is available), ensure the model is
   // always a valid Lovable Gateway model. This prevents raw user-entered models like
   // "qwen/qwen3.5-397b-a17b" from being sent to the Lovable Gateway and rejected.
@@ -1479,7 +1482,7 @@ serve(async (req) => {
       });
     }
 
-    const providers = await getProviderMap(supabase);
+    const providers = await getProviderMap(supabase, body.aiOverride || {});
     const slug = slugify(prompt);
     const { data: row } = await insertAgentRunCompat(supabase, {
       prompt,
