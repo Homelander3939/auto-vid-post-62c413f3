@@ -32,10 +32,14 @@ interface LocalLlmCommandResult {
   stage?: string;
   model?: string;
   baseUrl?: string;
-  data?: any;
+  data?: unknown;
   error?: string;
   details?: { model?: string; baseUrl?: string } | null;
 }
+
+const LOCAL_LM_STUDIO_DEFAULT_TIMEOUT_MS = 90_000;
+const LOCAL_LM_STUDIO_MIN_TIMEOUT_MS = 10_000;
+const LOCAL_LM_STUDIO_MAX_TIMEOUT_MS = 180_000;
 
 const PLATFORM_RULES: Record<string, string> = {
   x: 'X (Twitter): MAX 270 chars total INCLUDING hashtags. Hook in first 7 words. Punchy, scroll-stopping. 1-3 hashtags max, integrated naturally. No emoji-spam (1-2 max).',
@@ -487,7 +491,10 @@ async function callLocalLmStudioJsonViaCommand(
     timeoutMs?: number;
   },
 ): Promise<any> {
-  const timeoutMs = Math.min(Math.max(opts.timeoutMs || 90000, 10000), 180000);
+  const timeoutMs = Math.min(
+    Math.max(opts.timeoutMs || LOCAL_LM_STUDIO_DEFAULT_TIMEOUT_MS, LOCAL_LM_STUDIO_MIN_TIMEOUT_MS),
+    LOCAL_LM_STUDIO_MAX_TIMEOUT_MS,
+  );
   const { data: inserted, error } = await supabase
     .from('pending_commands')
     .insert({
@@ -520,7 +527,8 @@ async function callLocalLmStudioJsonViaCommand(
     if (!row) continue;
     if (row.status === 'completed') {
       let parsed: LocalLlmCommandResult = {};
-      try { parsed = JSON.parse(row.result || '{}'); } catch {}
+      try { parsed = JSON.parse(row.result || '{}'); }
+      catch (parseError) { console.warn('LM Studio completed result parse failed:', parseError); }
       if (parsed?.ok === false) {
         const err = new Error(parsed.error || `LM Studio ${opts.stage} failed`);
         (err as any).details = parsed.details;
@@ -530,7 +538,8 @@ async function callLocalLmStudioJsonViaCommand(
     }
     if (row.status === 'failed') {
       let parsed: LocalLlmCommandResult = {};
-      try { parsed = JSON.parse(row.result || '{}'); } catch {}
+      try { parsed = JSON.parse(row.result || '{}'); }
+      catch (parseError) { console.warn('LM Studio failed result parse failed:', parseError); }
       const err = new Error(parsed.error || row.result || `LM Studio ${opts.stage} failed`);
       (err as any).details = parsed.details;
       throw err;

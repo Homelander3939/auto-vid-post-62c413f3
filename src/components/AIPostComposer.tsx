@@ -39,6 +39,11 @@ function hostOf(url: string): string {
 
 const ACTIVE_JOB_KEY = 'ai_active_generation_job';
 
+function formatGenerationErrorDetails(details: unknown): string | undefined {
+  if (!details) return undefined;
+  return typeof details === 'string' ? details : JSON.stringify(details, null, 2);
+}
+
 export default function AIPostComposer({ platforms, onUse }: Props) {
   const { toast } = useToast();
   const [prompt, setPrompt] = useState('');
@@ -101,9 +106,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
       setMeta({ provider: e.provider, model: e.model });
     }
     else if (e.type === 'error') {
-      const detailText = e.details
-        ? (typeof e.details === 'string' ? e.details : JSON.stringify(e.details, null, 2))
-        : undefined;
+      const detailText = formatGenerationErrorDetails(e.details);
       setGenerationError({ message: e.error, stage: e.stage, details: detailText });
       toast({ title: 'AI generation failed', description: e.error, variant: 'destructive' });
     }
@@ -174,9 +177,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
     try {
       await generatePostStream({ prompt, platforms, includeImage }, consumeEvent, undefined, aiOverride);
     } catch (e: any) {
-      const detailText = e?.details
-        ? (typeof e.details === 'string' ? e.details : JSON.stringify(e.details, null, 2))
-        : undefined;
+      const detailText = formatGenerationErrorDetails(e?.details);
       setGenerationError({ message: e.message, stage: e.stage, details: detailText });
       toast({ title: 'AI generation failed', description: e.message, variant: 'destructive' });
     } finally {

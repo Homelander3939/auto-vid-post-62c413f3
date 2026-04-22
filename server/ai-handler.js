@@ -620,11 +620,16 @@ async function callLMStudioJson({ systemPrompt, userPrompt, schema, toolName }, 
     const data = await resp.json();
     const args = data?.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
     const raw = args || data?.choices?.[0]?.message?.content || '{}';
-    return {
-      data: JSON.parse(raw),
-      model: config.model,
-      baseUrl: config.baseUrl,
-    };
+    try {
+      return {
+        data: JSON.parse(raw),
+        model: config.model,
+        baseUrl: config.baseUrl,
+      };
+    } catch (parseError) {
+      const source = args ? 'tool arguments' : 'message content';
+      throw new Error(`LM Studio returned invalid JSON in ${source}: ${parseError.message}`);
+    }
   } catch (e) {
     const err = new Error(e?.message || 'LM Studio JSON call failed');
     err.details = {
