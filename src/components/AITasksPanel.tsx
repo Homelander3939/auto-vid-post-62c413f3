@@ -53,10 +53,17 @@ function getErrorMessage(error: unknown): string {
 function getPendingCommandResultPreview(result: string | null): { preview: string; count: number } {
   if (!result) return { preview: '', count: 0 };
   try {
-    const parsed = JSON.parse(result) as { results?: Array<{ title?: string }>; stage?: string; error?: string };
-    const count = Array.isArray(parsed.results) ? parsed.results.length : 0;
-    const firstTitle = count > 0 ? (parsed.results?.[0]?.title || '') : '';
-    return { preview: firstTitle || parsed.stage || parsed.error || result.slice(0, 80), count };
+    const parsed: unknown = JSON.parse(result);
+    if (!parsed || typeof parsed !== 'object') return { preview: result.slice(0, 80), count: 0 };
+    const maybeResults = 'results' in parsed ? parsed.results : undefined;
+    const results = Array.isArray(maybeResults) ? maybeResults : [];
+    const first = results[0];
+    const firstTitle = first && typeof first === 'object' && 'title' in first && typeof first.title === 'string'
+      ? first.title
+      : '';
+    const stage = 'stage' in parsed && typeof parsed.stage === 'string' ? parsed.stage : '';
+    const error = 'error' in parsed && typeof parsed.error === 'string' ? parsed.error : '';
+    return { preview: firstTitle || stage || error || result.slice(0, 80), count: results.length };
   } catch {
     return { preview: result.slice(0, 80), count: 0 };
   }

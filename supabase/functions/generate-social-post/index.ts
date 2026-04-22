@@ -1067,7 +1067,7 @@ Deno.serve(async (req) => {
   }, Deno.env.get('LOVABLE_API_KEY') || '');
   const usingLocalLmStudioBridge = config.provider === 'lmstudio' || (requestedProvider === 'lmstudio' && isLocalUrl(requestedBaseUrl));
   if (config.fallbackReason) console.warn('generate-social-post provider fallback:', config.fallbackReason);
-  if (requestedProvider === 'lmstudio' && !requestedBaseUrl) {
+  if (requestedProvider === 'lmstudio' && !requestedBaseUrl.trim()) {
     return new Response(JSON.stringify({
       error: config.fallbackReason || 'LM Studio is selected but no base URL is configured.',
       details: 'Open Settings → AI Post Generator, set the LM Studio URL shown in LM Studio → Developer → Server Settings, and save it before running generation.',
