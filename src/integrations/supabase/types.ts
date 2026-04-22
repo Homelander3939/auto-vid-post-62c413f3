@@ -16,6 +16,7 @@ export type Database = {
     Tables: {
       agent_runs: {
         Row: {
+          chat_settings: Json | null
           completed_at: string | null
           created_at: string
           error: string | null
@@ -34,6 +35,7 @@ export type Database = {
           workspace_path: string
         }
         Insert: {
+          chat_settings?: Json | null
           completed_at?: string | null
           created_at?: string
           error?: string | null
@@ -52,6 +54,7 @@ export type Database = {
           workspace_path?: string
         }
         Update: {
+          chat_settings?: Json | null
           completed_at?: string | null
           created_at?: string
           error?: string | null
