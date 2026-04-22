@@ -12,7 +12,7 @@
 //   POST { runId, action: 'cancel' }                       → cancels a running agent.
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { DEFAULT_LOVABLE_MODEL, LOVABLE_GATEWAY, normalizeLovableModel, resolveChatProviderConfig } from "../_shared/ai-provider.ts";
+import { DEFAULT_LOVABLE_MODEL, LOVABLE_GATEWAY, LOVABLE_MODELS, normalizeLovableModel, resolveChatProviderConfig } from "../_shared/ai-provider.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -568,6 +568,31 @@ async function getProviderMap(supabase: any) {
   };
 }
 
+/* ── LLM call helpers ────────────────────────────────────────────────── */
+
+/** Returns true when the gateway response indicates a model-name rejection that
+ *  can be resolved by retrying with a different model. Fail-fast on auth/rate
+ *  errors so we don't needlessly burn through the fallback chain. */
+function isInvalidModelError(status: number, body: string): boolean {
+  return status === 400 && (body.includes('invalid model') || body.includes('model_not_found'));
+}
+
+/** Builds a deduplicated ordered list of Lovable Gateway model IDs to try as
+ *  fallbacks. Always starts with DEFAULT_LOVABLE_MODEL, then the rest of
+ *  LOVABLE_MODELS, skipping any model that was already tried as the primary. */
+function buildLovableFallbackChain(primaryProvider: string, primaryModel: string): string[] {
+  const seen = new Set<string>();
+  if (primaryProvider === 'lovable') seen.add(primaryModel);
+  const chain: string[] = [];
+  for (const id of [DEFAULT_LOVABLE_MODEL, ...LOVABLE_MODELS.map((m) => m.id)]) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      chain.push(id);
+    }
+  }
+  return chain;
+}
+
 /* ── Call planner LLM (user's provider, fallback Lovable) ────────────── */
 
 async function callPlanner(messages: any[], chat: any, lovableKey: string): Promise<any> {
@@ -582,23 +607,33 @@ async function callPlanner(messages: any[], chat: any, lovableKey: string): Prom
     body: JSON.stringify({ model, messages, tools, tool_choice: 'auto' }),
   });
 
-  let r = await makeRequest(config.url, config.key, config.model);
-  if (!r.ok) {
-    const t = await r.text();
-    // Any provider failure → try Lovable Gateway with the default model as a reliable fallback.
-    // This handles: lovable+invalid-model, openrouter+unsupported-tool-choice, any other 4xx/5xx.
-    // Note: models like qwen that don't support tool_choice:'auto' will fail here and fall through.
-    if (config.model !== DEFAULT_LOVABLE_MODEL || config.provider !== 'lovable') {
-      console.warn(`callPlanner: primary provider ${config.provider}/${config.model} failed (${r.status}): ${t.slice(0, 200)}, retrying with Lovable default`);
-      const fallback = await makeRequest(LOVABLE_GATEWAY, lovableKey, DEFAULT_LOVABLE_MODEL);
-      if (fallback.ok) return await fallback.json();
-      const fallbackText = await fallback.text();
-      // Include the primary error context so users know which provider originally failed.
-      throw new Error(`Planner LLM failed (${fallback.status}): ${fallbackText.slice(0, 200)} [Primary ${config.provider}/${config.model} (${r.status}): ${t.slice(0, 100)}]`);
+  const primary = await makeRequest(config.url, config.key, config.model);
+  if (primary.ok) return await primary.json();
+
+  const primaryText = await primary.text();
+  const primaryContext = `${config.provider}/${config.model} (${primary.status})`;
+  // Any provider failure → cycle through all valid Lovable Gateway models until one succeeds.
+  // This handles: invalid/unsupported models (e.g. qwen), models that don't support
+  // tool_choice:'auto', expired custom API keys, provider outages, and cases where
+  // DEFAULT_LOVABLE_MODEL itself has become invalid in the deployed function.
+  const fallbackChain = buildLovableFallbackChain(config.provider, config.model);
+
+  let lastStatus = primary.status;
+  let lastText = primaryText;
+  for (const fallbackModel of fallbackChain) {
+    console.warn(`callPlanner: primary ${primaryContext} failed, retrying with Lovable/${fallbackModel}`);
+    const fb = await makeRequest(LOVABLE_GATEWAY, lovableKey, fallbackModel);
+    if (fb.ok) return await fb.json();
+    lastStatus = fb.status;
+    lastText = await fb.text();
+    // Only continue to the next model for "invalid model" 400 rejections.
+    // Fail fast on auth errors (401), rate limits (429), etc.
+    if (!isInvalidModelError(lastStatus, lastText)) {
+      break;
     }
-    throw new Error(`Planner LLM failed (${r.status}): ${t.slice(0, 300)}`);
   }
-  return await r.json();
+
+  throw new Error(`Planner LLM failed after trying ${fallbackChain.length + 1} model(s). Last error (${lastStatus}): ${lastText.slice(0, 200)}. Primary: ${primaryContext}`);
 }
 
 async function callReviewer(messages: any[], chat: any, lovableKey: string): Promise<string> {
@@ -613,24 +648,29 @@ async function callReviewer(messages: any[], chat: any, lovableKey: string): Pro
     body: JSON.stringify({ model, messages }),
   });
 
-  let r = await makeRequest(config.url, config.key, config.model);
-  if (!r.ok) {
-    // Any provider failure → fall back to Lovable Gateway with the default model.
-    if (config.model !== DEFAULT_LOVABLE_MODEL || config.provider !== 'lovable') {
-      console.warn(`callReviewer: primary provider ${config.provider}/${config.model} failed (${r.status}), retrying with Lovable default`);
-      const fallback = await makeRequest(LOVABLE_GATEWAY, lovableKey, DEFAULT_LOVABLE_MODEL);
-      if (!fallback.ok) {
-        const fallbackText = await fallback.text();
-        throw new Error(`Reviewer LLM failed (${fallback.status}): ${fallbackText.slice(0, 300)}`);
-      }
-      r = fallback;
-    } else {
-      const t = await r.text();
-      throw new Error(`Reviewer LLM failed (${r.status}): ${t.slice(0, 300)}`);
+  const primary = await makeRequest(config.url, config.key, config.model);
+  if (primary.ok) {
+    const data = await primary.json();
+    return data?.choices?.[0]?.message?.content || '';
+  }
+
+  // Primary failed → cycle through valid Lovable Gateway models until one succeeds.
+  const fallbackChain = buildLovableFallbackChain(config.provider, config.model);
+
+  for (const id of fallbackChain) {
+    console.warn(`callReviewer: primary ${config.provider}/${config.model} failed, retrying with Lovable/${id}`);
+    const fb = await makeRequest(LOVABLE_GATEWAY, lovableKey, id);
+    if (fb.ok) {
+      const data = await fb.json();
+      return data?.choices?.[0]?.message?.content || '';
+    }
+    const fbText = await fb.text();
+    if (!isInvalidModelError(fb.status, fbText)) {
+      throw new Error(`Reviewer LLM failed (${fb.status}): ${fbText.slice(0, 300)}`);
     }
   }
-  const data = await r.json();
-  return data?.choices?.[0]?.message?.content || '';
+
+  throw new Error('Reviewer LLM failed: no working Lovable model found');
 }
 
 /* ── Cloud-side tool executors (research + image — done in edge fn) ──── */
