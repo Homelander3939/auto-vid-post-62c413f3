@@ -763,7 +763,8 @@ Open the activity panel on the right if you want to follow the process flow whil
           }
         };
         const handleError = (err: string) => {
-          toast({ title: shouldRunAgent ? 'Local AI Worker Error' : 'LM Studio Error', description: err, variant: 'destructive' });
+          const errorTitle = shouldRunAgent ? 'Local AI Worker Error' : 'LM Studio Error';
+          toast({ title: errorTitle, description: err, variant: 'destructive' });
           setIsLoading(false);
         };
 

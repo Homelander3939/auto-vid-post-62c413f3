@@ -978,7 +978,7 @@ Deno.serve(async (req) => {
   }
   if (config.provider === 'lmstudio' || isLocalUrl(requestedBaseUrl)) {
     return new Response(JSON.stringify({
-      error: 'AI Post Generator runs in the cloud and cannot reach your local LM Studio server. Use a cloud chat provider here, or use AI Chat with LM Studio for local conversations.',
+      error: 'AI Post Generator runs in the cloud and cannot reach your local LM Studio server. Please use a cloud chat provider here, or use AI Chat with LM Studio for local conversations.',
     }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
   const apiKey = config.key;
