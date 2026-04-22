@@ -29,8 +29,8 @@ Automated video uploader for YouTube, TikTok, and Instagram with Telegram notifi
 
 ### One-Click Launcher
 
-1. Clone the repo to `C:\auto-vid-post`
-2. Double-click **`smart-launcher.bat`**
+1. Clone the repo anywhere on your Windows machine
+2. Double-click **`smart-launcher.bat`** from inside the cloned folder
 
 That's it! The launcher will:
 - Pull latest updates from GitHub
@@ -44,8 +44,8 @@ That's it! The launcher will:
 #### 1. Clone and install
 
 ```bash
-git clone <your-repo-url> C:\auto-vid-post
-cd C:\auto-vid-post
+git clone <your-repo-url>
+cd auto-vid-post
 npm install
 ```
 
