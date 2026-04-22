@@ -604,6 +604,37 @@ async function streamLMStudio(messages, supabase, override = {}) {
   return streamResp;
 }
 
+async function callLMStudioJson({ systemPrompt, userPrompt, schema, toolName }, override = {}) {
+  const config = resolveLMStudioConfig(override);
+  try {
+    const resp = await lmFetch('/chat/completions', {
+      model: config.model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      tools: [{ type: 'function', function: { name: toolName, description: 'Return structured output', parameters: schema } }],
+      tool_choice: { type: 'function', function: { name: toolName } },
+    }, config);
+
+    const data = await resp.json();
+    const args = data?.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    const raw = args || data?.choices?.[0]?.message?.content || '{}';
+    return {
+      data: JSON.parse(raw),
+      model: config.model,
+      baseUrl: config.baseUrl,
+    };
+  } catch (e) {
+    const err = new Error(e?.message || 'LM Studio JSON call failed');
+    err.details = {
+      model: config.model,
+      baseUrl: config.baseUrl,
+    };
+    throw err;
+  }
+}
+
 /* ── Process a Telegram AI response command ─── */
 async function processTelegramAIResponse(supabase, args, sendTelegramFn, backend) {
   const chatId = args.chat_id;
@@ -693,6 +724,7 @@ module.exports = {
   getAppContext,
   buildSystemPrompt,
   callLMStudioWithTools,
+  callLMStudioJson,
   streamLMStudio,
   processTelegramAIResponse,
   LM_STUDIO_URL,

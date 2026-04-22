@@ -427,7 +427,7 @@ export type AIStreamEvent =
   | { type: 'image'; imageUrl: string; imagePath: string; credit?: string }
   | { type: 'saved'; id: string; status: string }
   | { type: 'done'; variants: Record<string, PlatformVariant>; sources: AgentSource[]; imageUrl: string | null; imagePath: string | null; provider?: string; model?: string }
-  | { type: 'error'; error: string };
+  | { type: 'error'; error: string; stage?: string; details?: unknown; provider?: string; model?: string };
 
 // Persisted generation job — survives page navigation. The edge function mirrors every
 // SSE event into generation_jobs.events so we can rehydrate the UI on reload.
@@ -567,7 +567,24 @@ export async function generatePostStream(
   });
   if (!resp.ok || !resp.body) {
     let msg = `Stream failed (${resp.status})`;
-    try { const j = await resp.json(); msg = j.error || msg; } catch {}
+    let parsed = false;
+    try {
+      const j = await resp.json();
+      parsed = true;
+      msg = j.error || msg;
+      const detailParts = [
+        j.stage ? `stage=${j.stage}` : '',
+        j.details ? (typeof j.details === 'string' ? j.details : JSON.stringify(j.details)) : '',
+      ].filter(Boolean);
+      const err = new Error(detailParts.length ? `${msg} — ${detailParts.join(' · ')}` : msg);
+      (err as any).stage = j.stage;
+      (err as any).details = j.details;
+      (err as any).provider = j.provider || j.requestedProvider;
+      (err as any).model = j.model;
+      throw err;
+    } catch (e) {
+      if (parsed) throw e;
+    }
     throw new Error(msg);
   }
   const reader = resp.body.getReader();

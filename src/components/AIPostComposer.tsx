@@ -56,6 +56,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
   const [activeTab, setActiveTab] = useState<string>('');
   const [meta, setMeta] = useState<{ provider?: string; model?: string }>({});
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<{ message: string; stage?: string; details?: string } | null>(null);
 
   const { data: aiSettings } = useQuery({ queryKey: ['ai_settings'], queryFn: getAISettings });
   const { data: agentSettings } = useQuery({ queryKey: ['agent_settings'], queryFn: getAgentSettings });
@@ -74,7 +75,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
 
   const resetState = () => {
     setSteps([]); setPlan(null); setLiveSources([]); setTools([]); setVariants({});
-    setSources([]); setImageUrl(null); setImagePath(null); setImageCredit(''); setMeta({});
+    setSources([]); setImageUrl(null); setImagePath(null); setImageCredit(''); setMeta({}); setGenerationError(null);
   };
 
   // Consume a single AIStreamEvent — used both for live SSE and replay from generation_jobs.events
@@ -100,6 +101,10 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
       setMeta({ provider: e.provider, model: e.model });
     }
     else if (e.type === 'error') {
+      const detailText = e.details
+        ? (typeof e.details === 'string' ? e.details : JSON.stringify(e.details, null, 2))
+        : undefined;
+      setGenerationError({ message: e.error, stage: e.stage, details: detailText });
       toast({ title: 'AI generation failed', description: e.error, variant: 'destructive' });
     }
   };
@@ -131,6 +136,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
           if (job.status === 'completed') {
             try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
           } else if (job.status === 'failed' && job.error) {
+            setGenerationError({ message: job.error });
             toast({ title: 'Previous generation failed', description: job.error, variant: 'destructive' });
             try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
           }
@@ -168,6 +174,10 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
     try {
       await generatePostStream({ prompt, platforms, includeImage }, consumeEvent, undefined, aiOverride);
     } catch (e: any) {
+      const detailText = e?.details
+        ? (typeof e.details === 'string' ? e.details : JSON.stringify(e.details, null, 2))
+        : undefined;
+      setGenerationError({ message: e.message, stage: e.stage, details: detailText });
       toast({ title: 'AI generation failed', description: e.message, variant: 'destructive' });
     } finally {
       setLoading(false);
@@ -334,6 +344,19 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
                 </li>
               ))}
             </ol>
+          </div>
+        )}
+
+        {generationError && (
+          <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-wider text-destructive">Failure details</div>
+            <div className="text-sm text-destructive font-medium">{generationError.message}</div>
+            {generationError.stage && (
+              <div className="text-xs text-muted-foreground">Stage: <span className="font-mono">{generationError.stage}</span></div>
+            )}
+            {generationError.details && (
+              <pre className="text-[11px] whitespace-pre-wrap break-words rounded bg-background/70 p-2 border">{generationError.details}</pre>
+            )}
           </div>
         )}
 

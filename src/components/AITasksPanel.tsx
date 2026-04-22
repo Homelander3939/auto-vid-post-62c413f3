@@ -28,7 +28,7 @@ async function listRecentCommands(): Promise<PendingCommand[]> {
   const { data } = await (supabase as any)
     .from('pending_commands')
     .select('*')
-    .in('command', ['research_search', 'image_search', 'open_browser', 'check_stats'])
+    .in('command', ['research_search', 'image_search', 'open_browser', 'check_stats', 'lmstudio_chat_json'])
     .order('created_at', { ascending: false })
     .limit(8);
   return (data || []) as PendingCommand[];
@@ -39,12 +39,14 @@ const COMMAND_ICONS: Record<string, any> = {
   image_search: ImageIcon,
   open_browser: Globe,
   check_stats: Hash,
+  lmstudio_chat_json: Cpu,
 };
 const COMMAND_LABELS: Record<string, string> = {
   research_search: 'Web research',
   image_search: 'Image search',
   open_browser: 'Browser task',
   check_stats: 'Stats check',
+  lmstudio_chat_json: 'LM Studio JSON stage',
 };
 const AGENT_RUN_RECENT_EVENT_TYPES = ['tool_call', 'tool_result', 'thought', 'error', 'review', 'phase', 'finish'];
 const AGENT_RUN_RECENT_EVENT_LIMIT = 8;
@@ -176,7 +178,7 @@ function CommandRow({ cmd, onDelete }: { cmd: PendingCommand; onDelete: (id: str
     if (cmd.result) {
       const parsed = JSON.parse(cmd.result);
       if (Array.isArray(parsed?.results)) resultCount = parsed.results.length;
-      resultPreview = parsed?.results?.[0]?.title || cmd.result.slice(0, 80);
+      resultPreview = parsed?.results?.[0]?.title || parsed?.stage || parsed?.error || cmd.result.slice(0, 80);
     }
   } catch { resultPreview = cmd.result?.slice(0, 80) || ''; }
 
@@ -202,6 +204,11 @@ function CommandRow({ cmd, onDelete }: { cmd: PendingCommand; onDelete: (id: str
             </div>
             {cmd.args?.query && (
               <p className="text-xs text-muted-foreground line-clamp-1">"{cmd.args.query}"</p>
+            )}
+            {!cmd.args?.query && cmd.args?.stage && (
+              <p className="text-xs text-muted-foreground line-clamp-1">
+                stage={cmd.args.stage}{cmd.args?.model ? ` · ${cmd.args.model}` : ''}
+              </p>
             )}
             {resultPreview && cmd.status === 'completed' && (
               <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">→ {resultPreview}</p>
