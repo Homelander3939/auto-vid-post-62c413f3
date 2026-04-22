@@ -11,6 +11,9 @@ const AI_GATEWAY = LOVABLE_GATEWAY;
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 const DIRECT_TOOL_REPLY_NAMES = new Set(['generate_social_post', 'research_web', 'check_platform_stats', 'open_browser', 'run_agent']);
 
+// Models that natively understand image inputs. Anything else triggers a vision fallback to Lovable.
+const VISION_CAPABLE_MODEL_RE = /(gemini|gpt-4o|gpt-5|gpt-4-vision|claude-3|llama-3\.2-vision|llava|pixtral)/i;
+
 /* ── Tool definitions (full agentic surface) ─────────── */
 
 const tools = [
@@ -229,6 +232,24 @@ const tools = [
           task: { type: 'string', description: 'The full task description, verbatim from the user.' },
         },
         required: ['task'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'remember_fact',
+      description: 'Save a durable, reusable memory the assistant should remember across all future chats (preferences, stable facts, account info, workflows). Only call when the user explicitly says to remember something or shares a clearly reusable preference.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          content: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          memory_type: { type: 'string', enum: ['fact', 'workflow', 'preference', 'subtask'] },
+          importance: { type: 'number', minimum: 1, maximum: 100 },
+        },
+        required: ['title', 'content'],
       },
     },
   },
@@ -528,6 +549,19 @@ async function executeTool(
       } catch (e) {
         return `❌ Agent start failed: ${(e as Error).message}`;
       }
+    }
+    case 'remember_fact': {
+      const payload = {
+        title: String(args.title || '').trim(),
+        content: String(args.content || '').trim(),
+        memory_type: String(args.memory_type || 'fact'),
+        tags: Array.isArray(args.tags) ? args.tags.map((t: any) => String(t).trim()).filter(Boolean) : [],
+        importance: Math.min(Math.max(Number(args.importance) || 60, 1), 100),
+      };
+      if (!payload.title || !payload.content) return '❌ Memory needs title and content.';
+      const { error } = await supabase.from('agent_memories').insert(payload);
+      if (error) return `❌ Failed to save memory: ${error.message}`;
+      return `🧠 Saved memory: "${payload.title}".`;
     }
     default:
       return `Unknown tool: ${name}`;

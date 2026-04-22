@@ -260,12 +260,12 @@ export default function AgentSkills() {
         : [];
     } catch { /* */ }
     const slug = draft.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) + '-' + Date.now().toString(36);
-    const { error } = await supabase.from('agent_skills').insert({
+    const { error } = await (supabase.from('agent_skills') as any).insert({
       name: draft.name,
       slug,
       description: draft.description,
       source: 'manual',
-      triggers: draft.triggers.split(',').map((t) => t.trim()).filter(Boolean),
+      triggers: draft.triggers.split(',').map((t: string) => t.trim()).filter(Boolean),
       system_prompt: draft.system_prompt,
       steps: parsedSteps,
     });
