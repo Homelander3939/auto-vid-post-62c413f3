@@ -550,6 +550,19 @@ async function executeTool(
         return `❌ Agent start failed: ${(e as Error).message}`;
       }
     }
+    case 'remember_fact': {
+      const payload = {
+        title: String(args.title || '').trim(),
+        content: String(args.content || '').trim(),
+        memory_type: String(args.memory_type || 'fact'),
+        tags: Array.isArray(args.tags) ? args.tags.map((t: any) => String(t).trim()).filter(Boolean) : [],
+        importance: Math.min(Math.max(Number(args.importance) || 60, 1), 100),
+      };
+      if (!payload.title || !payload.content) return '❌ Memory needs title and content.';
+      const { error } = await supabase.from('agent_memories').insert(payload);
+      if (error) return `❌ Failed to save memory: ${error.message}`;
+      return `🧠 Saved memory: "${payload.title}".`;
+    }
     default:
       return `Unknown tool: ${name}`;
   }
