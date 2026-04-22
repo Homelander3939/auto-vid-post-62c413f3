@@ -235,6 +235,24 @@ const tools = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'remember_fact',
+      description: 'Save a durable, reusable memory the assistant should remember across all future chats (preferences, stable facts, account info, workflows). Only call when the user explicitly says to remember something or shares a clearly reusable preference.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          content: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          memory_type: { type: 'string', enum: ['fact', 'workflow', 'preference', 'subtask'] },
+          importance: { type: 'number', minimum: 1, maximum: 100 },
+        },
+        required: ['title', 'content'],
+      },
+    },
+  },
 ];
 
 /* ── Tool executor ────────────────────────────────────── */
