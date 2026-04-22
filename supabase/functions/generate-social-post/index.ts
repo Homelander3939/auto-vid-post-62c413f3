@@ -67,6 +67,23 @@ function truncateText(s: string, n: number): string {
   return t.length > n ? t.slice(0, Math.max(1, n - 1)).trimEnd() + '…' : t;
 }
 
+function isLocalUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.toLowerCase();
+    return (
+      h === 'localhost' ||
+      h === '127.0.0.1' ||
+      h === '::1' ||
+      h.startsWith('192.168.') ||
+      h.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(h)
+    );
+  } catch {
+    return false;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 // Telegram notify — mirrors the video-upload notification pattern
 // so the user gets a generated-post preview (image + description +
@@ -949,14 +966,20 @@ Deno.serve(async (req) => {
   // (e.g. ai_base_url not yet migrated). Client values take precedence so that
   // LM Studio (and other local providers) work even before the migration runs.
   const ov = body.aiOverride || {};
+  const requestedBaseUrl = String(ov.baseUrl ?? s.ai_base_url ?? '');
   const config = resolveChatProviderConfig({
     provider: ov.provider ?? s.ai_provider,
     apiKey: ov.apiKey ?? s.ai_api_key,
     model: ov.model ?? s.ai_model,
-    baseUrl: ov.baseUrl ?? s.ai_base_url,
+    baseUrl: requestedBaseUrl,
   }, Deno.env.get('LOVABLE_API_KEY') || '');
   if (config.fallbackReason) {
     console.warn('generate-social-post provider fallback:', config.fallbackReason);
+  }
+  if (config.provider === 'lmstudio' || isLocalUrl(requestedBaseUrl)) {
+    return new Response(JSON.stringify({
+      error: 'AI Post Generator runs in the cloud and cannot reach your local LM Studio server. Please use a cloud chat provider here, or use AI Chat with LM Studio for local conversations.',
+    }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
   const apiKey = config.key;
   if (!apiKey) {

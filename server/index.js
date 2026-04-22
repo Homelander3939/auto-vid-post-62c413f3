@@ -930,13 +930,25 @@ app.post('/api/check-all-stats', async (req, res) => {
 // --- AI Chat endpoint (uses LM Studio locally instead of cloud AI) ---
 app.post('/api/ai-chat', async (req, res) => {
   try {
-    const { messages } = req.body || {};
+    const { messages, aiSettings } = req.body || {};
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array is required' });
     }
 
+    const { data: appSettings } = await supabase
+      .from('app_settings')
+      .select('ai_base_url, ai_api_key, ai_model')
+      .eq('id', 1)
+      .single();
+
+    const lmStudioConfig = {
+      baseUrl: appSettings?.ai_base_url,
+      apiKey: aiSettings?.apiKey || appSettings?.ai_api_key,
+      model: aiSettings?.model || appSettings?.ai_model,
+    };
+
     // Stream response from LM Studio
-    const streamResp = await streamLMStudio(messages, supabase);
+    const streamResp = await streamLMStudio(messages, supabase, lmStudioConfig);
     if (!streamResp.ok) {
       const errText = await streamResp.text().catch(() => '');
       console.error('[AI-Chat] LM Studio error:', streamResp.status, errText);

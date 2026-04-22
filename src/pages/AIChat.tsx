@@ -13,7 +13,7 @@ import { supabase } from '@/integrations/supabase/client';
 import ReactMarkdown from 'react-markdown';
 import AgentRunPanel from '@/components/AgentRunPanel';
 import { buildAgentRunPrompt, shouldLaunchAgentRun } from '@/lib/agentChat';
-import { getAISettings } from '@/lib/socialPosts';
+import { getAISettings, getAgentSettings } from '@/lib/socialPosts';
 
 /* ── Types ───────────────────────────────────────────── */
 
@@ -210,7 +210,17 @@ async function streamChatLocal({
     return;
   }
 
-  if (!resp.body) { onError('No response stream from LM Studio'); return; }
+  await consumeOpenAICompatStream(resp, onDelta, onDone, onError, 'LM Studio');
+}
+
+async function consumeOpenAICompatStream(
+  resp: Response,
+  onDelta: (text: string) => void,
+  onDone: () => void,
+  onError: (err: string) => void,
+  sourceLabel: string,
+) {
+  if (!resp.body) { onError(`No response stream from ${sourceLabel}`); return; }
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
@@ -241,6 +251,43 @@ async function streamChatLocal({
     }
   }
   onDone();
+}
+
+async function streamChatViaLocalWorker({
+  serverUrl,
+  aiSettings,
+  messages,
+  onDelta,
+  onDone,
+  onError,
+}: {
+  serverUrl: string;
+  aiSettings: { apiKey?: string; model?: string };
+  messages: ChatContextMessage[];
+  onDelta: (text: string) => void;
+  onDone: () => void;
+  onError: (err: string) => void;
+}) {
+  const endpoint = `${serverUrl.replace(/\/+$/, '')}/api/ai-chat`;
+  let resp: Response;
+  try {
+    resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, aiSettings }),
+    });
+  } catch (err) {
+    onError(`Cannot reach the local AI worker at ${serverUrl}. Make sure the local server is running.`);
+    return;
+  }
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    onError(`Local AI worker error ${resp.status}: ${text.slice(0, 200) || 'Request failed'}`);
+    return;
+  }
+
+  await consumeOpenAICompatStream(resp, onDelta, onDone, onError, 'local AI worker');
 }
 
 
@@ -345,6 +392,10 @@ export default function AIChat() {
   const { data: aiSettings } = useQuery({
     queryKey: ['ai_settings'],
     queryFn: getAISettings,
+  });
+  const { data: agentSettings } = useQuery({
+    queryKey: ['agent_settings'],
+    queryFn: getAgentSettings,
   });
 
   useEffect(() => {
@@ -644,11 +695,22 @@ export default function AIChat() {
     if (otherFiles.length > 0) newMsg.files = otherFiles.map((f) => ({ name: f.name, type: f.type, size: f.size, textContent: f.textContent }));
     contextMsgs.push(newMsg);
 
-    if (shouldLaunchAgentRun(text, pendingFiles)) {
+    const shouldRunAgent = shouldLaunchAgentRun(text, pendingFiles);
+    const isLmStudio = aiSettings?.provider === 'lmstudio' && !!aiSettings?.baseUrl;
+
+    if (shouldRunAgent && !isLmStudio) {
       try {
         const agentPrompt = buildAgentRunPrompt(text, pendingFiles);
+        const aiOverride = aiSettings
+          ? {
+              provider: aiSettings.provider || undefined,
+              apiKey: aiSettings.apiKey || undefined,
+              model: aiSettings.model || undefined,
+              baseUrl: aiSettings.baseUrl || undefined,
+            }
+          : undefined;
         const { data, error } = await supabase.functions.invoke('agent-run', {
-          body: { prompt: agentPrompt, source: 'ai-chat' },
+          body: { prompt: agentPrompt, source: 'ai-chat', ...(aiOverride ? { aiOverride } : {}) },
         });
         if (error || data?.error || !data?.runId) {
           throw new Error(data?.error || error?.message || 'Agent run did not start');
@@ -687,33 +749,48 @@ Open the activity panel on the right if you want to follow the process flow whil
     }
 
     try {
-      // When LM Studio (a local server) is configured, call it directly from the browser.
-      // Edge functions run in the cloud and cannot reach localhost, so we bypass them here.
-      const isLmStudio = aiSettings?.provider === 'lmstudio' && !!aiSettings?.baseUrl;
       if (isLmStudio) {
-        await streamChatLocal({
-          baseUrl: aiSettings!.baseUrl,
-          apiKey: aiSettings!.apiKey || 'lm-studio',
-          model: aiSettings!.model || '',
-          messages: contextMsgs,
-          onDelta: upsert,
-          onDone: () => {
-            setIsLoading(false);
-            setAppMessages((prev) =>
-              prev.map((m, i) =>
-                i === prev.length - 1 && m.role === 'assistant' && !m.timestamp
-                  ? { ...m, timestamp: new Date().toISOString() } : m
-              )
-            );
-            if (telegramEnabled && resolvedChatId && assistantSoFar.trim()) {
-              void mirrorBrowserMessage('AI', assistantSoFar);
-            }
-          },
-          onError: (err) => {
-            toast({ title: 'LM Studio Error', description: err, variant: 'destructive' });
-            setIsLoading(false);
-          },
-        });
+        const handleDone = () => {
+          setIsLoading(false);
+          setAppMessages((prev) =>
+            prev.map((m, i) =>
+              i === prev.length - 1 && m.role === 'assistant' && !m.timestamp
+                ? { ...m, timestamp: new Date().toISOString() } : m
+            )
+          );
+          if (telegramEnabled && resolvedChatId && assistantSoFar.trim()) {
+            void mirrorBrowserMessage('AI', assistantSoFar);
+          }
+        };
+        const handleError = (err: string) => {
+          const errorTitle = shouldRunAgent ? 'Local AI Worker Error' : 'LM Studio Error';
+          toast({ title: errorTitle, description: err, variant: 'destructive' });
+          setIsLoading(false);
+        };
+
+        if (shouldRunAgent) {
+          await streamChatViaLocalWorker({
+            serverUrl: agentSettings?.localAgentUrl || 'http://localhost:3001',
+            aiSettings: {
+              apiKey: aiSettings!.apiKey || 'lm-studio',
+              model: aiSettings!.model || undefined,
+            },
+            messages: contextMsgs,
+            onDelta: upsert,
+            onDone: handleDone,
+            onError: handleError,
+          });
+        } else {
+          await streamChatLocal({
+            baseUrl: aiSettings!.baseUrl,
+            apiKey: aiSettings!.apiKey || 'lm-studio',
+            model: aiSettings!.model || '',
+            messages: contextMsgs,
+            onDelta: upsert,
+            onDone: handleDone,
+            onError: handleError,
+          });
+        }
       } else {
         await streamChat({
           messages: contextMsgs,

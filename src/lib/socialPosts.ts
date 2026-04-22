@@ -152,17 +152,32 @@ interface AISettingsCache {
   baseUrl: string;
 }
 
+function getCachedAISettings(): Partial<AISettingsCache> {
+  try {
+    const raw = localStorage.getItem(AI_SETTINGS_LS_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+export function cacheAISettingsDraft(settings: Pick<AISettings, 'provider' | 'model' | 'baseUrl'>): void {
+  const cache: AISettingsCache = {
+    provider: String(settings.provider || 'lovable').trim() || 'lovable',
+    model: String(settings.model || '').trim(),
+    baseUrl: String(settings.baseUrl || '').trim(),
+  };
+  try { localStorage.setItem(AI_SETTINGS_LS_KEY, JSON.stringify(cache)); } catch { /* ignore */ }
+}
+
 export async function getAISettings(): Promise<AISettings> {
   const { data } = await supabase.from('app_settings').select('*').eq('id', 1).single();
   const row = (data || {}) as any;
 
   // Read localStorage fallback — used when the DB is missing a column (e.g.
   // ai_base_url before the migration is applied).
-  let ls: Partial<AISettingsCache> = {};
-  try {
-    const raw = localStorage.getItem(AI_SETTINGS_LS_KEY);
-    if (raw) ls = JSON.parse(raw);
-  } catch { /* ignore */ }
+  const ls = getCachedAISettings();
 
   const dbProvider: string = row.ai_provider || '';
   const provider = dbProvider || ls.provider || 'lovable';
@@ -173,12 +188,19 @@ export async function getAISettings(): Promise<AISettings> {
   // We check ls.provider (not the resolved `provider`) to avoid applying a
   // cached LM Studio URL when the provider has changed in the DB.
   const lsProviderMatches = !!ls.provider && ls.provider === provider;
-  const baseUrl = dbBaseUrl || (lsProviderMatches ? (ls.baseUrl || '') : '');
+  const dbModel: string = row.ai_model || '';
+  // Non-Lovable providers either require an explicit user-picked model (LM Studio)
+  // or use their own server-side default when the saved model is blank.
+  const fallbackModel = provider === 'lovable' ? 'google/gemini-3-flash-preview' : '';
+  const cachedModel = lsProviderMatches ? (ls.model || '') : '';
+  const cachedBaseUrl = lsProviderMatches ? (ls.baseUrl || '') : '';
+  const model = dbModel || cachedModel || fallbackModel;
+  const baseUrl = dbBaseUrl || cachedBaseUrl;
 
   return {
     provider,
     apiKey: row.ai_api_key || '',
-    model: row.ai_model || ls.model || 'google/gemini-3-flash-preview',
+    model,
     baseUrl,
   };
 }
@@ -187,8 +209,7 @@ export async function saveAISettings(s: AISettings): Promise<void> {
   // Persist non-sensitive fields to localStorage so the UI stays consistent
   // even if the DB column is missing and gets silently dropped.
   // API key is deliberately excluded — it remains DB-only.
-  const cache: AISettingsCache = { provider: s.provider, model: s.model, baseUrl: s.baseUrl || '' };
-  try { localStorage.setItem(AI_SETTINGS_LS_KEY, JSON.stringify(cache)); } catch { /* ignore */ }
+  cacheAISettingsDraft(s);
   await updateAppSettingsCompat({
     ai_provider: s.provider,
     ai_api_key: s.apiKey,

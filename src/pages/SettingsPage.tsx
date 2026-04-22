@@ -15,7 +15,7 @@ import { openLocalBrowserProfileSession } from '@/lib/localBrowserProfiles';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import SocialAccountCard from '@/components/SocialAccountCard';
 import ImageFallbackKeyRow from '@/components/ImageFallbackKeyRow';
-import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, listLMStudioModels, testAIConnection, testLMStudioConnection, testAgentConnection, testComfyUIConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, detectProviderFromKey, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption, type ImageKeyEntry } from '@/lib/socialPosts';
+import { getSocialAccounts, getAISettings, saveAISettings, listAIModels, listLMStudioModels, testAIConnection, testLMStudioConnection, testAgentConnection, testComfyUIConnection, listImageModels, SOCIAL_PLATFORMS, getAgentSettings, saveAgentSettings, detectProviderFromKey, cacheAISettingsDraft, type AISettings, type AIModel, type ConnectionTestResult, type AgentSettings, type ImageModelOption, type ImageKeyEntry } from '@/lib/socialPosts';
 import { Search as SearchIcon, Image as ImageIcon, Bot, Loader2, CheckCircle2, XCircle, ExternalLink } from 'lucide-react';
 
 function PasswordInput({
@@ -480,12 +480,20 @@ export default function SettingsPage() {
     setLoadingModels(true);
     setModelsError(null);
     try {
+      let models: AIModel[] = [];
       if (provider === 'lmstudio') {
-        const models = await listLMStudioModels(baseUrl || aiSettings.baseUrl || '', apiKey);
-        setAiModels(models);
+        models = await listLMStudioModels(baseUrl || aiSettings.baseUrl || '', apiKey);
       } else {
-        const models = await listAIModels(provider, apiKey);
-        setAiModels(models);
+        models = await listAIModels(provider, apiKey);
+      }
+      setAiModels(models);
+      if (models.length > 0) {
+        setAiSettings((current) => {
+          if (current.provider !== provider) return current;
+          const hasCurrentModel = !!current.model && models.some((m) => m.id === current.model);
+          if (hasCurrentModel) return current;
+          return { ...current, model: models[0].id };
+        });
       }
     } catch (e: any) {
       setModelsError(e.message || 'Failed to load models');
@@ -525,6 +533,10 @@ export default function SettingsPage() {
   }, [savedAi]);
 
   useEffect(() => {
+    cacheAISettingsDraft(aiSettings);
+  }, [aiSettings.provider, aiSettings.model, aiSettings.baseUrl]);
+
+  useEffect(() => {
     if (savedAgent) setAgentSettings(savedAgent);
   }, [savedAgent]);
 
@@ -555,7 +567,7 @@ export default function SettingsPage() {
       setModelsError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiSettings.provider]);
+  }, [aiSettings.provider, aiSettings.apiKey, aiSettings.baseUrl]);
 
   const refreshAccounts = () => {
     queryClient.invalidateQueries({ queryKey: ['platform_accounts'] });
