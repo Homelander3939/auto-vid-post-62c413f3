@@ -41,6 +41,15 @@ const LOCAL_LM_STUDIO_DEFAULT_TIMEOUT_MS = 90_000;
 const LOCAL_LM_STUDIO_MIN_TIMEOUT_MS = 10_000;
 const LOCAL_LM_STUDIO_MAX_TIMEOUT_MS = 180_000;
 
+function parseLocalLlmCommandResult(raw: string | null, logLabel: string): LocalLlmCommandResult {
+  try {
+    return JSON.parse(raw || '{}');
+  } catch (parseError) {
+    console.warn(`${logLabel}:`, parseError);
+    return {};
+  }
+}
+
 const PLATFORM_RULES: Record<string, string> = {
   x: 'X (Twitter): MAX 270 chars total INCLUDING hashtags. Hook in first 7 words. Punchy, scroll-stopping. 1-3 hashtags max, integrated naturally. No emoji-spam (1-2 max).',
   facebook: 'Facebook: 80-300 words. Conversational, story-driven, like talking to a friend. Use line breaks for readability. Hashtags optional at the end (3-6). Emojis OK but tasteful.',
@@ -526,9 +535,7 @@ async function callLocalLmStudioJsonViaCommand(
       .single();
     if (!row) continue;
     if (row.status === 'completed') {
-      let parsed: LocalLlmCommandResult = {};
-      try { parsed = JSON.parse(row.result || '{}'); }
-      catch (parseError) { console.warn('LM Studio completed result parse failed:', parseError); }
+      const parsed = parseLocalLlmCommandResult(row.result, 'LM Studio completed result parse failed');
       if (parsed?.ok === false) {
         const err = new Error(parsed.error || `LM Studio ${opts.stage} failed`);
         (err as any).details = parsed.details;
@@ -537,9 +544,7 @@ async function callLocalLmStudioJsonViaCommand(
       return parsed?.data ?? {};
     }
     if (row.status === 'failed') {
-      let parsed: LocalLlmCommandResult = {};
-      try { parsed = JSON.parse(row.result || '{}'); }
-      catch (parseError) { console.warn('LM Studio failed result parse failed:', parseError); }
+      const parsed = parseLocalLlmCommandResult(row.result, 'LM Studio failed result parse failed');
       const err = new Error(parsed.error || row.result || `LM Studio ${opts.stage} failed`);
       (err as any).details = parsed.details;
       throw err;
@@ -1052,7 +1057,7 @@ Deno.serve(async (req) => {
   // (e.g. ai_base_url not yet migrated). Client values take precedence so that
   // LM Studio (and other local providers) work even before the migration runs.
   const ov = body.aiOverride || {};
-  const requestedBaseUrl = String(ov.baseUrl ?? s.ai_base_url ?? '');
+  const requestedBaseUrl = String(ov.baseUrl ?? s.ai_base_url ?? '').trim();
   const requestedProvider = String(ov.provider ?? s.ai_provider ?? 'lovable').trim().toLowerCase() || 'lovable';
   const config = resolveChatProviderConfig({
     provider: requestedProvider,

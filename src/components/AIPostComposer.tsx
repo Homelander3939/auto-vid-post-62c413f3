@@ -44,6 +44,27 @@ function formatGenerationErrorDetails(details: unknown): string | undefined {
   return typeof details === 'string' ? details : JSON.stringify(details, null, 2);
 }
 
+function setStoredActiveJobId(jobId: string | null) {
+  try {
+    if (jobId) localStorage.setItem(ACTIVE_JOB_KEY, jobId);
+    else localStorage.removeItem(ACTIVE_JOB_KEY);
+  } catch {
+    // Ignore localStorage failures in private mode / restricted browsers.
+  }
+}
+
+function getStoredActiveJobId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_JOB_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error || 'Unknown error');
+}
+
 export default function AIPostComposer({ platforms, onUse }: Props) {
   const { toast } = useToast();
   const [prompt, setPrompt] = useState('');
@@ -85,12 +106,12 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
 
   // Consume a single AIStreamEvent — used both for live SSE and replay from generation_jobs.events
   const consumeEvent = (e: AIStreamEvent) => {
-    if (e.type === 'job') { setActiveJobId(e.id); try { localStorage.setItem(ACTIVE_JOB_KEY, e.id); } catch {} }
+    if (e.type === 'job') { setActiveJobId(e.id); setStoredActiveJobId(e.id); }
     else if (e.type === 'step') upsertStep({ id: e.id, emoji: e.emoji, label: e.label, status: e.status });
     else if (e.type === 'plan') setPlan({ queries: e.queries, imageStrategy: e.imageStrategy, angle: e.angle });
     else if (e.type === 'source') setLiveSources((s) => {
-      if (s.find((x) => x.url === (e as any).url)) return s;
-      return [...s, { title: (e as any).title, url: (e as any).url, snippet: (e as any).snippet, favicon: (e as any).favicon, publishedAt: (e as any).publishedAt }];
+      if (s.find((x) => x.url === e.url)) return s;
+      return [...s, { title: e.title, url: e.url, snippet: e.snippet, favicon: e.favicon, publishedAt: e.publishedAt }];
     });
     else if (e.type === 'tool') setTools((t) => {
       const key = `${e.kind}:${e.name}:${e.detail || ''}`;
@@ -99,7 +120,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
     });
     else if (e.type === 'variant') setVariants((v) => ({ ...v, [e.platform]: { description: e.description, hashtags: e.hashtags } }));
     else if (e.type === 'sources') setSources(e.sources);
-    else if (e.type === 'image') { setImageUrl(e.imageUrl); setImagePath(e.imagePath); setImageCredit((e as any).credit || ''); }
+    else if (e.type === 'image') { setImageUrl(e.imageUrl); setImagePath(e.imagePath); setImageCredit(e.credit || ''); }
     else if (e.type === 'done') {
       setVariants(e.variants); setSources(e.sources);
       if (e.imageUrl) { setImageUrl(e.imageUrl); setImagePath(e.imagePath); }
@@ -119,8 +140,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
     let pollTimer: number | null = null;
 
     const resume = async () => {
-      let jobId: string | null = null;
-      try { jobId = localStorage.getItem(ACTIVE_JOB_KEY); } catch {}
+      const jobId = getStoredActiveJobId();
       if (!jobId) return;
       const { getGenerationJob } = await import('@/lib/socialPosts');
       const replay = async () => {
@@ -137,11 +157,11 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
         } else {
           setLoading(false);
           if (job.status === 'completed') {
-            try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+            setStoredActiveJobId(null);
           } else if (job.status === 'failed' && job.error) {
             setGenerationError({ message: job.error });
             toast({ title: 'Previous generation failed', description: job.error, variant: 'destructive' });
-            try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+            setStoredActiveJobId(null);
           }
         }
       };
@@ -158,7 +178,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
 
     setLoading(true);
     resetState();
-    try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+    setStoredActiveJobId(null);
     setActiveJobId(null);
 
     // When LM Studio is configured, forward the complete settings in the request
@@ -176,18 +196,19 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
 
     try {
       await generatePostStream({ prompt, platforms, includeImage }, consumeEvent, undefined, aiOverride);
-    } catch (e: any) {
-      const detailText = formatGenerationErrorDetails(e?.details);
-      setGenerationError({ message: e.message, stage: e.stage, details: detailText });
-      toast({ title: 'AI generation failed', description: e.message, variant: 'destructive' });
+    } catch (e: unknown) {
+      const detailText = formatGenerationErrorDetails((e as { details?: unknown })?.details);
+      const message = getErrorMessage(e);
+      setGenerationError({ message, stage: (e as { stage?: string })?.stage, details: detailText });
+      toast({ title: 'AI generation failed', description: message, variant: 'destructive' });
     } finally {
       setLoading(false);
       // Final sweep — clear active job marker once stream ends cleanly.
-      try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+      setStoredActiveJobId(null);
     }
   };
 
-  const useVariant = (platform: string) => {
+  const applyVariant = (platform: string) => {
     const v = variants[platform]; if (!v) return;
     onUse({ description: v.description, hashtags: v.hashtags, variants, imageUrl, imagePath, sources, provider: meta.provider, model: meta.model }, prompt);
     toast({ title: `Loaded ${PLATFORM_LABELS[platform] || platform} variant` });
@@ -421,7 +442,7 @@ export default function AIPostComposer({ platforms, onUse }: Props) {
                       <span className={`text-[11px] ${overLimit ? 'text-destructive font-medium' : 'text-muted-foreground'}`}>
                         {charCount} / {limit} chars
                       </span>
-                      <Button size="sm" onClick={() => useVariant(p)} className="gap-1.5 h-7 text-xs">
+                      <Button size="sm" onClick={() => applyVariant(p)} className="gap-1.5 h-7 text-xs">
                         Use this for {PLATFORM_LABELS[p] || p}
                       </Button>
                     </div>
