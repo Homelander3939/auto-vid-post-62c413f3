@@ -435,7 +435,7 @@ export default function SettingsPage() {
     setTestingImage(true); setImageTest(null);
     try {
       if (agentSettings.imageProvider === 'comfyui') {
-        const r = await testComfyUIConnection(agentSettings.comfyuiBaseUrl || 'http://localhost:8188');
+        const r = await testComfyUIConnection(agentSettings.comfyuiBaseUrl || '');
         setImageTest(r);
         if (r.ok) toast({ title: '✅ ComfyUI connected', description: `${r.sample || 'ComfyUI running'} · ${r.latency}ms` });
         else toast({ title: 'ComfyUI test failed', description: r.error, variant: 'destructive' });
@@ -481,7 +481,7 @@ export default function SettingsPage() {
     setModelsError(null);
     try {
       if (provider === 'lmstudio') {
-        const models = await listLMStudioModels(baseUrl || aiSettings.baseUrl || 'http://localhost:1234/v1', apiKey);
+        const models = await listLMStudioModels(baseUrl || aiSettings.baseUrl || '', apiKey);
         setAiModels(models);
       } else {
         const models = await listAIModels(provider, apiKey);
@@ -501,7 +501,7 @@ export default function SettingsPage() {
     try {
       let r: ConnectionTestResult;
       if (aiSettings.provider === 'lmstudio') {
-        r = await testLMStudioConnection(aiSettings.baseUrl || 'http://localhost:1234/v1', aiSettings.apiKey, aiSettings.model);
+        r = await testLMStudioConnection(aiSettings.baseUrl || '', aiSettings.apiKey, aiSettings.model);
       } else {
         r = await testAIConnection(aiSettings.provider, aiSettings.apiKey, aiSettings.model);
       }
@@ -756,7 +756,7 @@ export default function SettingsPage() {
             <div className="space-y-2">
               <Label className="text-xs flex items-center justify-between">
                 <span>Model</span>
-                {(aiSettings.provider !== 'lovable') && (aiSettings.apiKey || aiSettings.provider === 'lmstudio') && (
+                {(aiSettings.provider !== 'lovable') && (aiSettings.apiKey || (aiSettings.provider === 'lmstudio' && aiSettings.baseUrl)) && (
                   <button
                     type="button"
                     onClick={() => loadModels(aiSettings.provider, aiSettings.apiKey, aiSettings.baseUrl)}
@@ -871,15 +871,25 @@ export default function SettingsPage() {
               <Check className="w-3.5 h-3.5" />
               {savingAI ? 'Saving…' : 'Save AI Settings'}
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleTestConnection}
-              disabled={testing || !aiSettings.model || (aiSettings.provider !== 'lovable' && aiSettings.provider !== 'lmstudio' && !aiSettings.apiKey) || (aiSettings.provider === 'lmstudio' && !aiSettings.baseUrl)}
-              className="gap-1.5"
-            >
-              {testing ? '⏳ Testing…' : '🔌 Test connection'}
-            </Button>
+            {/* Compute disabled state for Test connection */}
+            {(() => {
+              const isLmStudio = aiSettings.provider === 'lmstudio';
+              const isLovable = aiSettings.provider === 'lovable';
+              const needsApiKey = !isLovable && !isLmStudio && !aiSettings.apiKey;
+              const needsBaseUrl = isLmStudio && !aiSettings.baseUrl;
+              const testDisabled = testing || !aiSettings.model || needsApiKey || needsBaseUrl;
+              return (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleTestConnection}
+                  disabled={testDisabled}
+                  className="gap-1.5"
+                >
+                  {testing ? '⏳ Testing…' : '🔌 Test connection'}
+                </Button>
+              );
+            })()}
             {testResult && (
               testResult.ok ? (
                 <Badge className="gap-1 bg-emerald-500/15 text-emerald-700 border-emerald-500/30 hover:bg-emerald-500/15">

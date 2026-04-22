@@ -541,10 +541,13 @@ export async function listAIModels(provider: string, apiKey: string): Promise<AI
   return (data.models || []) as AIModel[];
 }
 
+const LM_STUDIO_DEFAULT_URL = 'http://localhost:1234/v1';
+const LM_STUDIO_DEFAULT_KEY = 'lm-studio';
+
 // Direct browser-side call to LM Studio (OpenAI-compatible). Bypasses edge functions so
 // it works with localhost:1234 — the browser can reach it even though cloud functions cannot.
 export async function listLMStudioModels(baseUrl: string, apiKey: string): Promise<AIModel[]> {
-  const url = `${(baseUrl || 'http://localhost:1234/v1').replace(/\/+$/, '')}/models`;
+  const url = `${(baseUrl || LM_STUDIO_DEFAULT_URL).replace(/\/+$/, '')}/models`;
   const headers: Record<string, string> = {};
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
   const resp = await fetch(url, { headers });
@@ -563,7 +566,7 @@ export async function testAIConnection(provider: string, apiKey: string, model: 
 
 // Direct browser-side connection test to LM Studio. Works for localhost.
 export async function testLMStudioConnection(baseUrl: string, apiKey: string, model: string): Promise<ConnectionTestResult> {
-  const url = `${(baseUrl || 'http://localhost:1234/v1').replace(/\/+$/, '')}/chat/completions`;
+  const url = `${(baseUrl || LM_STUDIO_DEFAULT_URL).replace(/\/+$/, '')}/chat/completions`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
   const t0 = Date.now();
@@ -585,8 +588,9 @@ export async function testLMStudioConnection(baseUrl: string, apiKey: string, mo
 }
 
 // Direct browser-side connection test to ComfyUI. Works for localhost.
+const COMFYUI_DEFAULT_URL = 'http://localhost:8188';
 export async function testComfyUIConnection(baseUrl: string): Promise<ConnectionTestResult> {
-  const url = `${(baseUrl || 'http://localhost:8188').replace(/\/+$/, '')}/system_stats`;
+  const url = `${(baseUrl || COMFYUI_DEFAULT_URL).replace(/\/+$/, '')}/system_stats`;
   const t0 = Date.now();
   try {
     const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
