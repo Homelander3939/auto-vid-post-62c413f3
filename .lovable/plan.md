@@ -1,108 +1,168 @@
-# Goal
+<final-text>
+Goal: restore a single, reliable AI stack so chat, skills, memory, search, image generation, and agentic flows work together with your configured API keys, without changing video upload or social posting behavior.
 
-Turn the AI Chat (web + Telegram) into a real coding/research **agent** — like Claude Code / Codex — that uses the user's configured **AI model**, **research provider**, and **image model** keys, plus the **local Windows PC** (browser, file system, code preview), to autonomously execute multi-step tasks: deep research, image generation, building small apps, opening browsers, creating/editing files on the local machine, and previewing them.
+1. Lock scope and preserve working subsystems
+- Do not change video upload execution, scheduled uploads, local uploaders, or social post publishing behavior.
+- Treat the current post-generation flow as the known-good reference for provider handling and fallback behavior.
+- Only touch the AI chat, autonomous agent, skills/memory, settings, and the local agent bridge.
 
-Today the chat has tool-calling for upload/post automation only. Research/image/browser tools just queue a single command and reply "results in Telegram in 1-3 min". There is no file system, no code workspace, no live agent loop with visible thinking steps, and the user-configured AI/research/image keys are not actually used as the agent backbone.
+2. Fix the core architecture split that GitHub Copilot introduced
+- The project currently has two competing AI architectures:
+  - the original local-worker/LM Studio design described in project memory and `server/ai-handler.js`
+  - the newer cloud chat + cloud agent path in `src/pages/AIChat.tsx`, `supabase/functions/ai-chat`, and `supabase/functions/agent-run`
+- Unify them under one rule:
+  - normal chat stays lightweight
+  - anything needing tools, memory, search, image generation, file work, shell, browser, or multi-step reasoning must route into the autonomous agent path
+- Replace the brittle frontend-only heuristic (`shouldLaunchAgentRun`) with a backend intent router plus an explicit “Always use agent” toggle in chat.
 
-# What you'll see when this ships
+3. Make model/provider handling consistent everywhere
+- Use one shared provider-resolution layer for:
+  - AI chat
+  - autonomous agent planner/reviewer
+  - connection tests
+  - model listing
+- Enforce save-time validation in Settings so unsupported models like `qwen/qwen3.5-397b-a17b` cannot remain stored for agentic flows.
+- Add a backend migration/self-heal step to normalize existing bad saved model values.
+- Surface fallback reasons in the UI so the user can see when the system is using:
+  - their API key/model
+  - a compatible fallback model
+  - built-in Lovable AI as emergency fallback
+- This directly addresses the logged crash where the autonomous agent tried an unsupported model.
 
-A unified "Agent" experience in **AI Chat** and **Telegram**:
+4. Fix why chat does not behave like the working post-generation AI
+- The post generator already has stronger provider fallback and image-chain handling than chat.
+- The chat function currently has separate logic and also forces built-in models in key places:
+  - image attachments force a built-in vision model
+  - after tool calls, the second-pass reply always switches to the built-in default model
+- Refactor chat so it follows the same provider policy as the working post-generation flow:
+  - use the configured compatible provider/model for the initial reasoning pass
+  - use an explicit capability matrix for tool-calling compatibility
+  - only fallback when required, and record that fallback visibly
+- Keep the post-generation flow behavior unchanged; only reuse its reliable provider patterns.
 
-1. You type: *"Research the top 5 AI video tools this month, then build me a comparison landing page and open it in my browser."*
-2. The agent immediately shows a live **plan** + **streaming step feed** (like Claude Code):
-  ```text
-   🧭 Plan
-  ```
-  1. Research AI video tools (deep web research)
-  2. Generate hero image
-  3. Scaffold landing page (HTML + Tailwind)
-  4. Save to ~/AgentWorkspace/ai-video-tools/
-  5. Open in browser preview
-    ep 1: Researching… (Perplexity · 12 sources found)
-    ep 2: Generating hero image… (Gemini Nano Banana)
-    ep 3: Writing index.html (4.2 KB)
-    ved to C:\Usersyou>\AgentWorkspace\ai-video-tools  
-    ened [http://localhost:3001/agent-preview/ai-video-tools/](http://localhost:3001/agent-preview/ai-video-tools/)
-3. Same feed mirrors to Telegram (compact text + thumbnails).
-4. Output files live in a real folder on your PC and are previewable through the local server.
+5. Fix search API and image generation API integration end-to-end
+- Research/search problems today:
+  - “auto” testing assumes Brave when any key is present, which mis-tests Tavily/Serper/Firecrawl keys
+  - local-browser fallback depends on the local worker but chat does not preflight that dependency clearly
+- Image problems today:
+  - “auto” testing assumes Unsplash when any image key is present, which mis-tests Google/OpenAI/NVIDIA/xAI keys
+  - model loading in auto mode defaults to built-in instead of the user’s actual provider
+- Implement:
+  - correct provider auto-detection everywhere
+  - proper provider-specific test flow
+  - unified image fallback chain in agent-run using the same pattern already proven in post generation
+  - clear local-worker health checks before using local search/browser tools
+- Result: your own keys become the primary path, with deterministic fallback only when necessary.
 
-# How it will work (technical)
+6. Make skills and memory actually participate in chat
+- Right now skills/memory work only inside the autonomous agent run, not in standard chat.
+- Normal chat also only sends browser-local app messages, while Telegram-visible history is mostly visual and not part of the true model context.
+- Fix by:
+  - moving reusable memory/skill retrieval to the backend request router
+  - loading relevant memories and matched skills for every agentic request
+  - allowing chat to promote itself into an agent run whenever memory/skills/tools are needed
+  - storing durable conversation context server-side instead of only localStorage
+  - ensuring cross-channel history is real context, not just merged UI display
+- Keep durable memory strict: only save reusable facts/workflows/preferences, not every reply.
 
-### 1. New "Agent Runner" — replaces single-shot tool calls with a real loop
+7. Strengthen the local agent bridge so agentic flows stop silently degrading
+- The autonomous agent depends on the local worker for:
+  - file reads/writes
+  - shell commands
+  - browser tasks
+  - local search fallback
+  - previews
+- Add explicit backend preflight checks and agent event reporting for:
+  - local worker reachable/unreachable
+  - shell enabled/disabled
+  - workspace path valid/invalid
+  - browser task blocked by safe mode
+- If a local dependency is unavailable, the run should fail with an exact reason in chat and in the activity panel instead of feeling “broken”.
 
-- New edge function `agent-run` and matching local handler `server/agent-runner.js`.
-- Runs an **iterative agent loop** (plan → act → observe → repeat, up to N steps) using the **user's configured AI provider** from `app_settings.ai_provider/ai_api_key/ai_model` (OpenAI, Anthropic, Lovable AI, or LM Studio local). Falls back to Lovable AI if no key.
-- Streams each step (`plan`, `tool_call`, `tool_result`, `thought`, `file_write`, `done`) into a new `agent_runs` table with an `events JSONB[]` column — same pattern already used by `generation_jobs`.
+8. Secure API key handling before relying on your own keys
+- Right now AI/search/image keys are stored in a broadly readable settings table, which is not safe for real API keys.
+- Move sensitive AI/search/image credentials out of public app settings into secure backend-only storage.
+- Keep only non-sensitive selections in settings visible to the app:
+  - provider
+  - model
+  - mode toggles
+  - labels for fallback keys
+- Update chat, agent-run, tests, and the local worker bridge to read real secrets from the secure backend path.
+- This is necessary if you want dependable use of your own keys without exposing them.
 
-### 2. New tools the agent can call
+9. Improve visibility so you can see what path the AI is using
+- Add lightweight diagnostics to chat and settings:
+  - current active provider/model
+  - whether fallback occurred
+  - search provider status
+  - image provider status
+  - local worker status
+  - memory enabled / skills matched
+- This turns “it doesn’t work” into a debuggable visible state.
 
-On top of the existing upload/post tools, add:
+10. Regression coverage and validation
+- Add tests for:
+  - model normalization and fallback
+  - provider auto-detection
+  - agent-run planner/reviewer using configured keys
+  - research/image tool execution
+  - skill import, recall, save, improve
+  - memory recall and memory-off behavior
+  - chat-to-agent routing
+- Validate that unchanged areas still behave the same:
+  - video upload queue
+  - scheduled uploads
+  - local platform uploaders
+  - social post generation/publishing flow
 
+Root causes confirmed from the codebase
+- Chat and post generation use different AI pipelines; post generation is more robust.
+- Standard chat does not truly use the skills/memory system; only autonomous agent runs do.
+- Chat routing into the autonomous agent is heuristic and easy to miss.
+- Search/image “auto” test logic is wrong for many key types.
+- The autonomous agent crashed on an unsupported saved model.
+- Tool-driven chat often falls back to built-in AI even when a custom provider is configured.
+- Local-agent capabilities depend on the local worker, but failure states are not surfaced clearly.
+- Sensitive API keys are currently stored in an unsafe place for real production use.
 
-| Tool                       | Backend                                                                                                                                         | What it does                                                           |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `research_deep`            | uses configured **research_provider** (Perplexity / Firecrawl / Tavily) directly with user's `research_api_key`; falls back to local Playwright | Returns synthesized findings + sources, inline (not async to Telegram) |
-| `generate_image`           | uses configured **image_provider** + `image_api_key` (Gemini, OpenAI, Stability) — picks first working key                                      | Returns image URL, embedded in chat                                    |
-| `write_file`               | local server writes to `~/AgentWorkspace/<project>/<path>`                                                                                      | Confirms path + size                                                   |
-| `read_file` / `list_files` | local server                                                                                                                                    | Returns content/listing                                                |
-| `run_shell`                | local server (allowlisted: `npm`, `node`, `python`, `git`) with confirmation toggle                                                             | Streams stdout                                                         |
-| `open_in_browser`          | local server opens default browser at given URL or local file                                                                                   | Confirms                                                               |
-| `serve_preview`            | local server serves `~/AgentWorkspace/<project>/` at `http://localhost:3001/agent-preview/<project>/`                                           | Returns preview URL                                                    |
-| `scaffold_app`             | helper that combines `write_file` for a Vite/HTML/React starter                                                                                 | Returns project path                                                   |
+Files likely involved
+- Frontend:
+  - `src/pages/AIChat.tsx`
+  - `src/pages/SettingsPage.tsx`
+  - `src/pages/AgentSkills.tsx`
+  - `src/components/AgentRunPanel.tsx`
+  - `src/lib/socialPosts.ts`
+  - `src/lib/agentChat.ts`
+- Backend functions:
+  - `supabase/functions/_shared/ai-provider.ts`
+  - `supabase/functions/ai-chat/index.ts`
+  - `supabase/functions/agent-run/index.ts`
+  - `supabase/functions/test-ai-connection/index.ts`
+  - `supabase/functions/test-agent-connection/index.ts`
+  - `supabase/functions/list-ai-models/index.ts`
+  - `supabase/functions/list-image-models/index.ts`
+- Local worker:
+  - `server/index.js`
+  - `server/agentWorkspace.js`
+- Database/backend config:
+  - settings + agent memory/skills/agent run storage
+  - a new secure credential storage layer
+  - one migration to sanitize invalid saved model values
 
+Explicit no-touch areas
+- `server/uploaders/*`
+- video upload processing flow
+- scheduled upload execution
+- social post publishing behavior
+- the working social post generation output logic, except reusing its provider/fallback patterns where safe and behavior-neutral
 
-Cloud mode keeps `research_deep`, `generate_image`, and queued `open_browser` (file/shell tools require local server — when local is offline the chat tells the user clearly).
-
-### 3. Live "thinking" UI in AI Chat
-
-Rebuild the message renderer to show, inside the assistant bubble:
-
-- A collapsible **Plan** panel (numbered steps with status dots).
-- A **live activity feed** (one line per tool call: emoji + label + spinner → check/cross + duration).
-- Inline **rich results**: image thumbnails for `generate_image`, source cards for `research_deep`, a code block + "Open preview" button for `write_file`/`serve_preview`.
-- Subscribes to `agent_runs` via Supabase Realtime so steps appear immediately, not after the full reply.
-
-### 4. Telegram parity
-
-The Telegram bot taps the same `agent-run` function. It posts a single status message and **edits it in place** as steps complete (Telegram `editMessageText`), so users see the same live progression in chat. Final artifacts (images, preview URL, file list) are sent as follow-up messages.
-
-### 5. Local "Agent Workspace" on the Windows PC
-
-- New folder `server/data/agent-workspace/` (auto-created), exposed via:
-  - `POST /api/agent/file` (read/write/list)
-  - `POST /api/agent/shell` (allowlisted commands)
-  - `POST /api/agent/open` (opens URL/file in default browser)
-  - `GET  /agent-preview/<project>/*` (static file server)
-- Each agent run gets its own subfolder (slugified from prompt) so projects don't collide.
-- Settings page gets a small "Agent Workspace" section showing the path, a "Open folder" button, and a master toggle for `run_shell`.
-
-### 6. Database
-
-One new migration:
-
-- `agent_runs` — `id`, `prompt`, `status`, `events JSONB[]`, `model`, `workspace_path`, `created_at`, `completed_at`.
-- Add `agent_shell_enabled BOOLEAN DEFAULT false` to `app_settings`.
-- RLS: same pattern as `generation_jobs` (open to authenticated, service-role writes).
-
-### 7. Wiring the user's keys
-
-- The agent loop reads `app_settings` once per run and builds a **provider map**: `chat → ai_provider/key/model`, `research → research_provider/key`, `image → first working image_keys entry`.
-- Each tool dispatches through that map so the user's keys are genuinely used; no silent fallback to Lovable AI unless a key is missing or returns 401/402 (and then the chat says so explicitly).
-
-### 8. Files touched
-
-- **New**: `supabase/functions/agent-run/index.ts`, `server/agent-runner.js`, `server/agentWorkspace.js`, `src/components/AgentRunPanel.tsx`, migration file.
-- **Edited**: `supabase/functions/ai-chat/index.ts` (delegates complex/multi-step prompts to `agent-run` instead of single tool calls), `src/pages/AIChat.tsx` (renders `AgentRunPanel` inline), `server/index.js` (mounts new endpoints + polls `agent_runs` for local-side tools), `src/pages/SettingsPage.tsx` (workspace section + shell toggle), `src/lib/socialPosts.ts` (helper to read provider map).
-- **Untouched**: existing video upload, scheduling, campaigns, social-post generation flows — all keep working exactly as today.
-
-# Out of scope (to keep this focused)
-
-- No multi-user agent isolation (single-user app).
-- No long-running daemons spawned by the agent — `run_shell` is one-shot with a timeout.
-- No code editing of the project's own source — the workspace is a separate folder.
-
-# Open questions before I build
-
-None blocking — defaults: workspace at `server/data/agent-workspace/`, `run_shell` **off** by default (toggle in Settings), max 12 agent steps per run. I'll proceed with these unless you say otherwise.
-
-It should be better agent for winodws as open claw is for ios and hermes is for linux.
+Definition of done
+- Chat can use your configured model/provider predictably.
+- Search works with your configured research key or clearly falls back locally.
+- Image generation works with your configured image provider/model chain.
+- Agentic flows reliably enter the autonomous agent path when they should.
+- Skills and memory influence real runs, not just the UI.
+- Fallbacks are visible, not silent.
+- Your API keys are no longer exposed through public settings.
+- Video upload and social posting continue to behave exactly as before.
+</final-text>
