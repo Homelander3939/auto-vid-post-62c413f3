@@ -13,6 +13,7 @@ import { supabase } from '@/integrations/supabase/client';
 import ReactMarkdown from 'react-markdown';
 import AgentRunPanel from '@/components/AgentRunPanel';
 import { buildAgentRunPrompt, shouldLaunchAgentRun } from '@/lib/agentChat';
+import { getAISettings } from '@/lib/socialPosts';
 
 /* ── Types ───────────────────────────────────────────── */
 
@@ -161,6 +162,88 @@ async function streamChat({
   onDone();
 }
 
+/* ── Direct LM Studio stream — called from the browser (bypasses edge fn) ── */
+
+async function streamChatLocal({
+  baseUrl,
+  apiKey,
+  model,
+  messages,
+  onDelta,
+  onDone,
+  onError,
+}: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  messages: ChatContextMessage[];
+  onDelta: (text: string) => void;
+  onDone: () => void;
+  onError: (err: string) => void;
+}) {
+  const endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  let resp: Response;
+  try {
+    resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey || 'lm-studio'}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        stream: true,
+      }),
+    });
+  } catch (err) {
+    onError(
+      `Cannot reach LM Studio at ${baseUrl}. Make sure LM Studio is running and CORS is enabled ` +
+      `(LM Studio → Developer → Allow CORS from any origin).`
+    );
+    return;
+  }
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    onError(`LM Studio error ${resp.status}: ${text.slice(0, 200) || 'Request failed'}`);
+    return;
+  }
+
+  if (!resp.body) { onError('No response stream from LM Studio'); return; }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let idx: number;
+    while ((idx = buffer.indexOf('\n')) !== -1) {
+      let line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      if (line.endsWith('\r')) line = line.slice(0, -1);
+      if (line.startsWith(':') || line.trim() === '') continue;
+      if (!line.startsWith('data: ')) continue;
+      const jsonStr = line.slice(6).trim();
+      if (jsonStr === '[DONE]') break;
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) onDelta(content);
+      } catch {
+        buffer = line + '\n' + buffer;
+        break;
+      }
+    }
+  }
+  onDone();
+}
+
+
 /* ── Telegram indicator ──────────────────────────────── */
 
 function TelegramIndicator({ connected, count }: { connected: boolean; count: number }) {
@@ -257,6 +340,12 @@ export default function AIChat() {
     },
   });
   const telegramEnabled = !!(settings?.telegram_enabled && settings?.telegram_chat_id);
+
+  /* ── AI provider settings (for direct LM Studio support) ── */
+  const { data: aiSettings } = useQuery({
+    queryKey: ['ai_settings'],
+    queryFn: getAISettings,
+  });
 
   useEffect(() => {
     try {
@@ -598,27 +687,56 @@ Open the activity panel on the right if you want to follow the process flow whil
     }
 
     try {
-      await streamChat({
-        messages: contextMsgs,
-        onDelta: upsert,
-        onDone: () => {
-          setIsLoading(false);
-          setAppMessages((prev) =>
-            prev.map((m, i) =>
-              i === prev.length - 1 && m.role === 'assistant' && !m.timestamp
-                ? { ...m, timestamp: new Date().toISOString() } : m
-            )
-          );
-          // Mirror AI response to Telegram
-          if (telegramEnabled && resolvedChatId && assistantSoFar.trim()) {
-            void mirrorBrowserMessage('AI', assistantSoFar);
-          }
-        },
-        onError: (err) => {
-          toast({ title: 'AI Error', description: err, variant: 'destructive' });
-          setIsLoading(false);
-        },
-      });
+      // When LM Studio (a local server) is configured, call it directly from the browser.
+      // Edge functions run in the cloud and cannot reach localhost, so we bypass them here.
+      const isLmStudio = aiSettings?.provider === 'lmstudio' && !!aiSettings?.baseUrl;
+      if (isLmStudio) {
+        await streamChatLocal({
+          baseUrl: aiSettings!.baseUrl,
+          apiKey: aiSettings!.apiKey || 'lm-studio',
+          model: aiSettings!.model || '',
+          messages: contextMsgs,
+          onDelta: upsert,
+          onDone: () => {
+            setIsLoading(false);
+            setAppMessages((prev) =>
+              prev.map((m, i) =>
+                i === prev.length - 1 && m.role === 'assistant' && !m.timestamp
+                  ? { ...m, timestamp: new Date().toISOString() } : m
+              )
+            );
+            if (telegramEnabled && resolvedChatId && assistantSoFar.trim()) {
+              void mirrorBrowserMessage('AI', assistantSoFar);
+            }
+          },
+          onError: (err) => {
+            toast({ title: 'LM Studio Error', description: err, variant: 'destructive' });
+            setIsLoading(false);
+          },
+        });
+      } else {
+        await streamChat({
+          messages: contextMsgs,
+          onDelta: upsert,
+          onDone: () => {
+            setIsLoading(false);
+            setAppMessages((prev) =>
+              prev.map((m, i) =>
+                i === prev.length - 1 && m.role === 'assistant' && !m.timestamp
+                  ? { ...m, timestamp: new Date().toISOString() } : m
+              )
+            );
+            // Mirror AI response to Telegram
+            if (telegramEnabled && resolvedChatId && assistantSoFar.trim()) {
+              void mirrorBrowserMessage('AI', assistantSoFar);
+            }
+          },
+          onError: (err) => {
+            toast({ title: 'AI Error', description: err, variant: 'destructive' });
+            setIsLoading(false);
+          },
+        });
+      }
     } catch {
       toast({ title: 'Connection error', variant: 'destructive' });
       setIsLoading(false);
