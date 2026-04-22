@@ -579,6 +579,25 @@ function isInvalidModelError(status: number, body: string): boolean {
   return status === 400 && (body.includes('invalid model') || body.includes('model_not_found'));
 }
 
+/** Returns true when a URL targets a loopback or private LAN address that is
+ *  not reachable from a cloud edge function (e.g. http://192.168.50.176:1234). */
+function isLocalUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.toLowerCase();
+    return (
+      h === 'localhost' ||
+      h === '127.0.0.1' ||
+      h === '::1' ||
+      h.startsWith('192.168.') ||
+      h.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(h)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Builds a deduplicated ordered list of Lovable Gateway model IDs to try as
  *  fallbacks. Always starts with DEFAULT_LOVABLE_MODEL, then the rest of
  *  LOVABLE_MODELS, skipping any model that was already tried as the primary. */
@@ -601,6 +620,17 @@ async function callPlanner(messages: any[], chat: any, lovableKey: string): Prom
   const config = resolveChatProviderConfig(chat, lovableKey);
   if (config.fallbackReason) {
     console.warn('callPlanner provider fallback:', config.fallbackReason);
+  }
+
+  // LM Studio (and any localhost URL) is not reachable from a cloud edge function.
+  // Fail immediately with a clear message instead of silently burning through the
+  // Lovable fallback chain (which would return 402 if the user has no credits).
+  if (config.provider === 'lmstudio' || isLocalUrl(config.url)) {
+    throw new Error(
+      `Agent runs cannot reach your local LM Studio server (${config.url}) from the cloud. ` +
+      `Use a cloud AI provider (e.g. OpenAI, Google, OpenRouter) for autonomous agent runs, ` +
+      `or use the AI Chat tab for simple questions — it calls LM Studio directly from your browser.`
+    );
   }
 
   const makeRequest = (url: string, key: string, model: string) => fetch(url, {
@@ -629,7 +659,7 @@ async function callPlanner(messages: any[], chat: any, lovableKey: string): Prom
     lastStatus = fb.status;
     lastText = await fb.text();
     // Only continue to the next model for "invalid model" 400 rejections.
-    // Fail fast on auth errors (401), rate limits (429), etc.
+    // Fail fast on auth errors (401), rate limits (429), credits (402), etc.
     if (!isInvalidModelError(lastStatus, lastText)) {
       break;
     }
@@ -642,6 +672,11 @@ async function callReviewer(messages: any[], chat: any, lovableKey: string): Pro
   const config = resolveChatProviderConfig(chat, lovableKey);
   if (config.fallbackReason) {
     console.warn('callReviewer provider fallback:', config.fallbackReason);
+  }
+
+  // LM Studio (localhost) is not reachable from cloud edge functions.
+  if (config.provider === 'lmstudio' || isLocalUrl(config.url)) {
+    return ''; // Reviewer is best-effort — skip gracefully instead of failing the run.
   }
 
   const makeRequest = (url: string, key: string, model: string) => fetch(url, {

@@ -800,11 +800,12 @@ export default function SettingsPage() {
                 <Input
                   value={aiSettings.baseUrl}
                   onChange={(e) => setAiSettings((s) => ({ ...s, baseUrl: e.target.value }))}
-                  placeholder="http://localhost:1234/v1"
+                  placeholder="http://192.168.x.x:1234/v1"
                   className="font-mono text-xs"
                 />
                 <p className="text-[11px] text-muted-foreground">
-                  The OpenAI-compatible API base URL shown in LM Studio → Developer → Local Server. Default: <code>http://localhost:1234/v1</code>
+                  Use the <strong>Reachable at</strong> URL shown in LM Studio → Developer → Server Settings, with <code>/v1</code> appended.
+                  Example: <code>http://192.168.50.176:1234/v1</code>. Make sure <strong>Enable CORS</strong> is toggled on in LM Studio.
                 </p>
               </div>
               <div className="space-y-2">

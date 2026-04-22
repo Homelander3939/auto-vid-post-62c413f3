@@ -14,6 +14,25 @@ const DIRECT_TOOL_REPLY_NAMES = new Set(['generate_social_post', 'research_web',
 // Models that natively understand image inputs. Anything else triggers a vision fallback to Lovable.
 const VISION_CAPABLE_MODEL_RE = /(gemini|gpt-4o|gpt-5|gpt-4-vision|claude-3|llama-3\.2-vision|llava|pixtral)/i;
 
+/** Returns true when a URL targets a loopback or private LAN address that is
+ *  not reachable from a cloud edge function. */
+function isLocalUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.toLowerCase();
+    return (
+      h === 'localhost' ||
+      h === '127.0.0.1' ||
+      h === '::1' ||
+      h.startsWith('192.168.') ||
+      h.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(h)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /* ── Tool definitions (full agentic surface) ─────────── */
 
 const tools = [
@@ -853,6 +872,20 @@ serve(async (req) => {
       model: (aiSettings as any)?.ai_model,
       baseUrl: (aiSettings as any)?.ai_base_url,
     }, LOVABLE_API_KEY);
+
+    // LM Studio (or any localhost/LAN URL) is not reachable from a cloud edge function.
+    // The browser-side AIChat component handles LM Studio directly, so this path should
+    // only be reached if ai_base_url was not yet saved (missing DB column guard).
+    if (chatConfig.provider === 'lmstudio' || isLocalUrl(chatConfig.url)) {
+      const displayUrl = chatConfig.url || 'your configured LM Studio URL';
+      return new Response(JSON.stringify({
+        error: `LM Studio runs on your local network (${displayUrl}) and cannot be reached from the cloud. ` +
+          `The AI Chat page calls it directly from your browser — please reload the page to pick up your saved settings.`,
+      }), {
+        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     const chatUrl = chatConfig.url;
     const chatKey = chatConfig.key;
     const model = hasImages ? 'google/gemini-2.5-flash' : chatConfig.model;
