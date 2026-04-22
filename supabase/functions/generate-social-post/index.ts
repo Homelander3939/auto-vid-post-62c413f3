@@ -10,11 +10,21 @@ const corsHeaders = {
 
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 
+interface AIOverride {
+  provider?: string;
+  apiKey?: string;
+  model?: string;
+  baseUrl?: string;
+}
+
 interface Body {
   prompt: string;
   platforms: string[];
   includeImage?: boolean;
   stream?: boolean;
+  /** Client-supplied AI provider config that overrides what is stored in the DB.
+   *  Used when the DB column (e.g. ai_base_url) is missing or out of sync. */
+  aiOverride?: AIOverride;
 }
 
 const PLATFORM_RULES: Record<string, string> = {
@@ -935,11 +945,15 @@ Deno.serve(async (req) => {
   const { data: settings } = await supabase.from('app_settings').select('*').eq('id', 1).single();
   const s: any = settings || {};
 
+  // The client may forward its own AI settings when DB columns are out of sync
+  // (e.g. ai_base_url not yet migrated). Client values take precedence so that
+  // LM Studio (and other local providers) work even before the migration runs.
+  const ov = body.aiOverride || {};
   const config = resolveChatProviderConfig({
-    provider: s.ai_provider,
-    apiKey: s.ai_api_key,
-    model: s.ai_model,
-    baseUrl: s.ai_base_url,
+    provider: ov.provider ?? s.ai_provider,
+    apiKey: ov.apiKey ?? s.ai_api_key,
+    model: ov.model ?? s.ai_model,
+    baseUrl: ov.baseUrl ?? s.ai_base_url,
   }, Deno.env.get('LOVABLE_API_KEY') || '');
   if (config.fallbackReason) {
     console.warn('generate-social-post provider fallback:', config.fallbackReason);
