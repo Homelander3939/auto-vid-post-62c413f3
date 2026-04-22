@@ -318,7 +318,7 @@ export default function AIChat() {
   const resolvedChatId = useMemo(() => {
     if (settings?.telegram_chat_id) return String(settings.telegram_chat_id);
     if (!telegramMessages?.length) return undefined;
-    const latest = [...telegramMessages].reverse().find((m: TelegramMessageRecord) => m.chat_id);
+    const latest = [...telegramMessages].reverse().find((m: any) => (m as TelegramMessageRecord).chat_id) as TelegramMessageRecord | undefined;
     return latest ? String(latest.chat_id) : undefined;
   }, [settings?.telegram_chat_id, telegramMessages]);
 
@@ -418,7 +418,8 @@ export default function AIChat() {
   }, []);
 
   const messages = useMemo(() => {
-    const tgMsgs: Msg[] = (telegramMessages || []).map((m: TelegramMessageRecord) => {
+    const tgMsgs: Msg[] = (telegramMessages || []).map((raw: any) => {
+      const m = raw as TelegramMessageRecord;
       const mediaFiles = mapTelegramMediaToFiles(m.raw_update);
       const source = m.raw_update?.source === BROWSER_MIRROR_SOURCE ? 'app' : 'telegram';
       return {
