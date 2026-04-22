@@ -695,10 +695,10 @@ export default function AIChat() {
     if (otherFiles.length > 0) newMsg.files = otherFiles.map((f) => ({ name: f.name, type: f.type, size: f.size, textContent: f.textContent }));
     contextMsgs.push(newMsg);
 
-    const wantsAgentRun = shouldLaunchAgentRun(text, pendingFiles);
+    const shouldRunAgent = shouldLaunchAgentRun(text, pendingFiles);
     const isLmStudio = aiSettings?.provider === 'lmstudio' && !!aiSettings?.baseUrl;
 
-    if (wantsAgentRun && !isLmStudio) {
+    if (shouldRunAgent && !isLmStudio) {
       try {
         const agentPrompt = buildAgentRunPrompt(text, pendingFiles);
         const aiOverride = aiSettings
@@ -763,11 +763,11 @@ Open the activity panel on the right if you want to follow the process flow whil
           }
         };
         const handleError = (err: string) => {
-          toast({ title: wantsAgentRun ? 'Local AI Worker Error' : 'LM Studio Error', description: err, variant: 'destructive' });
+          toast({ title: shouldRunAgent ? 'Local AI Worker Error' : 'LM Studio Error', description: err, variant: 'destructive' });
           setIsLoading(false);
         };
 
-        if (wantsAgentRun) {
+        if (shouldRunAgent) {
           await streamChatViaLocalWorker({
             serverUrl: agentSettings?.localAgentUrl || 'http://localhost:3001',
             aiSettings: {

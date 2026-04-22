@@ -7,9 +7,40 @@ const DEFAULT_LM_STUDIO_URL = process.env.LM_STUDIO_URL || 'http://localhost:123
 const DEFAULT_LM_STUDIO_MODEL = process.env.LM_STUDIO_MODEL || 'google/gemma-3-27b';
 const LM_STUDIO_API_KEY = process.env.LM_STUDIO_API_KEY || 'lm-studio';
 
+function trimTrailingSlashes(value) {
+  let out = String(value || '').trim();
+  while (out.endsWith('/')) out = out.slice(0, -1);
+  return out;
+}
+
+function isPrivateHost(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '::1' ||
+    host.startsWith('192.168.') ||
+    host.startsWith('10.') ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+  );
+}
+
 function normalizeLMStudioBaseUrl(baseUrl) {
-  const trimmed = String(baseUrl || DEFAULT_LM_STUDIO_URL).trim().replace(/\/+$/, '');
-  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
+  const candidate = trimTrailingSlashes(baseUrl || DEFAULT_LM_STUDIO_URL);
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error(`Invalid LM Studio URL: ${candidate}`);
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('LM Studio URL must use http or https');
+  }
+  if (!isPrivateHost(parsed.hostname)) {
+    throw new Error('LM Studio URL must point to localhost or a private LAN address');
+  }
+  const normalized = trimTrailingSlashes(parsed.toString());
+  return normalized.toLowerCase().endsWith('/v1') ? normalized : `${normalized}/v1`;
 }
 
 function resolveLMStudioConfig(override = {}) {

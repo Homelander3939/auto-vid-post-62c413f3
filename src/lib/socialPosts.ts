@@ -190,8 +190,10 @@ export async function getAISettings(): Promise<AISettings> {
   const lsProviderMatches = !!ls.provider && ls.provider === provider;
   const dbModel: string = row.ai_model || '';
   const fallbackModel = provider === 'lovable' ? 'google/gemini-3-flash-preview' : '';
-  const model = dbModel || (lsProviderMatches ? (ls.model || '') : '') || fallbackModel;
-  const baseUrl = dbBaseUrl || (lsProviderMatches ? (ls.baseUrl || '') : '');
+  const cachedModel = lsProviderMatches ? (ls.model || '') : '';
+  const cachedBaseUrl = lsProviderMatches ? (ls.baseUrl || '') : '';
+  const model = dbModel || cachedModel || fallbackModel;
+  const baseUrl = dbBaseUrl || cachedBaseUrl;
 
   return {
     provider,
