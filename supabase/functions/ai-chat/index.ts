@@ -11,6 +11,9 @@ const AI_GATEWAY = LOVABLE_GATEWAY;
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 const DIRECT_TOOL_REPLY_NAMES = new Set(['generate_social_post', 'research_web', 'check_platform_stats', 'open_browser', 'run_agent']);
 
+// Models that natively understand image inputs. Anything else triggers a vision fallback to Lovable.
+const VISION_CAPABLE_MODEL_RE = /(gemini|gpt-4o|gpt-5|gpt-4-vision|claude-3|llama-3\.2-vision|llava|pixtral)/i;
+
 /* ── Tool definitions (full agentic surface) ─────────── */
 
 const tools = [
