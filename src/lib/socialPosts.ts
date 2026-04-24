@@ -544,8 +544,8 @@ export async function listAIModels(provider: string, apiKey: string, baseUrl?: s
 }
 
 export interface ConnectionTestResult { ok: boolean; error?: string; latency?: number; provider?: string; model?: string; sample?: string }
-export async function testAIConnection(provider: string, apiKey: string, model: string): Promise<ConnectionTestResult> {
-  const { data, error } = await supabase.functions.invoke('test-ai-connection', { body: { provider, apiKey, model } });
+export async function testAIConnection(provider: string, apiKey: string, model: string, baseUrl?: string): Promise<ConnectionTestResult> {
+  const { data, error } = await supabase.functions.invoke('test-ai-connection', { body: { provider, apiKey, model, baseUrl } });
   if (error) return { ok: false, error: error.message };
   return data as ConnectionTestResult;
 }
