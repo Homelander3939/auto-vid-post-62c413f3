@@ -8,21 +8,23 @@ interface Body {
   provider: string;
   apiKey?: string;
   model?: string;
+  baseUrl?: string;
 }
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
   try {
-    const { provider, apiKey: customKey, model } = (await req.json()) as Body;
+    const { provider, apiKey: customKey, model, baseUrl } = (await req.json()) as Body;
     if (!provider) {
       return new Response(JSON.stringify({ ok: false, error: 'provider required' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    const useCustom = provider !== 'lovable' && customKey;
-    const apiKey = useCustom ? customKey : Deno.env.get('LOVABLE_API_KEY');
+    const isLocal = provider === 'lmstudio';
+    const useCustom = provider !== 'lovable' && (customKey || isLocal);
+    const apiKey = useCustom ? (customKey || (isLocal ? 'lm-studio' : '')) : Deno.env.get('LOVABLE_API_KEY');
     if (!apiKey) {
       return new Response(JSON.stringify({ ok: false, error: 'No API key available' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -46,6 +48,28 @@ Deno.serve(async (req) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'ping' }] }], generationConfig: { maxOutputTokens: 5 } }),
       });
+    } else if (provider === 'lmstudio') {
+      const trimmed = String(baseUrl || '').trim().replace(/\/+$/, '');
+      if (!trimmed) {
+        return new Response(JSON.stringify({ ok: false, error: 'LM Studio base URL is required' }), {
+          status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      if (/localhost|127\.0\.0\.1|192\.168\.|10\.|172\./i.test(trimmed)) {
+        return new Response(JSON.stringify({
+          ok: true,
+          provider,
+          model: targetModel,
+          latency: 0,
+          note: 'LM Studio is on a private network. The cloud cannot reach it directly — your local worker will use it instead. Connection assumed OK.',
+        }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+      const endpoint = trimmed.endsWith('/v1') ? `${trimmed}/chat/completions` : `${trimmed}/v1/chat/completions`;
+      resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: targetModel, messages: [{ role: 'user', content: 'ping' }], max_tokens: 5 }),
+      });
     } else {
       let endpoint = 'https://ai.gateway.lovable.dev/v1/chat/completions';
       let m = targetModel;
@@ -54,6 +78,7 @@ Deno.serve(async (req) => {
         else if (provider === 'openrouter') endpoint = 'https://openrouter.ai/api/v1/chat/completions';
         else if (provider === 'anthropic') { endpoint = 'https://openrouter.ai/api/v1/chat/completions'; if (!m.startsWith('anthropic/')) m = `anthropic/${m}`; }
         else if (provider === 'nvidia') endpoint = 'https://integrate.api.nvidia.com/v1/chat/completions';
+        else if (provider === 'xai') endpoint = 'https://api.x.ai/v1/chat/completions';
       }
       resp = await fetch(endpoint, {
         method: 'POST',
