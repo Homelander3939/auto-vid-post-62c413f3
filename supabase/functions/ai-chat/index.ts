@@ -670,14 +670,25 @@ async function getAppContextFast(supabase: any, userPrompt = ''): Promise<AppCon
 
 /* ── System prompt ────────────────────────────────────── */
 
-function buildSystemPrompt(appContext: string, isTelegram = false): string {
+function buildSystemPrompt(appContext: AppContext, isTelegram = false): string {
   const fmt = isTelegram
     ? 'Plain text only — NO markdown asterisks/backticks. Use line breaks and emoji for structure. Be concise.'
     : 'Use markdown for rich formatting.';
-  return `You are the autonomous AI agent for an Uploadphy — a multi-platform video & social-post automation app.
 
-${appContext}
+  const memoryBlock = appContext.memories.length > 0
+    ? `\n## Persistent memory (most relevant facts about user/project)\n${appContext.memories.map((m) => `- (importance ${m.importance}) ${m.title}: ${m.content}`).join('\n')}\n_Use these as background facts. To save a new long-term fact, call remember_fact._\n`
+    : appContext.agentMemoryEnabled
+      ? `\n## Persistent memory\n_(empty — call remember_fact when the user shares a durable fact worth recalling next time)_\n`
+      : '';
 
+  const skillBlock = appContext.skills.length > 0
+    ? `\n## Saved skills (reusable workflows the user has trained)\n${appContext.skills.map((s) => `- ${s.name} [${s.slug}] — ${s.description || 'no description'}${(s.triggers || []).length ? ` (triggers: ${(s.triggers || []).join(', ')})` : ''}`).join('\n')}\n_If a user request matches a skill, prefer launching it via run_agent with the skill slug._\n`
+    : '';
+
+  return `You are the autonomous AI agent for Uploadphy — a multi-platform video & social-post automation app.
+
+${appContext.text}
+${memoryBlock}${skillBlock}
 ## Your capabilities (call tools, do not just describe)
 - **Video uploads**: create_upload_job, schedule_upload, edit_upload_job, delete_upload_job, retry_failed_job, clear_jobs_by_status
 - **Scheduling**: schedule_upload, edit_scheduled_upload, delete_scheduled_upload, update_cron_schedule, manage_recurring_schedule
@@ -686,6 +697,7 @@ ${appContext}
 - **Stats scraping**: check_platform_stats — queues Playwright scrape on user's local PC, results via Telegram
 - **Generic browser tasks**: open_browser — runs any natural-language browser task locally
 - **Full autonomous local-PC agent**: run_agent — use this for coding, file generation, previews, browser work, deep research, image generation, and multi-step workflows (Claude Code / OpenClaw / Hermes style)
+- **Memory**: remember_fact — store a long-term fact (user preference, project rule, recurring detail) for future sessions
 
 ## Behavior rules
 - For anything involving code, files, local shell commands, browser previews, multi-step web research, or "do this on my PC", ALWAYS call run_agent instead of trying to answer inline.
