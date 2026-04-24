@@ -997,13 +997,20 @@ serve(async (req) => {
             return;
           }
 
-          // This second pass always uses the Lovable Gateway, so we must use a Lovable-compatible
-          // model regardless of what the user configured (e.g. openrouter/qwen won't work here).
-          const resp2 = await fetch(AI_GATEWAY, {
+          // Second pass: reuse the user's configured provider/model. If it isn't a
+          // chat-completion-compatible endpoint (rare), fall through to Lovable on failure.
+          const second = await fetch(effectiveChatUrl, {
             method: 'POST',
-            headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: DEFAULT_LOVABLE_MODEL, messages: fullMessages, stream: true }),
+            headers: { Authorization: `Bearer ${effectiveChatKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model, messages: fullMessages, stream: true }),
           });
+          const resp2 = second.ok
+            ? second
+            : await fetch(AI_GATEWAY, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: DEFAULT_LOVABLE_MODEL, messages: fullMessages, stream: true }),
+              });
 
           if (resp2.ok && resp2.body) {
             const reader2 = resp2.body.getReader();
