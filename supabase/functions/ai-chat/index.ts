@@ -922,8 +922,14 @@ serve(async (req) => {
     const effectiveChatUrl = hasImages ? AI_GATEWAY : chatUrl;
     const effectiveChatKey = hasImages ? LOVABLE_API_KEY : chatKey;
 
+    // Backend intent router: nudge the model toward run_agent for clearly agentic asks.
+    const intentLooksAgentic = shouldLaunchAgentRun(lastUserHint, []);
+    const intentNudge = intentLooksAgentic
+      ? '\n\n[Router hint] This request looks like an autonomous multi-step task. Strongly prefer calling the `run_agent` tool with a clear prompt rather than answering inline.'
+      : '';
+
     const fullMessages = [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: systemPrompt + intentNudge },
       ...transformedMessages,
     ];
 
