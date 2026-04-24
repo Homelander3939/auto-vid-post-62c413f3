@@ -830,23 +830,14 @@ async function execResearchDeep(args: any, providers: any, lovableKey: string, s
 
 function inferImageProvider(provider: string, apiKey: string): string {
   if (provider && provider !== 'auto') return provider;
-  // Heuristic only for auto mode. Prefer the explicit saved provider whenever present;
-  // these regexes are only best-effort guesses when the provider stayed on auto.
-  // Precedence is xAI → NVIDIA → Google → OpenAI → Pexels → Unsplash → Lovable fallback.
-  // The final Pexels/Unsplash checks are intentionally low-confidence fallbacks based mostly on token shape.
+  // Heuristic only for auto mode. Only trust UNAMBIGUOUS prefix patterns.
+  // Generic "long alphanumeric" shapes (Pexels/Unsplash) are removed because they
+  // false-matched almost every modern API key — pick those explicitly in Settings.
   const key = String(apiKey || '').trim();
-  // xAI keys use the xai- prefix.
-  if (/^xai-[A-Za-z0-9_-]{20,}$/.test(key)) return 'xai';
-  // NVIDIA NIM keys use the nvapi- prefix.
-  if (/^nvapi-[A-Za-z0-9_-]{20,}$/.test(key)) return 'nvidia';
-  // Google AI Studio keys use the AIza prefix.
+  if (/^xai-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'xai';
+  if (/^nvapi-[A-Za-z0-9_-]{20,}$/i.test(key)) return 'nvidia';
   if (/^AIza[A-Za-z0-9_-]{20,}$/.test(key)) return 'google';
-  // OpenAI keys use sk- / sk-proj- prefixes.
   if (/^sk-(proj-)?[A-Za-z0-9_-]{20,}$/.test(key)) return 'openai';
-  // Pexels keys are often long mixed-case alphanumeric strings; provider auto-detection may need updates if formats change.
-  if (/^[A-Za-z0-9]{50,60}$/.test(key) && !/^[a-f0-9]+$/i.test(key)) return 'pexels';
-  // Unsplash access keys are often shorter mixed-case tokens; this is also only a best-effort guess.
-  if (/^[A-Za-z0-9_-]{40,48}$/.test(key)) return 'unsplash';
   return 'lovable';
 }
 
