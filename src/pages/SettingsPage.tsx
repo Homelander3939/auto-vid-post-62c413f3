@@ -524,10 +524,13 @@ export default function SettingsPage() {
     }
   };
 
-  // Auto-load models when provider changes (or API key for non-lovable providers)
+  // Auto-load models when provider changes (or when LM Studio baseUrl/key updates)
   useEffect(() => {
     if (aiSettings.provider === 'lovable') {
       loadModels('lovable', '');
+    } else if (aiSettings.provider === 'lmstudio') {
+      // LM Studio: try with baseUrl + (any) key — backend returns hint list if unreachable
+      loadModels('lmstudio', aiSettings.apiKey || 'lm-studio', aiSettings.baseUrl);
     } else if (aiSettings.apiKey) {
       loadModels(aiSettings.provider, aiSettings.apiKey);
     } else {
@@ -535,7 +538,7 @@ export default function SettingsPage() {
       setModelsError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiSettings.provider]);
+  }, [aiSettings.provider, aiSettings.baseUrl]);
 
   const refreshAccounts = () => {
     queryClient.invalidateQueries({ queryKey: ['platform_accounts'] });
