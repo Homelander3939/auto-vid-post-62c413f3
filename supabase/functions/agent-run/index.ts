@@ -680,19 +680,16 @@ type ResearchSource = { title: string; url: string; snippet?: string };
 
 function inferResearchProvider(provider: string, apiKey: string): string {
   if (provider && provider !== 'auto') return provider;
-  // Heuristic only for auto mode. The Settings UI auto-detects providers earlier,
-  // so these regexes are only best-effort guesses when a key exists but the provider stayed on auto.
-  // Precedence is Brave → Tavily → Serper → Firecrawl → local fallback.
-  // If nothing matches confidently, we fall back to the local browser-backed search worker.
+  // Heuristic only for auto mode. Only trust UNAMBIGUOUS prefix patterns —
+  // never guess between providers that share the same key shape (e.g. 64-char hex
+  // could be Serper or many others). Anything ambiguous → 'local' so the user
+  // explicitly picks a provider in Settings instead of being silently routed wrong.
   const key = String(apiKey || '').trim();
-  // Brave Search API keys usually start with BSA...
   if (/^BSA[A-Za-z0-9_-]{10,}$/.test(key)) return 'brave';
-  // Tavily keys use the tvly- prefix.
-  if (/^tvly-[A-Za-z0-9]{10,}$/.test(key)) return 'tavily';
-  // Serper keys are often 64-char hex strings; this is still only a heuristic and may false-positive.
-  if (/^[a-f0-9]{64}$/i.test(key)) return 'serper';
-  // Firecrawl keys use the fc- prefix.
-  if (/^fc-[A-Za-z0-9]{10,}$/.test(key)) return 'firecrawl';
+  if (/^tvly-[A-Za-z0-9]{10,}$/i.test(key)) return 'tavily';
+  if (/^fc-[A-Za-z0-9]{10,}$/i.test(key)) return 'firecrawl';
+  // Serper: 64-char hex — only assume Serper if the user explicitly chose 'serper',
+  // otherwise treat as ambiguous and fall back to local.
   return 'local';
 }
 
