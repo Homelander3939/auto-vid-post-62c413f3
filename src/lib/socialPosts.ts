@@ -45,7 +45,6 @@ export interface AISettings {
   provider: string;
   apiKey: string;
   model: string;
-  baseUrl: string; // Custom endpoint base URL for OpenAI-compatible providers like LM Studio
 }
 
 export interface ImageKeyEntry {
@@ -60,7 +59,7 @@ export interface ImageKeyEntry {
 export interface AgentSettings {
   researchProvider: string; // auto | brave | tavily | serper | firecrawl | local
   researchApiKey: string;
-  imageProvider: string;    // legacy primary — auto | unsplash | pexels | openai | google | nvidia | xai | lovable | comfyui
+  imageProvider: string;    // legacy primary — auto | unsplash | pexels | openai | google | nvidia | xai | lovable
   imageApiKey: string;
   imageModel: string;       // legacy primary model id
   imageKeys: ImageKeyEntry[]; // up to 10 fallback keys, tried in order
@@ -72,7 +71,6 @@ export interface AgentSettings {
   memoryMaxItems: number;
   shellEnabled: boolean;
   workspacePath: string;
-  comfyuiBaseUrl: string;   // ComfyUI base URL for local image generation
 }
 
 function getMissingColumnName(error: { message?: string; details?: string } | null | undefined): string | null {
@@ -138,84 +136,22 @@ export function detectProviderFromKey(key: string): { research?: string; image?:
 }
 
 // --- AI settings (extended app_settings columns) ---
-
-// localStorage key used as a client-side fallback so settings survive page
-// reloads even when the ai_base_url DB column has not yet been applied.
-// Only non-sensitive fields (provider, model, baseUrl) are stored here.
-// API keys are intentionally excluded to avoid clear-text key storage.
-const AI_SETTINGS_LS_KEY = 'avp_ai_settings';
-
-/** Shape stored in localStorage — no sensitive fields. */
-interface AISettingsCache {
-  provider: string;
-  model: string;
-  baseUrl: string;
-}
-
-function getCachedAISettings(): Partial<AISettingsCache> {
-  try {
-    const raw = localStorage.getItem(AI_SETTINGS_LS_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-
-export function cacheAISettingsDraft(settings: Pick<AISettings, 'provider' | 'model' | 'baseUrl'>): void {
-  const cache: AISettingsCache = {
-    provider: String(settings.provider || 'lovable').trim() || 'lovable',
-    model: String(settings.model || '').trim(),
-    baseUrl: String(settings.baseUrl || '').trim(),
-  };
-  try { localStorage.setItem(AI_SETTINGS_LS_KEY, JSON.stringify(cache)); } catch { /* ignore */ }
-}
-
 export async function getAISettings(): Promise<AISettings> {
   const { data } = await supabase.from('app_settings').select('*').eq('id', 1).single();
   const row = (data || {}) as any;
-
-  // Read localStorage fallback — used when the DB is missing a column (e.g.
-  // ai_base_url before the migration is applied).
-  const ls = getCachedAISettings();
-
-  const dbProvider: string = row.ai_provider || '';
-  const provider = dbProvider || ls.provider || 'lovable';
-  const dbBaseUrl: string = row.ai_base_url || '';
-  // Only use the localStorage baseUrl when:
-  //   1. The DB has no baseUrl (column missing or empty), AND
-  //   2. The cached provider explicitly matches the resolved provider.
-  // We check ls.provider (not the resolved `provider`) to avoid applying a
-  // cached LM Studio URL when the provider has changed in the DB.
-  const lsProviderMatches = !!ls.provider && ls.provider === provider;
-  const dbModel: string = row.ai_model || '';
-  // Non-Lovable providers either require an explicit user-picked model (LM Studio)
-  // or use their own server-side default when the saved model is blank.
-  const fallbackModel = provider === 'lovable' ? 'google/gemini-3-flash-preview' : '';
-  const cachedModel = lsProviderMatches ? (ls.model || '') : '';
-  const cachedBaseUrl = lsProviderMatches ? (ls.baseUrl || '') : '';
-  const model = dbModel || cachedModel || fallbackModel;
-  const baseUrl = dbBaseUrl || cachedBaseUrl;
-
   return {
-    provider,
+    provider: row.ai_provider || 'lovable',
     apiKey: row.ai_api_key || '',
-    model,
-    baseUrl,
+    model: row.ai_model || 'google/gemini-3-flash-preview',
   };
 }
 
 export async function saveAISettings(s: AISettings): Promise<void> {
-  // Persist non-sensitive fields to localStorage so the UI stays consistent
-  // even if the DB column is missing and gets silently dropped.
-  // API key is deliberately excluded — it remains DB-only.
-  cacheAISettingsDraft(s);
-  await updateAppSettingsCompat({
-    ai_provider: s.provider,
-    ai_api_key: s.apiKey,
-    ai_model: s.model,
-    ai_base_url: s.baseUrl || '',
-  });
+  const { error } = await supabase
+    .from('app_settings')
+    .update({ ai_provider: s.provider, ai_api_key: s.apiKey, ai_model: s.model } as any)
+    .eq('id', 1);
+  if (error) throw new Error(error.message);
 }
 
 export async function getAgentSettings(): Promise<AgentSettings> {
@@ -245,7 +181,6 @@ export async function getAgentSettings(): Promise<AgentSettings> {
     memoryMaxItems: Math.min(Math.max(Number(r.agent_memory_max_items) || 8, 1), 20),
     shellEnabled: r.agent_shell_enabled === true,
     workspacePath: r.agent_workspace_path || '',
-    comfyuiBaseUrl: r.comfyui_base_url || 'http://localhost:8188',
   };
 }
 
@@ -269,7 +204,6 @@ export async function saveAgentSettings(s: AgentSettings): Promise<void> {
     agent_memory_max_items: Math.min(Math.max(Number(s.memoryMaxItems) || 8, 1), 20),
     agent_shell_enabled: s.shellEnabled === true,
     agent_workspace_path: s.workspacePath || '',
-    comfyui_base_url: s.comfyuiBaseUrl || 'http://localhost:8188',
   });
 }
 
@@ -427,7 +361,7 @@ export type AIStreamEvent =
   | { type: 'image'; imageUrl: string; imagePath: string; credit?: string }
   | { type: 'saved'; id: string; status: string }
   | { type: 'done'; variants: Record<string, PlatformVariant>; sources: AgentSource[]; imageUrl: string | null; imagePath: string | null; provider?: string; model?: string }
-  | { type: 'error'; error: string; stage?: string; details?: unknown; provider?: string; model?: string };
+  | { type: 'error'; error: string };
 
 // Persisted generation job — survives page navigation. The edge function mirrors every
 // SSE event into generation_jobs.events so we can rehydrate the UI on reload.
@@ -538,22 +472,11 @@ export async function deletePendingCommand(id: string): Promise<void> {
   if (error) throw new Error(error.message);
 }
 
-// Optional AI provider override forwarded to the generate-social-post edge function.
-// Used when the configured provider (e.g. LM Studio) has settings that may not
-// have been persisted to the DB yet (e.g. ai_base_url column missing).
-export interface AIProviderOverride {
-  provider: string;
-  apiKey: string;
-  model: string;
-  baseUrl: string;
-}
-
 // Streaming generation via SSE — calls the edge function and emits parsed events as they arrive.
 export async function generatePostStream(
   input: AIGenerateInput,
   onEvent: (e: AIStreamEvent) => void,
   signal?: AbortSignal,
-  aiOverride?: AIProviderOverride,
 ): Promise<void> {
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-social-post`;
   const resp = await fetch(url, {
@@ -562,29 +485,12 @@ export async function generatePostStream(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
     },
-    body: JSON.stringify({ ...input, stream: true, ...(aiOverride ? { aiOverride } : {}) }),
+    body: JSON.stringify({ ...input, stream: true }),
     signal,
   });
   if (!resp.ok || !resp.body) {
     let msg = `Stream failed (${resp.status})`;
-    let parsed = false;
-    try {
-      const j = await resp.json();
-      parsed = true;
-      msg = j.error || msg;
-      const detailParts = [
-        j.stage ? `stage=${j.stage}` : '',
-        j.details ? (typeof j.details === 'string' ? j.details : JSON.stringify(j.details)) : '',
-      ].filter(Boolean);
-      const err = new Error(detailParts.length ? `${msg} — ${detailParts.join(' · ')}` : msg);
-      (err as any).stage = j.stage;
-      (err as any).details = j.details;
-      (err as any).provider = j.provider || j.requestedProvider;
-      (err as any).model = j.model;
-      throw err;
-    } catch (e) {
-      if (parsed) throw e;
-    }
+    try { const j = await resp.json(); msg = j.error || msg; } catch {}
     throw new Error(msg);
   }
   const reader = resp.body.getReader();
@@ -629,69 +535,11 @@ export async function listAIModels(provider: string, apiKey: string): Promise<AI
   return (data.models || []) as AIModel[];
 }
 
-const LM_STUDIO_DEFAULT_URL = 'http://localhost:1234/v1';
-export const LM_STUDIO_DEFAULT_KEY = 'lm-studio';
-
-// Direct browser-side call to LM Studio (OpenAI-compatible). Bypasses edge functions so
-// it works with localhost:1234 — the browser can reach it even though cloud functions cannot.
-export async function listLMStudioModels(baseUrl: string, apiKey: string): Promise<AIModel[]> {
-  const url = `${(baseUrl || LM_STUDIO_DEFAULT_URL).replace(/\/+$/, '')}/models`;
-  const headers: Record<string, string> = {};
-  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-  const resp = await fetch(url, { headers });
-  if (!resp.ok) throw new Error(`LM Studio returned ${resp.status}: ${(await resp.text()).slice(0, 120)}`);
-  const data = await resp.json();
-  const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
-  return arr.map((m: any) => ({ id: m.id || m.name, label: m.id || m.name })).filter((m: AIModel) => m.id);
-}
-
 export interface ConnectionTestResult { ok: boolean; error?: string; latency?: number; provider?: string; model?: string; sample?: string }
 export async function testAIConnection(provider: string, apiKey: string, model: string): Promise<ConnectionTestResult> {
   const { data, error } = await supabase.functions.invoke('test-ai-connection', { body: { provider, apiKey, model } });
   if (error) return { ok: false, error: error.message };
   return data as ConnectionTestResult;
-}
-
-// Direct browser-side connection test to LM Studio. Works for localhost.
-export async function testLMStudioConnection(baseUrl: string, apiKey: string, model: string): Promise<ConnectionTestResult> {
-  const url = `${(baseUrl || LM_STUDIO_DEFAULT_URL).replace(/\/+$/, '')}/chat/completions`;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-  const t0 = Date.now();
-  try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ model: model || '', messages: [{ role: 'user', content: 'ping' }], max_tokens: 5 }),
-    });
-    const latency = Date.now() - t0;
-    if (!resp.ok) {
-      const t = await resp.text();
-      return { ok: false, error: `${resp.status}: ${t.slice(0, 120)}`, latency };
-    }
-    return { ok: true, provider: 'lmstudio', model, latency };
-  } catch (e: any) {
-    return { ok: false, error: e.message || 'LM Studio not reachable — is it running?', latency: Date.now() - t0 };
-  }
-}
-
-// Direct browser-side connection test to ComfyUI. Works for localhost.
-const COMFYUI_DEFAULT_URL = 'http://localhost:8188';
-export async function testComfyUIConnection(baseUrl: string): Promise<ConnectionTestResult> {
-  const url = `${(baseUrl || COMFYUI_DEFAULT_URL).replace(/\/+$/, '')}/system_stats`;
-  const t0 = Date.now();
-  try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    const latency = Date.now() - t0;
-    if (!resp.ok) return { ok: false, error: `ComfyUI returned ${resp.status}`, latency };
-    const data = await resp.json().catch(() => ({}));
-    const gpuName = (data?.system as any)?.gpus?.[0]?.name;
-    const pythonVer = (data?.system as any)?.python_version;
-    const sample = gpuName || (pythonVer ? `Python ${pythonVer}` : 'ComfyUI running');
-    return { ok: true, provider: 'comfyui', latency, sample };
-  } catch (e: any) {
-    return { ok: false, error: e.message || 'ComfyUI not reachable — is it running at ' + baseUrl + '?', latency: Date.now() - t0 };
-  }
 }
 
 export async function testAgentConnection(

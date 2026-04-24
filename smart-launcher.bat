@@ -1,6 +1,6 @@
 @echo off
 TITLE Video Uploader System
-for %%I in ("%~dp0.") do SET "ROOT_DIR=%%~fI"
+SET "ROOT_DIR=C:\auto-vid-post"
 SET "BRAVE_PATH=C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
 
 echo ======================================================

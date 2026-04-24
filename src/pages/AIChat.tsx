@@ -13,7 +13,6 @@ import { supabase } from '@/integrations/supabase/client';
 import ReactMarkdown from 'react-markdown';
 import AgentRunPanel from '@/components/AgentRunPanel';
 import { buildAgentRunPrompt, shouldLaunchAgentRun } from '@/lib/agentChat';
-import { getAISettings, getAgentSettings } from '@/lib/socialPosts';
 
 /* ── Types ───────────────────────────────────────────── */
 
@@ -162,135 +161,6 @@ async function streamChat({
   onDone();
 }
 
-/* ── Direct LM Studio stream — called from the browser (bypasses edge fn) ── */
-
-async function streamChatLocal({
-  baseUrl,
-  apiKey,
-  model,
-  messages,
-  onDelta,
-  onDone,
-  onError,
-}: {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  messages: ChatContextMessage[];
-  onDelta: (text: string) => void;
-  onDone: () => void;
-  onError: (err: string) => void;
-}) {
-  const endpoint = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
-  let resp: Response;
-  try {
-    resp = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey || 'lm-studio'}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
-        stream: true,
-      }),
-    });
-  } catch (err) {
-    onError(
-      `Cannot reach LM Studio at ${baseUrl}. Make sure LM Studio is running and CORS is enabled ` +
-      `(LM Studio → Developer → Allow CORS from any origin).`
-    );
-    return;
-  }
-
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    onError(`LM Studio error ${resp.status}: ${text.slice(0, 200) || 'Request failed'}`);
-    return;
-  }
-
-  await consumeOpenAICompatStream(resp, onDelta, onDone, onError, 'LM Studio');
-}
-
-async function consumeOpenAICompatStream(
-  resp: Response,
-  onDelta: (text: string) => void,
-  onDone: () => void,
-  onError: (err: string) => void,
-  sourceLabel: string,
-) {
-  if (!resp.body) { onError(`No response stream from ${sourceLabel}`); return; }
-
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let idx: number;
-    while ((idx = buffer.indexOf('\n')) !== -1) {
-      let line = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 1);
-      if (line.endsWith('\r')) line = line.slice(0, -1);
-      if (line.startsWith(':') || line.trim() === '') continue;
-      if (!line.startsWith('data: ')) continue;
-      const jsonStr = line.slice(6).trim();
-      if (jsonStr === '[DONE]') break;
-      try {
-        const parsed = JSON.parse(jsonStr);
-        const content = parsed.choices?.[0]?.delta?.content;
-        if (content) onDelta(content);
-      } catch {
-        buffer = line + '\n' + buffer;
-        break;
-      }
-    }
-  }
-  onDone();
-}
-
-async function streamChatViaLocalWorker({
-  serverUrl,
-  aiSettings,
-  messages,
-  onDelta,
-  onDone,
-  onError,
-}: {
-  serverUrl: string;
-  aiSettings: { apiKey?: string; model?: string };
-  messages: ChatContextMessage[];
-  onDelta: (text: string) => void;
-  onDone: () => void;
-  onError: (err: string) => void;
-}) {
-  const endpoint = `${serverUrl.replace(/\/+$/, '')}/api/ai-chat`;
-  let resp: Response;
-  try {
-    resp = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages, aiSettings }),
-    });
-  } catch (err) {
-    onError(`Cannot reach the local AI worker at ${serverUrl}. Make sure the local server is running.`);
-    return;
-  }
-
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    onError(`Local AI worker error ${resp.status}: ${text.slice(0, 200) || 'Request failed'}`);
-    return;
-  }
-
-  await consumeOpenAICompatStream(resp, onDelta, onDone, onError, 'local AI worker');
-}
-
-
 /* ── Telegram indicator ──────────────────────────────── */
 
 function TelegramIndicator({ connected, count }: { connected: boolean; count: number }) {
@@ -387,16 +257,6 @@ export default function AIChat() {
     },
   });
   const telegramEnabled = !!(settings?.telegram_enabled && settings?.telegram_chat_id);
-
-  /* ── AI provider settings (for direct LM Studio support) ── */
-  const { data: aiSettings } = useQuery({
-    queryKey: ['ai_settings'],
-    queryFn: getAISettings,
-  });
-  const { data: agentSettings } = useQuery({
-    queryKey: ['agent_settings'],
-    queryFn: getAgentSettings,
-  });
 
   useEffect(() => {
     try {
@@ -695,22 +555,11 @@ export default function AIChat() {
     if (otherFiles.length > 0) newMsg.files = otherFiles.map((f) => ({ name: f.name, type: f.type, size: f.size, textContent: f.textContent }));
     contextMsgs.push(newMsg);
 
-    const shouldRunAgent = shouldLaunchAgentRun(text, pendingFiles);
-    const isLmStudio = aiSettings?.provider === 'lmstudio' && !!aiSettings?.baseUrl;
-
-    if (shouldRunAgent && !isLmStudio) {
+    if (shouldLaunchAgentRun(text, pendingFiles)) {
       try {
         const agentPrompt = buildAgentRunPrompt(text, pendingFiles);
-        const aiOverride = aiSettings
-          ? {
-              provider: aiSettings.provider || undefined,
-              apiKey: aiSettings.apiKey || undefined,
-              model: aiSettings.model || undefined,
-              baseUrl: aiSettings.baseUrl || undefined,
-            }
-          : undefined;
         const { data, error } = await supabase.functions.invoke('agent-run', {
-          body: { prompt: agentPrompt, source: 'ai-chat', ...(aiOverride ? { aiOverride } : {}) },
+          body: { prompt: agentPrompt, source: 'ai-chat' },
         });
         if (error || data?.error || !data?.runId) {
           throw new Error(data?.error || error?.message || 'Agent run did not start');
@@ -749,8 +598,10 @@ Open the activity panel on the right if you want to follow the process flow whil
     }
 
     try {
-      if (isLmStudio) {
-        const handleDone = () => {
+      await streamChat({
+        messages: contextMsgs,
+        onDelta: upsert,
+        onDone: () => {
           setIsLoading(false);
           setAppMessages((prev) =>
             prev.map((m, i) =>
@@ -758,62 +609,16 @@ Open the activity panel on the right if you want to follow the process flow whil
                 ? { ...m, timestamp: new Date().toISOString() } : m
             )
           );
+          // Mirror AI response to Telegram
           if (telegramEnabled && resolvedChatId && assistantSoFar.trim()) {
             void mirrorBrowserMessage('AI', assistantSoFar);
           }
-        };
-        const handleError = (err: string) => {
-          const errorTitle = shouldRunAgent ? 'Local AI Worker Error' : 'LM Studio Error';
-          toast({ title: errorTitle, description: err, variant: 'destructive' });
+        },
+        onError: (err) => {
+          toast({ title: 'AI Error', description: err, variant: 'destructive' });
           setIsLoading(false);
-        };
-
-        if (shouldRunAgent) {
-          await streamChatViaLocalWorker({
-            serverUrl: agentSettings?.localAgentUrl || 'http://localhost:3001',
-            aiSettings: {
-              apiKey: aiSettings!.apiKey || 'lm-studio',
-              model: aiSettings!.model || undefined,
-            },
-            messages: contextMsgs,
-            onDelta: upsert,
-            onDone: handleDone,
-            onError: handleError,
-          });
-        } else {
-          await streamChatLocal({
-            baseUrl: aiSettings!.baseUrl,
-            apiKey: aiSettings!.apiKey || 'lm-studio',
-            model: aiSettings!.model || '',
-            messages: contextMsgs,
-            onDelta: upsert,
-            onDone: handleDone,
-            onError: handleError,
-          });
-        }
-      } else {
-        await streamChat({
-          messages: contextMsgs,
-          onDelta: upsert,
-          onDone: () => {
-            setIsLoading(false);
-            setAppMessages((prev) =>
-              prev.map((m, i) =>
-                i === prev.length - 1 && m.role === 'assistant' && !m.timestamp
-                  ? { ...m, timestamp: new Date().toISOString() } : m
-              )
-            );
-            // Mirror AI response to Telegram
-            if (telegramEnabled && resolvedChatId && assistantSoFar.trim()) {
-              void mirrorBrowserMessage('AI', assistantSoFar);
-            }
-          },
-          onError: (err) => {
-            toast({ title: 'AI Error', description: err, variant: 'destructive' });
-            setIsLoading(false);
-          },
-        });
-      }
+        },
+      });
     } catch {
       toast({ title: 'Connection error', variant: 'destructive' });
       setIsLoading(false);

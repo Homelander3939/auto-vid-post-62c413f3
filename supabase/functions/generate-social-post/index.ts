@@ -10,44 +10,11 @@ const corsHeaders = {
 
 const TELEGRAM_GATEWAY = 'https://connector-gateway.lovable.dev/telegram';
 
-interface AIOverride {
-  provider?: string;
-  apiKey?: string;
-  model?: string;
-  baseUrl?: string;
-}
-
 interface Body {
   prompt: string;
   platforms: string[];
   includeImage?: boolean;
   stream?: boolean;
-  /** Client-supplied AI provider config that overrides what is stored in the DB.
-   *  Used when the DB column (e.g. ai_base_url) is missing or out of sync. */
-  aiOverride?: AIOverride;
-}
-
-interface LocalLlmCommandResult {
-  ok?: boolean;
-  stage?: string;
-  model?: string;
-  baseUrl?: string;
-  data?: unknown;
-  error?: string;
-  details?: { model?: string; baseUrl?: string } | null;
-}
-
-const LOCAL_LM_STUDIO_DEFAULT_TIMEOUT_MS = 90_000;
-const LOCAL_LM_STUDIO_MIN_TIMEOUT_MS = 10_000;
-const LOCAL_LM_STUDIO_MAX_TIMEOUT_MS = 180_000;
-
-function parseLocalLlmCommandResult(raw: string | null, logLabel: string): LocalLlmCommandResult {
-  try {
-    return JSON.parse(raw || '{}');
-  } catch (parseError) {
-    console.warn(`${logLabel}:`, parseError);
-    return {};
-  }
 }
 
 const PLATFORM_RULES: Record<string, string> = {
@@ -88,23 +55,6 @@ function trimSnippet(s: string, n = 280): string {
 function truncateText(s: string, n: number): string {
   const t = (s || '').replace(/\s+/g, ' ').trim();
   return t.length > n ? t.slice(0, Math.max(1, n - 1)).trimEnd() + '…' : t;
-}
-
-function isLocalUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    const h = u.hostname.toLowerCase();
-    return (
-      h === 'localhost' ||
-      h === '127.0.0.1' ||
-      h === '::1' ||
-      h.startsWith('192.168.') ||
-      h.startsWith('10.') ||
-      /^172\.(1[6-9]|2\d|3[01])\./.test(h)
-    );
-  } catch {
-    return false;
-  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -484,74 +434,6 @@ async function searchLocalImagesViaCommand(
   }
 
   throw new Error('Local image search timed out (worker offline?)');
-}
-
-async function callLocalLmStudioJsonViaCommand(
-  supabase: any,
-  opts: {
-    stage: string;
-    systemPrompt: string;
-    userPrompt: string;
-    schema: any;
-    toolName: string;
-    baseUrl: string;
-    apiKey: string;
-    model: string;
-    timeoutMs?: number;
-  },
-): Promise<any> {
-  const timeoutMs = Math.min(
-    Math.max(opts.timeoutMs || LOCAL_LM_STUDIO_DEFAULT_TIMEOUT_MS, LOCAL_LM_STUDIO_MIN_TIMEOUT_MS),
-    LOCAL_LM_STUDIO_MAX_TIMEOUT_MS,
-  );
-  const { data: inserted, error } = await supabase
-    .from('pending_commands')
-    .insert({
-      command: 'lmstudio_chat_json',
-      args: {
-        stage: opts.stage,
-        systemPrompt: opts.systemPrompt,
-        userPrompt: opts.userPrompt,
-        schema: opts.schema,
-        toolName: opts.toolName,
-        baseUrl: opts.baseUrl,
-        apiKey: opts.apiKey,
-        model: opts.model,
-      },
-    })
-    .select('id')
-    .single();
-  if (error || !inserted?.id) {
-    throw new Error(`Could not queue LM Studio request: ${error?.message || 'unknown'}`);
-  }
-
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    const { data: row } = await supabase
-      .from('pending_commands')
-      .select('status, result')
-      .eq('id', inserted.id)
-      .single();
-    if (!row) continue;
-    if (row.status === 'completed') {
-      const parsed = parseLocalLlmCommandResult(row.result, 'LM Studio completed result parse failed');
-      if (parsed?.ok === false) {
-        const err = new Error(parsed.error || `LM Studio ${opts.stage} failed`);
-        (err as any).details = parsed.details;
-        throw err;
-      }
-      return parsed?.data ?? {};
-    }
-    if (row.status === 'failed') {
-      const parsed = parseLocalLlmCommandResult(row.result, 'LM Studio failed result parse failed');
-      const err = new Error(parsed.error || row.result || `LM Studio ${opts.stage} failed`);
-      (err as any).details = parsed.details;
-      throw err;
-    }
-  }
-
-  throw new Error(`LM Studio ${opts.stage} timed out waiting for the local desktop worker`);
 }
 
 async function runSearch(opts: {
@@ -1053,36 +935,21 @@ Deno.serve(async (req) => {
   const { data: settings } = await supabase.from('app_settings').select('*').eq('id', 1).single();
   const s: any = settings || {};
 
-  // The client may forward its own AI settings when DB columns are out of sync
-  // (e.g. ai_base_url not yet migrated). Client values take precedence so that
-  // LM Studio (and other local providers) work even before the migration runs.
-  const ov = body.aiOverride || {};
-  const requestedBaseUrl = String(ov.baseUrl ?? s.ai_base_url ?? '').trim();
-  const requestedProvider = String(ov.provider ?? s.ai_provider ?? 'lovable').trim().toLowerCase() || 'lovable';
   const config = resolveChatProviderConfig({
-    provider: requestedProvider,
-    apiKey: ov.apiKey ?? s.ai_api_key,
-    model: ov.model ?? s.ai_model,
-    baseUrl: requestedBaseUrl,
+    provider: s.ai_provider,
+    apiKey: s.ai_api_key,
+    model: s.ai_model,
   }, Deno.env.get('LOVABLE_API_KEY') || '');
-  const usingLocalLmStudioBridge = config.provider === 'lmstudio' || (requestedProvider === 'lmstudio' && isLocalUrl(requestedBaseUrl));
-  if (config.fallbackReason) console.warn('generate-social-post provider fallback:', config.fallbackReason);
-  if (requestedProvider === 'lmstudio' && !requestedBaseUrl.trim()) {
-    return new Response(JSON.stringify({
-      error: config.fallbackReason || 'LM Studio is selected but no base URL is configured.',
-      details: 'Open Settings → AI Post Generator, set the LM Studio URL shown in LM Studio → Developer → Server Settings, and save it before running generation.',
-      stage: 'connect',
-      requestedProvider,
-      resolvedProvider: config.provider,
-    }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  if (config.fallbackReason) {
+    console.warn('generate-social-post provider fallback:', config.fallbackReason);
   }
   const apiKey = config.key;
-  if (!apiKey && !usingLocalLmStudioBridge) {
+  if (!apiKey) {
     return new Response(JSON.stringify({ error: 'No AI API key. Configure one in Settings.' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 
   // Named for use in the SSE event labels below.
-  const provider = usingLocalLmStudioBridge ? 'lmstudio' : config.requestedProvider;
+  const provider = config.requestedProvider;
   const textModel = config.model;
 
   const llm: LLMOpts = { endpoint: config.url, apiKey, model: config.model, googleMode: config.googleMode };
@@ -1094,33 +961,6 @@ Deno.serve(async (req) => {
   const imageKeysChain: { id?: string; provider: string; apiKey: string; model: string; label?: string; enabled?: boolean }[] =
     Array.isArray(s.image_keys) ? s.image_keys : [];
   const localUrl = s.local_agent_url || 'http://localhost:3001';
-  const runStructuredLlmStage = async (
-    stage: string,
-    args: { systemPrompt: string; userPrompt: string; schema: any; toolName: string },
-  ): Promise<any> => {
-    try {
-      if (usingLocalLmStudioBridge) {
-        return await callLocalLmStudioJsonViaCommand(supabase, {
-          stage,
-          ...args,
-          baseUrl: requestedBaseUrl,
-          apiKey: String(ov.apiKey ?? s.ai_api_key ?? 'lm-studio').trim() || 'lm-studio',
-          model: textModel,
-        });
-      }
-      return await callLLMJson({ ...llm, ...args });
-    } catch (e: any) {
-      const mode = usingLocalLmStudioBridge ? 'local LM Studio bridge' : provider;
-      const err = new Error(`${stage} failed via ${mode}: ${e?.message || 'Unknown error'}`);
-      (err as any).details = e?.details || {
-        requestedProvider,
-        resolvedProvider: config.provider,
-        model: textModel,
-        baseUrl: requestedBaseUrl || undefined,
-      };
-      throw err;
-    }
-  };
 
   const wantsStream = body.stream !== false;
 
@@ -1219,36 +1059,16 @@ Deno.serve(async (req) => {
       // Send the jobId first so the client can persist it and resume on reload.
       if (jobId) send('job', { id: jobId });
 
-      let currentStage = 'connect';
-      const stageLabels: Record<string, string> = {
-        connect: 'Connecting to AI provider',
-        plan: 'Planning research strategy',
-        research: 'Researching sources',
-        reflect: 'Reviewing research',
-        image: 'Preparing image',
-        write: 'Writing platform variants',
-        save: 'Saving draft',
-        done: 'Finishing up',
-      };
-
       try {
         // ── 1. Connect ──
-        const providerLabel = usingLocalLmStudioBridge ? 'LM Studio via local desktop bridge' : provider;
-        send('step', { id: 'init', emoji: '🚀', label: `Connecting to ${providerLabel}…`, status: 'active' });
-        if (config.fallbackReason) {
-          send('step', { id: 'init-fallback', emoji: '⚠️', label: config.fallbackReason, status: 'error' });
-        }
-        if (usingLocalLmStudioBridge) {
-          send('tool', { kind: 'llm', name: 'lmstudio-local-bridge', detail: `${textModel || 'auto'} · ${requestedBaseUrl}` });
-        }
-        send('step', { id: 'init', emoji: '✅', label: `Connected · ${textModel || 'auto model'}`, status: 'done' });
-        send('tool', { kind: 'llm', name: provider, detail: textModel || 'auto' });
+        send('step', { id: 'init', emoji: '🚀', label: `Connecting to ${provider}…`, status: 'active' });
+        send('step', { id: 'init', emoji: '✅', label: `Connected · ${textModel}`, status: 'done' });
+        send('tool', { kind: 'llm', name: provider, detail: textModel });
 
         // ── 2. Plan ──
-        currentStage = 'plan';
         send('step', { id: 'plan', emoji: '🧠', label: 'Planning research strategy…', status: 'active' });
-        const plan = await runStructuredLlmStage('plan', {
-          toolName: 'plan', schema: PLAN_SCHEMA,
+        const plan = await callLLMJson({
+          ...llm, toolName: 'plan', schema: PLAN_SCHEMA,
           systemPrompt: planPrompt(),
           userPrompt: `User request: "${body.prompt}"\nTarget platforms: ${body.platforms.join(', ')}`,
         });
@@ -1261,7 +1081,6 @@ Deno.serve(async (req) => {
         const queries: string[] = (plan.needsResearch ? (plan.queries || []) : []).slice(0, 4);
 
         for (let i = 0; i < queries.length; i++) {
-          currentStage = 'research';
           throwIfCancelled();
           const q = queries[i];
           const stepId = `search-${i}`;
@@ -1306,11 +1125,10 @@ Deno.serve(async (req) => {
         // ── 5. Re-plan: do we have enough? Maybe one more search ──
         let keyFacts: string[] = [];
         if (enrichedSources.length > 0) {
-          currentStage = 'reflect';
           send('step', { id: 'reflect', emoji: '🤔', label: 'Reviewing research, extracting key facts…', status: 'active' });
           try {
-            const decision = await runStructuredLlmStage('reflect', {
-              toolName: 'reflect', schema: REPLAN_SCHEMA,
+            const decision = await callLLMJson({
+              ...llm, toolName: 'reflect', schema: REPLAN_SCHEMA,
               systemPrompt: 'You are a research analyst deciding whether the gathered evidence is sufficient and pulling out specific facts to use.',
               userPrompt: replanPrompt(body.prompt, enrichedSources),
             });
@@ -1347,7 +1165,6 @@ Deno.serve(async (req) => {
           sourceImagePath?: string | null;
           sourceImageCredit?: string;
         }> = (async () => {
-          currentStage = 'image';
           if (!body.includeImage || plan.imageStrategy === 'none') return { url: null, path: null, strategy: 'none' };
           const strategy = plan.imageStrategy;
           const query = plan.imageQuery || body.prompt;
@@ -1491,10 +1308,9 @@ Deno.serve(async (req) => {
         })();
 
         // ── 7. Write platform-tailored variants (with real facts) ──
-        currentStage = 'write';
         send('step', { id: 'write', emoji: '✍️', label: `Writing ${body.platforms.length} tailored variant${body.platforms.length === 1 ? '' : 's'}…`, status: 'active' });
-        const writeResult = await runStructuredLlmStage('write', {
-          toolName: 'compose_post', schema: writeSchema(body.platforms),
+        const writeResult = await callLLMJson({
+          ...llm, toolName: 'compose_post', schema: writeSchema(body.platforms),
           systemPrompt: writePromptSystem(body.platforms),
           userPrompt: writePromptUser(body.prompt, plan.angle || plan.intent, keyFacts, enrichedSources.slice(0, 8), body.platforms),
         });
@@ -1525,7 +1341,6 @@ Deno.serve(async (req) => {
         // status flipped to pending. This is the "every successful generation lands on Social Posts" UX.
         let savedPostId: string | null = null;
         try {
-          currentStage = 'save';
           const primary = variants[body.platforms[0]] || Object.values(variants)[0];
           if (primary) {
             const platformResults = body.platforms.map((name) => ({ name, status: 'pending' as const }));
@@ -1548,7 +1363,6 @@ Deno.serve(async (req) => {
           console.error('auto-save draft failed', e);
         }
 
-        currentStage = 'done';
         send('step', { id: 'done', emoji: '🎉', label: 'All done — saved as draft on Social Posts!', status: 'done' });
         const finalResult = {
           variants, sources: finalSources,
@@ -1622,16 +1436,7 @@ Deno.serve(async (req) => {
           send('error', { error: 'Cancelled by user' });
         } else {
           console.error('agent error', e);
-          const stageLabel = stageLabels[currentStage] || currentStage;
-          send('step', { id: `failed-${currentStage}`, emoji: '❌', label: `${stageLabel} failed — ${(e?.message || 'Unknown error').slice(0, 140)}`, status: 'error' });
-          send('error', {
-            error: e?.message || 'Unknown error',
-            status: e?.status || 500,
-            stage: currentStage,
-            details: e?.details || null,
-            provider,
-            model: textModel,
-          });
+          send('error', { error: e?.message || 'Unknown error', status: e?.status || 500 });
         }
         if (jobId) {
           await flushEvents();

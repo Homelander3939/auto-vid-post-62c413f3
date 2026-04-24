@@ -11,7 +11,6 @@ interface Body {
   apiKey?: string;
   localUrl?: string;
   model?: string; // for image: actually invoke this model with a tiny generation call
-  comfyuiBaseUrl?: string; // for ComfyUI image provider
 }
 
 function normalizeGoogleImageModel(model?: string): string {
@@ -237,41 +236,16 @@ async function probeImage(provider: string, apiKey: string, model?: string): Pro
   }
 }
 
-async function probeComfyUI(baseUrl: string): Promise<{ ok: boolean; sample?: string; latency: number; error?: string }> {
-  const t0 = Date.now();
-  try {
-    const url = `${(baseUrl || 'http://localhost:8188').replace(/\/+$/, '')}/system_stats`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(5000) }).catch(() => null);
-    if (!r || !r.ok) {
-      return { ok: false, latency: Date.now() - t0, error: `ComfyUI not reachable at ${baseUrl}. Make sure ComfyUI is running.` };
-    }
-    const j = await r.json().catch(() => ({} as any));
-    const gpuName = j?.system?.gpus?.[0]?.name;
-    const pythonVer = j?.system?.python_version;
-    const sample = gpuName || (pythonVer ? `Python ${pythonVer}` : 'ComfyUI running');
-    return { ok: true, latency: Date.now() - t0, sample };
-  } catch (e: any) {
-    return { ok: false, latency: Date.now() - t0, error: e?.message || 'Unknown error' };
-  }
-}
-
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
   try {
-    const { kind, provider, apiKey, localUrl, model, comfyuiBaseUrl } = (await req.json()) as Body;
+    const { kind, provider, apiKey, localUrl, model } = (await req.json()) as Body;
     if (!kind || !provider) {
       return new Response(JSON.stringify({ ok: false, error: 'kind and provider required' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
-    if (kind === 'image' && provider === 'comfyui') {
-      const result = await probeComfyUI(comfyuiBaseUrl || 'http://localhost:8188');
-      return new Response(JSON.stringify({ ...result, provider }), {
-        status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-    const needsKey = provider !== 'local' && provider !== 'lovable' && provider !== 'comfyui';
+    const needsKey = provider !== 'local' && provider !== 'lovable';
     if (needsKey && !apiKey) {
       return new Response(JSON.stringify({ ok: false, error: 'API key required for this provider' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },

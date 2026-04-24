@@ -4,7 +4,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-interface Body { provider: string; apiKey?: string; comfyuiBaseUrl?: string }
+interface Body { provider: string; apiKey?: string }
 interface Model { id: string; label: string; recommended?: boolean }
 
 const GOOGLE_IMAGE_MODEL_PREFERENCE = [
@@ -37,7 +37,7 @@ function modelRank(id: string): number {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
   try {
-    const { provider, apiKey, comfyuiBaseUrl } = (await req.json()) as Body;
+    const { provider, apiKey } = (await req.json()) as Body;
     let models: Model[] = [];
     let error: string | undefined;
 
@@ -142,18 +142,6 @@ Deno.serve(async (req) => {
       }
     } else if (provider === 'unsplash' || provider === 'pexels') {
       models = [{ id: 'default', label: provider === 'unsplash' ? 'Unsplash search' : 'Pexels search', recommended: true }];
-    } else if (provider === 'comfyui') {
-      // ComfyUI doesn't have discrete models in the same sense; it uses workflows.
-      // Return a placeholder that lets users know the server is configured.
-      const baseUrl = (comfyuiBaseUrl || 'http://localhost:8188').replace(/\/+$/, '');
-      try {
-        const r = await fetch(`${baseUrl}/object_info`, { signal: AbortSignal.timeout(5000) });
-        if (!r.ok) throw new Error(`ComfyUI ${r.status}`);
-        models = [{ id: 'comfyui-default', label: 'ComfyUI (uses your loaded workflow)', recommended: true }];
-      } catch (e: any) {
-        error = `ComfyUI not reachable at ${baseUrl}: ${e.message}. Make sure ComfyUI is running.`;
-        models = [{ id: 'comfyui-default', label: 'ComfyUI (server offline)', recommended: false }];
-      }
     } else {
       error = `Unsupported provider or missing API key: ${provider}`;
     }

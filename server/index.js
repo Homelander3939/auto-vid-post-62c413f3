@@ -28,7 +28,7 @@ const { checkPlatformStats, formatStatsForTelegram, runBrowserTask } = require('
 const { sendTelegram } = require('./telegram');
 const { scanFolder, scanAllFiles } = require('./folderWatcher');
 const { parseTextFile } = require('./textParser');
-const { processTelegramAIResponse, streamLMStudio, callLMStudioJson, LM_STUDIO_URL } = require('./ai-handler');
+const { processTelegramAIResponse, streamLMStudio, LM_STUDIO_URL } = require('./ai-handler');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
@@ -930,25 +930,13 @@ app.post('/api/check-all-stats', async (req, res) => {
 // --- AI Chat endpoint (uses LM Studio locally instead of cloud AI) ---
 app.post('/api/ai-chat', async (req, res) => {
   try {
-    const { messages, aiSettings } = req.body || {};
+    const { messages } = req.body || {};
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array is required' });
     }
 
-    const { data: appSettings } = await supabase
-      .from('app_settings')
-      .select('ai_base_url, ai_api_key, ai_model')
-      .eq('id', 1)
-      .single();
-
-    const lmStudioConfig = {
-      baseUrl: appSettings?.ai_base_url,
-      apiKey: aiSettings?.apiKey || appSettings?.ai_api_key,
-      model: aiSettings?.model || appSettings?.ai_model,
-    };
-
     // Stream response from LM Studio
-    const streamResp = await streamLMStudio(messages, supabase, lmStudioConfig);
+    const streamResp = await streamLMStudio(messages, supabase);
     if (!streamResp.ok) {
       const errText = await streamResp.text().catch(() => '');
       console.error('[AI-Chat] LM Studio error:', streamResp.status, errText);
@@ -1451,45 +1439,6 @@ async function processPendingCommands() {
             } catch (err) {
               await supabase.from('pending_commands').update({
                 status: 'failed', result: err.message, completed_at: new Date().toISOString(),
-              }).eq('id', cmd.id);
-            }
-          } else if (cmd.command === 'lmstudio_chat_json') {
-            const stage = cmd.args?.stage || 'llm';
-            const model = cmd.args?.model || '';
-            console.log(`[Commands] lmstudio_chat_json: stage=${stage}${model ? ` model=${model}` : ''}`);
-            try {
-              const result = await callLMStudioJson({
-                systemPrompt: cmd.args?.systemPrompt || '',
-                userPrompt: cmd.args?.userPrompt || '',
-                schema: cmd.args?.schema || { type: 'object', properties: {} },
-                toolName: cmd.args?.toolName || 'structured_output',
-              }, {
-                baseUrl: cmd.args?.baseUrl,
-                apiKey: cmd.args?.apiKey,
-                model: cmd.args?.model,
-              });
-              await supabase.from('pending_commands').update({
-                status: 'completed',
-                result: JSON.stringify({
-                  ok: true,
-                  stage,
-                  model: result.model,
-                  baseUrl: result.baseUrl,
-                  data: result.data,
-                }),
-                completed_at: new Date().toISOString(),
-              }).eq('id', cmd.id);
-              console.log(`[Commands] lmstudio_chat_json done: stage=${stage}`);
-            } catch (err) {
-              await supabase.from('pending_commands').update({
-                status: 'failed',
-                result: JSON.stringify({
-                  ok: false,
-                  stage,
-                  error: err.message,
-                  details: err.details || null,
-                }),
-                completed_at: new Date().toISOString(),
               }).eq('id', cmd.id);
             }
           } else if (cmd.command && cmd.command.startsWith('agent_')) {
