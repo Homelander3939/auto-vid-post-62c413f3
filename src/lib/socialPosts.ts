@@ -145,13 +145,19 @@ export async function getAISettings(): Promise<AISettings> {
     provider: row.ai_provider || 'lovable',
     apiKey: row.ai_api_key || '',
     model: row.ai_model || 'google/gemini-3-flash-preview',
+    baseUrl: row.ai_base_url || '',
   };
 }
 
 export async function saveAISettings(s: AISettings): Promise<void> {
   const { error } = await supabase
     .from('app_settings')
-    .update({ ai_provider: s.provider, ai_api_key: s.apiKey, ai_model: s.model } as any)
+    .update({
+      ai_provider: s.provider,
+      ai_api_key: s.apiKey,
+      ai_model: s.model,
+      ai_base_url: s.baseUrl || '',
+    } as any)
     .eq('id', 1);
   if (error) throw new Error(error.message);
 }
