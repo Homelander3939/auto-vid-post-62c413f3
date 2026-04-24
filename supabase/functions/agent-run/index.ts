@@ -548,6 +548,7 @@ async function getProviderMap(supabase: any) {
       provider: rawProvider,
       apiKey: rawApiKey,
       model: chatModel,
+      baseUrl: s.ai_base_url || '',
     },
     research: {
       provider: s.research_provider || 'auto',
