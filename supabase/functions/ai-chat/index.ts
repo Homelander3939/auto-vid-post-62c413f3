@@ -570,19 +570,39 @@ async function executeTool(
 
 /* ── Lightweight context ──────────────────────────────── */
 
-async function getAppContextFast(supabase: any): Promise<string> {
+function keywordOverlap(a: string, b: string): number {
+  const tokens = (s: string) => new Set(String(s || '').toLowerCase().match(/[a-z0-9]{3,}/g) || []);
+  const ta = tokens(a); const tb = tokens(b);
+  if (ta.size === 0 || tb.size === 0) return 0;
+  let hit = 0;
+  for (const t of ta) if (tb.has(t)) hit++;
+  return hit;
+}
+
+interface AppContext {
+  text: string;
+  memories: Array<{ title: string; content: string; importance: number }>;
+  skills: Array<{ name: string; slug: string; description: string; triggers: string[] }>;
+  agentMemoryEnabled: boolean;
+}
+
+async function getAppContextFast(supabase: any, userPrompt = ''): Promise<AppContext> {
   const [
     { data: jobs },
     { data: scheduled },
     { data: settings },
     { data: scheduleConfigs },
     { data: socialPosts },
+    { data: memoriesRaw },
+    { data: skillsRaw },
   ] = await Promise.all([
     supabase.from('upload_jobs').select('id,title,video_file_name,status,target_platforms').order('created_at', { ascending: false }).limit(10),
     supabase.from('scheduled_uploads').select('id,title,video_file_name,status,target_platforms,scheduled_at').eq('status', 'scheduled').order('scheduled_at', { ascending: true }).limit(5),
-    supabase.from('app_settings').select('youtube_enabled,tiktok_enabled,instagram_enabled,telegram_enabled,folder_path,research_provider,image_provider,ai_provider,ai_model').eq('id', 1).single(),
+    supabase.from('app_settings').select('youtube_enabled,tiktok_enabled,instagram_enabled,telegram_enabled,folder_path,research_provider,image_provider,ai_provider,ai_model,agent_memory_enabled,agent_memory_max_items').eq('id', 1).single(),
     supabase.from('schedule_config').select('id,name,enabled,cron_expression,platforms').order('id', { ascending: true }),
     supabase.from('social_posts').select('id,status,target_platforms,ai_prompt').order('created_at', { ascending: false }).limit(5),
+    supabase.from('agent_memories').select('title,content,importance,tags').eq('enabled', true).order('importance', { ascending: false }).order('updated_at', { ascending: false }).limit(40),
+    supabase.from('agent_skills').select('name,slug,description,triggers').eq('enabled', true).limit(50),
   ]);
 
   const j = jobs || [];
@@ -619,7 +639,33 @@ async function getAppContextFast(supabase: any): Promise<string> {
     ctx += `Recent social posts: ${(socialPosts || []).map((p: any) => `[${p.status}] ${(p.ai_prompt || '').slice(0, 40)}`).join(' | ')}\n`;
   }
   ctx += '===';
-  return ctx;
+
+  // Score and pick relevant memories for this user prompt
+  const memMax = Math.min(Math.max(Number(settings?.agent_memory_max_items) || 8, 1), 20);
+  const memEnabled = settings?.agent_memory_enabled !== false;
+  const memList = (memoriesRaw || []) as any[];
+  const memories = memEnabled
+    ? memList
+        .map((m) => ({ m, score: keywordOverlap(userPrompt, `${m.title}\n${m.content}\n${(m.tags || []).join(' ')}`) + (Number(m.importance) || 0) / 25 }))
+        .filter((e) => e.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, memMax)
+        .map((e) => ({ title: e.m.title, content: e.m.content, importance: e.m.importance }))
+    : [];
+
+  // Score skills (by trigger/name overlap with prompt)
+  const skillList = (skillsRaw || []) as any[];
+  const skills = skillList
+    .map((s) => ({
+      s,
+      score: keywordOverlap(userPrompt, `${s.name}\n${s.description}\n${(s.triggers || []).join(' ')}`),
+    }))
+    .filter((e) => e.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6)
+    .map((e) => ({ name: e.s.name, slug: e.s.slug, description: e.s.description, triggers: e.s.triggers || [] }));
+
+  return { text: ctx, memories, skills, agentMemoryEnabled: memEnabled };
 }
 
 /* ── System prompt ────────────────────────────────────── */
