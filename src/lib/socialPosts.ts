@@ -45,6 +45,8 @@ export interface AISettings {
   provider: string;
   apiKey: string;
   model: string;
+  /** Optional base URL — used for self-hosted providers (LM Studio, Ollama, custom OpenAI-compatible). */
+  baseUrl?: string;
 }
 
 export interface ImageKeyEntry {
@@ -143,13 +145,19 @@ export async function getAISettings(): Promise<AISettings> {
     provider: row.ai_provider || 'lovable',
     apiKey: row.ai_api_key || '',
     model: row.ai_model || 'google/gemini-3-flash-preview',
+    baseUrl: row.ai_base_url || '',
   };
 }
 
 export async function saveAISettings(s: AISettings): Promise<void> {
   const { error } = await supabase
     .from('app_settings')
-    .update({ ai_provider: s.provider, ai_api_key: s.apiKey, ai_model: s.model } as any)
+    .update({
+      ai_provider: s.provider,
+      ai_api_key: s.apiKey,
+      ai_model: s.model,
+      ai_base_url: s.baseUrl || '',
+    } as any)
     .eq('id', 1);
   if (error) throw new Error(error.message);
 }
@@ -536,8 +544,8 @@ export async function listAIModels(provider: string, apiKey: string, baseUrl?: s
 }
 
 export interface ConnectionTestResult { ok: boolean; error?: string; latency?: number; provider?: string; model?: string; sample?: string }
-export async function testAIConnection(provider: string, apiKey: string, model: string): Promise<ConnectionTestResult> {
-  const { data, error } = await supabase.functions.invoke('test-ai-connection', { body: { provider, apiKey, model } });
+export async function testAIConnection(provider: string, apiKey: string, model: string, baseUrl?: string): Promise<ConnectionTestResult> {
+  const { data, error } = await supabase.functions.invoke('test-ai-connection', { body: { provider, apiKey, model, baseUrl } });
   if (error) return { ok: false, error: error.message };
   return data as ConnectionTestResult;
 }

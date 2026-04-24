@@ -469,11 +469,11 @@ export default function SettingsPage() {
     } finally { setLoadingImageModels(false); }
   };
 
-  const loadModels = async (provider: string, apiKey: string) => {
+  const loadModels = async (provider: string, apiKey: string, baseUrl?: string) => {
     setLoadingModels(true);
     setModelsError(null);
     try {
-      const models = await listAIModels(provider, apiKey);
+      const models = await listAIModels(provider, apiKey, baseUrl);
       setAiModels(models);
     } catch (e: any) {
       setModelsError(e.message || 'Failed to load models');
@@ -487,7 +487,7 @@ export default function SettingsPage() {
     setTesting(true);
     setTestResult(null);
     try {
-      const r = await testAIConnection(aiSettings.provider, aiSettings.apiKey, aiSettings.model);
+      const r = await testAIConnection(aiSettings.provider, aiSettings.apiKey, aiSettings.model, aiSettings.baseUrl);
       setTestResult(r);
       if (r.ok) toast({ title: '✅ Connected', description: `${r.model} responded in ${r.latency}ms` });
       else toast({ title: 'Connection failed', description: r.error, variant: 'destructive' });
@@ -524,10 +524,13 @@ export default function SettingsPage() {
     }
   };
 
-  // Auto-load models when provider changes (or API key for non-lovable providers)
+  // Auto-load models when provider changes (or when LM Studio baseUrl/key updates)
   useEffect(() => {
     if (aiSettings.provider === 'lovable') {
       loadModels('lovable', '');
+    } else if (aiSettings.provider === 'lmstudio') {
+      // LM Studio: try with baseUrl + (any) key — backend returns hint list if unreachable
+      loadModels('lmstudio', aiSettings.apiKey || 'lm-studio', aiSettings.baseUrl);
     } else if (aiSettings.apiKey) {
       loadModels(aiSettings.provider, aiSettings.apiKey);
     } else {
@@ -535,7 +538,7 @@ export default function SettingsPage() {
       setModelsError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiSettings.provider]);
+  }, [aiSettings.provider, aiSettings.baseUrl]);
 
   const refreshAccounts = () => {
     queryClient.invalidateQueries({ queryKey: ['platform_accounts'] });
@@ -710,10 +713,10 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <Wand2 className="w-4 h-4 text-primary" />
-            AI Post Generator
+            LLM Provider
           </CardTitle>
           <CardDescription>
-            Powers the AI Post Generator. Default uses Lovable AI Gateway (no key needed). Add your own provider key to override.
+            Single LLM used for AI Post Generator, AI Chat, and agentic flows. Default uses the Lovable AI Gateway (no key needed). Add your own provider key — or point at <span className="font-mono">LM Studio</span> running on your PC — to override.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -726,19 +729,21 @@ export default function SettingsPage() {
                   <SelectItem value="lovable">Lovable AI (default)</SelectItem>
                   <SelectItem value="openai">OpenAI</SelectItem>
                   <SelectItem value="google">Google (Gemini)</SelectItem>
+                  <SelectItem value="anthropic">Anthropic (Claude)</SelectItem>
+                  <SelectItem value="xai">xAI (Grok)</SelectItem>
                   <SelectItem value="nvidia">NVIDIA</SelectItem>
                   <SelectItem value="openrouter">OpenRouter</SelectItem>
-                  <SelectItem value="anthropic">Anthropic</SelectItem>
+                  <SelectItem value="lmstudio">LM Studio (local PC)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
               <Label className="text-xs flex items-center justify-between">
                 <span>Model</span>
-                {aiSettings.provider !== 'lovable' && aiSettings.apiKey && (
+                {(aiSettings.provider === 'lmstudio' || (aiSettings.provider !== 'lovable' && aiSettings.apiKey)) && (
                   <button
                     type="button"
-                    onClick={() => loadModels(aiSettings.provider, aiSettings.apiKey)}
+                    onClick={() => loadModels(aiSettings.provider, aiSettings.apiKey || 'lm-studio', aiSettings.baseUrl)}
                     className="text-[10px] text-primary hover:underline"
                     disabled={loadingModels}
                   >
@@ -759,7 +764,7 @@ export default function SettingsPage() {
                 <Input
                   value={aiSettings.model}
                   onChange={(e) => setAiSettings((s) => ({ ...s, model: e.target.value }))}
-                  placeholder={aiSettings.provider === 'lovable' ? 'google/gemini-3-flash-preview' : 'Enter API key to load models'}
+                  placeholder={aiSettings.provider === 'lovable' ? 'google/gemini-3-flash-preview' : aiSettings.provider === 'lmstudio' ? 'e.g. google/gemma-3-27b' : 'Enter API key to load models'}
                   disabled={loadingModels}
                 />
               )}
@@ -768,9 +773,24 @@ export default function SettingsPage() {
               )}
             </div>
           </div>
+
+          {aiSettings.provider === 'lmstudio' && (
+            <div className="space-y-2">
+              <Label className="text-xs">LM Studio Base URL</Label>
+              <Input
+                value={aiSettings.baseUrl || ''}
+                onChange={(e) => setAiSettings((s) => ({ ...s, baseUrl: e.target.value }))}
+                placeholder="http://192.168.50.33:1234"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Public URL of LM Studio's OpenAI-compatible server (don't include <span className="font-mono">/v1</span>). The local worker on your PC will reach this directly; the cloud falls back to a hint model list when LM Studio isn't reachable.
+              </p>
+            </div>
+          )}
+
           {aiSettings.provider !== 'lovable' && (
             <div className="space-y-2">
-              <Label className="text-xs">API Key</Label>
+              <Label className="text-xs">{aiSettings.provider === 'lmstudio' ? 'API Key (optional — any value)' : 'API Key'}</Label>
               <div className="flex gap-2">
                 <div className="flex-1">
                   <PasswordInput
@@ -780,6 +800,8 @@ export default function SettingsPage() {
                       aiSettings.provider === 'google' ? 'AIza...' :
                       aiSettings.provider === 'nvidia' ? 'nvapi-...' :
                       aiSettings.provider === 'anthropic' ? 'sk-ant-...' :
+                      aiSettings.provider === 'xai' ? 'xai-...' :
+                      aiSettings.provider === 'lmstudio' ? 'lm-studio' :
                       'sk-...'
                     }
                   />
@@ -788,8 +810,8 @@ export default function SettingsPage() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => loadModels(aiSettings.provider, aiSettings.apiKey)}
-                  disabled={!aiSettings.apiKey || loadingModels}
+                  onClick={() => loadModels(aiSettings.provider, aiSettings.apiKey || 'lm-studio', aiSettings.baseUrl)}
+                  disabled={(aiSettings.provider !== 'lmstudio' && !aiSettings.apiKey) || loadingModels}
                 >
                   {loadingModels ? 'Checking…' : 'Load models'}
                 </Button>
@@ -800,6 +822,8 @@ export default function SettingsPage() {
                 {aiSettings.provider === 'openai' && 'Get a key at platform.openai.com/api-keys'}
                 {aiSettings.provider === 'anthropic' && 'Get a key at console.anthropic.com'}
                 {aiSettings.provider === 'openrouter' && 'Get a key at openrouter.ai/keys'}
+                {aiSettings.provider === 'xai' && 'Get a key at console.x.ai (xAI/Grok API)'}
+                {aiSettings.provider === 'lmstudio' && 'LM Studio doesn\'t require auth — leave blank or use any placeholder.'}
               </p>
             </div>
           )}
@@ -812,7 +836,7 @@ export default function SettingsPage() {
               size="sm"
               variant="outline"
               onClick={handleTestConnection}
-              disabled={testing || !aiSettings.model || (aiSettings.provider !== 'lovable' && !aiSettings.apiKey)}
+              disabled={testing || !aiSettings.model || (aiSettings.provider !== 'lovable' && aiSettings.provider !== 'lmstudio' && !aiSettings.apiKey)}
               className="gap-1.5"
             >
               {testing ? '⏳ Testing…' : '🔌 Test connection'}
@@ -828,7 +852,7 @@ export default function SettingsPage() {
             )}
           </div>
           <div className="text-xs text-muted-foreground border-t pt-3 mt-1">
-            <span className="font-medium">Currently active in AI Post Generator:</span>{' '}
+            <span className="font-medium">Active LLM (used everywhere):</span>{' '}
             <span className="font-mono text-foreground">{savedAi?.provider || 'lovable'} · {savedAi?.model || 'default'}</span>
           </div>
         </CardContent>

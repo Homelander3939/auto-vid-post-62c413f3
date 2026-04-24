@@ -20,11 +20,12 @@ export interface ChatProviderConfigInput {
   provider?: string | null;
   apiKey?: string | null;
   model?: string | null;
+  baseUrl?: string | null;
 }
 
 export interface ResolvedChatProviderConfig {
   requestedProvider: string;
-  provider: 'lovable' | 'openai' | 'google' | 'nvidia' | 'openrouter';
+  provider: 'lovable' | 'openai' | 'google' | 'nvidia' | 'openrouter' | 'xai' | 'lmstudio';
   url: string;
   key: string;
   model: string;
@@ -103,8 +104,46 @@ export function resolveChatProviderConfig(
     };
   }
 
+  if (provider === 'xai' && apiKey) {
+    return {
+      requestedProvider: provider,
+      provider: 'xai',
+      url: 'https://api.x.ai/v1/chat/completions',
+      key: apiKey,
+      model: requestedModel || 'grok-2-latest',
+      googleMode: false,
+    };
+  }
+
+  if (provider === 'lmstudio') {
+    const trimmed = String(chat.baseUrl || '').trim().replace(/\/+$/, '');
+    const isPrivate = !trimmed || /localhost|127\.0\.0\.1|192\.168\.|10\.|172\./i.test(trimmed);
+    if (trimmed && !isPrivate) {
+      const url = trimmed.endsWith('/v1') ? `${trimmed}/chat/completions` : `${trimmed}/v1/chat/completions`;
+      return {
+        requestedProvider: provider,
+        provider: 'lmstudio',
+        url,
+        key: apiKey || 'lm-studio',
+        model: requestedModel,
+        googleMode: false,
+      };
+    }
+    // Private/local LM Studio is unreachable from cloud — fall back to Lovable but tell the user.
+    const model = normalizeLovableModel(requestedModel);
+    return {
+      requestedProvider: provider,
+      provider: 'lovable',
+      url: LOVABLE_GATEWAY,
+      key: lovableKey,
+      model,
+      googleMode: false,
+      fallbackReason: 'LM Studio is on a private network and unreachable from cloud edge functions; using Lovable instead. The local worker on your PC will use LM Studio directly.',
+    };
+  }
+
   let fallbackReason: string | undefined;
-  if ((provider === 'anthropic' || provider === 'lmstudio') && apiKey) {
+  if ((provider === 'anthropic') && apiKey) {
     fallbackReason = `${provider} falls back to Lovable for autonomous tool-calling, so the model must be Lovable-compatible.`;
   } else if (provider !== 'lovable' && !apiKey) {
     fallbackReason = `${provider} is selected but no saved API key is available, so the agent is using Lovable instead.`;
