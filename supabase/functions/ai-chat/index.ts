@@ -792,11 +792,12 @@ serve(async (req) => {
       ];
 
       // Resolve AI config for Telegram mode the same way as web mode.
-      const { data: tgSettings } = await supabase.from('app_settings').select('ai_provider,ai_api_key,ai_model').eq('id', 1).single();
+      const { data: tgSettings } = await supabase.from('app_settings').select('ai_provider,ai_api_key,ai_model,ai_base_url').eq('id', 1).single();
       const tgChatConfig = resolveChatProviderConfig({
         provider: (tgSettings as any)?.ai_provider,
         apiKey: (tgSettings as any)?.ai_api_key,
         model: (tgSettings as any)?.ai_model,
+        baseUrl: (tgSettings as any)?.ai_base_url,
       }, LOVABLE_API_KEY);
 
       try {
