@@ -45,6 +45,8 @@ export interface AISettings {
   provider: string;
   apiKey: string;
   model: string;
+  /** Optional base URL — used for self-hosted providers (LM Studio, Ollama, custom OpenAI-compatible). */
+  baseUrl?: string;
 }
 
 export interface ImageKeyEntry {
