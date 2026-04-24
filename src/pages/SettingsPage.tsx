@@ -473,7 +473,7 @@ export default function SettingsPage() {
     setLoadingModels(true);
     setModelsError(null);
     try {
-      const models = await listAIModels(provider, apiKey, aiSettings.baseUrl);
+      const models = await listAIModels(provider, apiKey);
       setAiModels(models);
     } catch (e: any) {
       setModelsError(e.message || 'Failed to load models');
