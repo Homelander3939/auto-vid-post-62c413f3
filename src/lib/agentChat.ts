@@ -7,6 +7,11 @@ export interface AgentChatAttachment {
   isImage?: boolean;
 }
 
+// IMPORTANT: This heuristic is mirrored on the backend at
+// `supabase/functions/_shared/agent-intent.ts`. The backend version is the
+// authoritative one (used by ai-chat to decide whether to launch run_agent
+// when the LLM doesn't pick the tool itself). This client copy exists only
+// to keep the UI hint instant — keep both in sync when editing.
 const AGENTIC_PATTERNS = [
   /\bagentic\b/i,
   /\bautonomous\b/i,
@@ -14,6 +19,7 @@ const AGENTIC_PATTERNS = [
   /\bresearch\b[\s\S]{0,80}\b(build|create|generate|write|design|code)\b/i,
   /\b(build|create|generate|design|code|prototype|develop)\b[\s\S]{0,80}\b(app|website|landing page|portfolio|workflow|automation|agent|flow)\b/i,
   /\b(open|use|run)\b[\s\S]{0,40}\bbrowser\b/i,
+  /\bclaude code\b|\bcodex\b|\bopenclaw\b/i,
 ];
 const MIN_AGENTIC_PROMPT_LENGTH = 220;
 const MAX_ATTACHMENT_PREVIEW_LENGTH = 1_200;

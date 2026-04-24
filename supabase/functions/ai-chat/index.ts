@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { DEFAULT_LOVABLE_MODEL, LOVABLE_GATEWAY, resolveChatProviderConfig } from '../_shared/ai-provider.ts';
+import { shouldLaunchAgentRun } from '../_shared/agent-intent.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -570,19 +571,39 @@ async function executeTool(
 
 /* ── Lightweight context ──────────────────────────────── */
 
-async function getAppContextFast(supabase: any): Promise<string> {
+function keywordOverlap(a: string, b: string): number {
+  const tokens = (s: string) => new Set(String(s || '').toLowerCase().match(/[a-z0-9]{3,}/g) || []);
+  const ta = tokens(a); const tb = tokens(b);
+  if (ta.size === 0 || tb.size === 0) return 0;
+  let hit = 0;
+  for (const t of ta) if (tb.has(t)) hit++;
+  return hit;
+}
+
+interface AppContext {
+  text: string;
+  memories: Array<{ title: string; content: string; importance: number }>;
+  skills: Array<{ name: string; slug: string; description: string; triggers: string[] }>;
+  agentMemoryEnabled: boolean;
+}
+
+async function getAppContextFast(supabase: any, userPrompt = ''): Promise<AppContext> {
   const [
     { data: jobs },
     { data: scheduled },
     { data: settings },
     { data: scheduleConfigs },
     { data: socialPosts },
+    { data: memoriesRaw },
+    { data: skillsRaw },
   ] = await Promise.all([
     supabase.from('upload_jobs').select('id,title,video_file_name,status,target_platforms').order('created_at', { ascending: false }).limit(10),
     supabase.from('scheduled_uploads').select('id,title,video_file_name,status,target_platforms,scheduled_at').eq('status', 'scheduled').order('scheduled_at', { ascending: true }).limit(5),
-    supabase.from('app_settings').select('youtube_enabled,tiktok_enabled,instagram_enabled,telegram_enabled,folder_path,research_provider,image_provider,ai_provider,ai_model').eq('id', 1).single(),
+    supabase.from('app_settings').select('youtube_enabled,tiktok_enabled,instagram_enabled,telegram_enabled,folder_path,research_provider,image_provider,ai_provider,ai_model,agent_memory_enabled,agent_memory_max_items').eq('id', 1).single(),
     supabase.from('schedule_config').select('id,name,enabled,cron_expression,platforms').order('id', { ascending: true }),
     supabase.from('social_posts').select('id,status,target_platforms,ai_prompt').order('created_at', { ascending: false }).limit(5),
+    supabase.from('agent_memories').select('title,content,importance,tags').eq('enabled', true).order('importance', { ascending: false }).order('updated_at', { ascending: false }).limit(40),
+    supabase.from('agent_skills').select('name,slug,description,triggers').eq('enabled', true).limit(50),
   ]);
 
   const j = jobs || [];
@@ -619,19 +640,56 @@ async function getAppContextFast(supabase: any): Promise<string> {
     ctx += `Recent social posts: ${(socialPosts || []).map((p: any) => `[${p.status}] ${(p.ai_prompt || '').slice(0, 40)}`).join(' | ')}\n`;
   }
   ctx += '===';
-  return ctx;
+
+  // Score and pick relevant memories for this user prompt
+  const memMax = Math.min(Math.max(Number(settings?.agent_memory_max_items) || 8, 1), 20);
+  const memEnabled = settings?.agent_memory_enabled !== false;
+  const memList = (memoriesRaw || []) as any[];
+  const memories = memEnabled
+    ? memList
+        .map((m) => ({ m, score: keywordOverlap(userPrompt, `${m.title}\n${m.content}\n${(m.tags || []).join(' ')}`) + (Number(m.importance) || 0) / 25 }))
+        .filter((e) => e.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, memMax)
+        .map((e) => ({ title: e.m.title, content: e.m.content, importance: e.m.importance }))
+    : [];
+
+  // Score skills (by trigger/name overlap with prompt)
+  const skillList = (skillsRaw || []) as any[];
+  const skills = skillList
+    .map((s) => ({
+      s,
+      score: keywordOverlap(userPrompt, `${s.name}\n${s.description}\n${(s.triggers || []).join(' ')}`),
+    }))
+    .filter((e) => e.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6)
+    .map((e) => ({ name: e.s.name, slug: e.s.slug, description: e.s.description, triggers: e.s.triggers || [] }));
+
+  return { text: ctx, memories, skills, agentMemoryEnabled: memEnabled };
 }
 
 /* ── System prompt ────────────────────────────────────── */
 
-function buildSystemPrompt(appContext: string, isTelegram = false): string {
+function buildSystemPrompt(appContext: AppContext, isTelegram = false): string {
   const fmt = isTelegram
     ? 'Plain text only — NO markdown asterisks/backticks. Use line breaks and emoji for structure. Be concise.'
     : 'Use markdown for rich formatting.';
-  return `You are the autonomous AI agent for an Uploadphy — a multi-platform video & social-post automation app.
 
-${appContext}
+  const memoryBlock = appContext.memories.length > 0
+    ? `\n## Persistent memory (most relevant facts about user/project)\n${appContext.memories.map((m) => `- (importance ${m.importance}) ${m.title}: ${m.content}`).join('\n')}\n_Use these as background facts. To save a new long-term fact, call remember_fact._\n`
+    : appContext.agentMemoryEnabled
+      ? `\n## Persistent memory\n_(empty — call remember_fact when the user shares a durable fact worth recalling next time)_\n`
+      : '';
 
+  const skillBlock = appContext.skills.length > 0
+    ? `\n## Saved skills (reusable workflows the user has trained)\n${appContext.skills.map((s) => `- ${s.name} [${s.slug}] — ${s.description || 'no description'}${(s.triggers || []).length ? ` (triggers: ${(s.triggers || []).join(', ')})` : ''}`).join('\n')}\n_If a user request matches a skill, prefer launching it via run_agent with the skill slug._\n`
+    : '';
+
+  return `You are the autonomous AI agent for Uploadphy — a multi-platform video & social-post automation app.
+
+${appContext.text}
+${memoryBlock}${skillBlock}
 ## Your capabilities (call tools, do not just describe)
 - **Video uploads**: create_upload_job, schedule_upload, edit_upload_job, delete_upload_job, retry_failed_job, clear_jobs_by_status
 - **Scheduling**: schedule_upload, edit_scheduled_upload, delete_scheduled_upload, update_cron_schedule, manage_recurring_schedule
@@ -640,6 +698,7 @@ ${appContext}
 - **Stats scraping**: check_platform_stats — queues Playwright scrape on user's local PC, results via Telegram
 - **Generic browser tasks**: open_browser — runs any natural-language browser task locally
 - **Full autonomous local-PC agent**: run_agent — use this for coding, file generation, previews, browser work, deep research, image generation, and multi-step workflows (Claude Code / OpenClaw / Hermes style)
+- **Memory**: remember_fact — store a long-term fact (user preference, project rule, recurring detail) for future sessions
 
 ## Behavior rules
 - For anything involving code, files, local shell commands, browser previews, multi-step web research, or "do this on my PC", ALWAYS call run_agent instead of trying to answer inline.
@@ -761,7 +820,7 @@ serve(async (req) => {
         .order('created_at', { ascending: false })
         .limit(10);
 
-      const ctx = await getAppContextFast(supabase);
+      const ctx = await getAppContextFast(supabase, String(text || ''));
       const sys = buildSystemPrompt(ctx, true);
       const historyMsgs = ((history || []) as any[])
         .reverse()
@@ -836,7 +895,10 @@ serve(async (req) => {
       });
     }
 
-    const appContextPromise = getAppContextFast(supabase);
+    // Use the latest user message as the relevance hint for memory + skill scoring.
+    const lastUserText = [...messages].reverse().find((m: any) => m.role === 'user')?.content || '';
+    const lastUserHint = typeof lastUserText === 'string' ? lastUserText : JSON.stringify(lastUserText).slice(0, 500);
+    const appContextPromise = getAppContextFast(supabase, lastUserHint);
     const aiSettingsPromise = supabase.from('app_settings').select('ai_provider,ai_api_key,ai_model,ai_base_url').eq('id', 1).single();
 
     const transformedMessages = messages.map((msg: any) => msg.role === 'system' ? msg : buildMessageForModel(msg));
@@ -860,8 +922,14 @@ serve(async (req) => {
     const effectiveChatUrl = hasImages ? AI_GATEWAY : chatUrl;
     const effectiveChatKey = hasImages ? LOVABLE_API_KEY : chatKey;
 
+    // Backend intent router: nudge the model toward run_agent for clearly agentic asks.
+    const intentLooksAgentic = shouldLaunchAgentRun(lastUserHint, []);
+    const intentNudge = intentLooksAgentic
+      ? '\n\n[Router hint] This request looks like an autonomous multi-step task. Strongly prefer calling the `run_agent` tool with a clear prompt rather than answering inline.'
+      : '';
+
     const fullMessages = [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: systemPrompt + intentNudge },
       ...transformedMessages,
     ];
 
@@ -997,13 +1065,20 @@ serve(async (req) => {
             return;
           }
 
-          // This second pass always uses the Lovable Gateway, so we must use a Lovable-compatible
-          // model regardless of what the user configured (e.g. openrouter/qwen won't work here).
-          const resp2 = await fetch(AI_GATEWAY, {
+          // Second pass: reuse the user's configured provider/model. If it isn't a
+          // chat-completion-compatible endpoint (rare), fall through to Lovable on failure.
+          const second = await fetch(effectiveChatUrl, {
             method: 'POST',
-            headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: DEFAULT_LOVABLE_MODEL, messages: fullMessages, stream: true }),
+            headers: { Authorization: `Bearer ${effectiveChatKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model, messages: fullMessages, stream: true }),
           });
+          const resp2 = second.ok
+            ? second
+            : await fetch(AI_GATEWAY, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: DEFAULT_LOVABLE_MODEL, messages: fullMessages, stream: true }),
+              });
 
           if (resp2.ok && resp2.body) {
             const reader2 = resp2.body.getReader();
