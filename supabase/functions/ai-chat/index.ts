@@ -894,7 +894,10 @@ serve(async (req) => {
       });
     }
 
-    const appContextPromise = getAppContextFast(supabase);
+    // Use the latest user message as the relevance hint for memory + skill scoring.
+    const lastUserText = [...messages].reverse().find((m: any) => m.role === 'user')?.content || '';
+    const lastUserHint = typeof lastUserText === 'string' ? lastUserText : JSON.stringify(lastUserText).slice(0, 500);
+    const appContextPromise = getAppContextFast(supabase, lastUserHint);
     const aiSettingsPromise = supabase.from('app_settings').select('ai_provider,ai_api_key,ai_model,ai_base_url').eq('id', 1).single();
 
     const transformedMessages = messages.map((msg: any) => msg.role === 'system' ? msg : buildMessageForModel(msg));
