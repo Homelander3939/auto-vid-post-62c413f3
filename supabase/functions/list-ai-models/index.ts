@@ -55,7 +55,7 @@ async function fetchAnthropic(apiKey: string): Promise<ModelInfo[]> {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
   try {
-    const { provider, apiKey } = (await req.json()) as Body;
+    const { provider, apiKey, baseUrl } = (await req.json()) as Body;
     if (!provider) {
       return new Response(JSON.stringify({ error: 'provider is required' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -65,6 +65,28 @@ Deno.serve(async (req) => {
     let models: ModelInfo[] = [];
     if (provider === 'lovable') {
       models = [...LOVABLE_MODELS];
+    } else if (provider === 'lmstudio') {
+      // LM Studio runs locally on the user's machine and exposes an OpenAI-compatible
+      // /v1/models endpoint. The cloud edge function cannot reach localhost, so we
+      // return a friendly placeholder list and let the user type/confirm the model.
+      const trimmedBase = String(baseUrl || '').trim().replace(/\/+$/, '');
+      if (trimmedBase && !/localhost|127\.0\.0\.1|192\.168\.|10\.|172\./i.test(trimmedBase)) {
+        try {
+          const url = trimmedBase.endsWith('/v1') ? `${trimmedBase}/models` : `${trimmedBase}/v1/models`;
+          models = await fetchOpenAICompat(url, apiKey || 'lm-studio');
+        } catch (e) {
+          console.warn('LM Studio fetch failed, returning empty list:', e);
+          models = [];
+        }
+      }
+      // Always include a hint entry so the dropdown is never empty
+      if (models.length === 0) {
+        models = [
+          { id: 'google/gemma-3-27b', label: 'Gemma 3 27B (LM Studio)' },
+          { id: 'qwen/qwen3-32b', label: 'Qwen 3 32B (LM Studio)' },
+          { id: 'meta-llama/llama-3.3-70b', label: 'Llama 3.3 70B (LM Studio)' },
+        ];
+      }
     } else {
       if (!apiKey) {
         return new Response(JSON.stringify({ error: 'API key is required for this provider' }), {
@@ -83,6 +105,8 @@ Deno.serve(async (req) => {
         models = await fetchGoogle(apiKey);
       } else if (provider === 'nvidia') {
         models = await fetchOpenAICompat('https://integrate.api.nvidia.com/v1/models', apiKey);
+      } else if (provider === 'xai') {
+        models = await fetchOpenAICompat('https://api.x.ai/v1/models', apiKey);
       } else {
         return new Response(JSON.stringify({ error: `Unknown provider: ${provider}` }), {
           status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
