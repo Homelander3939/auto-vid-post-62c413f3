@@ -200,6 +200,7 @@ export type Database = {
           agent_task_mode: string
           agent_workspace_path: string
           ai_api_key: string
+          ai_base_url: string
           ai_model: string
           ai_provider: string
           created_at: string
@@ -237,6 +238,7 @@ export type Database = {
           agent_task_mode?: string
           agent_workspace_path?: string
           ai_api_key?: string
+          ai_base_url?: string
           ai_model?: string
           ai_provider?: string
           created_at?: string
@@ -274,6 +276,7 @@ export type Database = {
           agent_task_mode?: string
           agent_workspace_path?: string
           ai_api_key?: string
+          ai_base_url?: string
           ai_model?: string
           ai_provider?: string
           created_at?: string

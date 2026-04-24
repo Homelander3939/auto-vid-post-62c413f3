@@ -528,8 +528,8 @@ export async function generatePostWithAI(input: AIGenerateInput): Promise<AIGene
 }
 
 export interface AIModel { id: string; label?: string }
-export async function listAIModels(provider: string, apiKey: string): Promise<AIModel[]> {
-  const { data, error } = await supabase.functions.invoke('list-ai-models', { body: { provider, apiKey } });
+export async function listAIModels(provider: string, apiKey: string, baseUrl?: string): Promise<AIModel[]> {
+  const { data, error } = await supabase.functions.invoke('list-ai-models', { body: { provider, apiKey, baseUrl } });
   if (error) throw new Error(error.message || 'Failed to list models');
   if (!data || data.error) throw new Error(data?.error || 'Failed to list models');
   return (data.models || []) as AIModel[];
