@@ -20,11 +20,12 @@ export interface ChatProviderConfigInput {
   provider?: string | null;
   apiKey?: string | null;
   model?: string | null;
+  baseUrl?: string | null;
 }
 
 export interface ResolvedChatProviderConfig {
   requestedProvider: string;
-  provider: 'lovable' | 'openai' | 'google' | 'nvidia' | 'openrouter';
+  provider: 'lovable' | 'openai' | 'google' | 'nvidia' | 'openrouter' | 'xai' | 'lmstudio';
   url: string;
   key: string;
   model: string;
