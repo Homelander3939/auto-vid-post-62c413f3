@@ -10,6 +10,7 @@ const corsHeaders = {
 interface Body {
   provider: string;
   apiKey?: string;
+  baseUrl?: string;
 }
 
 interface ModelInfo {
