@@ -469,11 +469,11 @@ export default function SettingsPage() {
     } finally { setLoadingImageModels(false); }
   };
 
-  const loadModels = async (provider: string, apiKey: string) => {
+  const loadModels = async (provider: string, apiKey: string, baseUrl?: string) => {
     setLoadingModels(true);
     setModelsError(null);
     try {
-      const models = await listAIModels(provider, apiKey);
+      const models = await listAIModels(provider, apiKey, baseUrl);
       setAiModels(models);
     } catch (e: any) {
       setModelsError(e.message || 'Failed to load models');
@@ -487,7 +487,7 @@ export default function SettingsPage() {
     setTesting(true);
     setTestResult(null);
     try {
-      const r = await testAIConnection(aiSettings.provider, aiSettings.apiKey, aiSettings.model);
+      const r = await testAIConnection(aiSettings.provider, aiSettings.apiKey, aiSettings.model, aiSettings.baseUrl);
       setTestResult(r);
       if (r.ok) toast({ title: '✅ Connected', description: `${r.model} responded in ${r.latency}ms` });
       else toast({ title: 'Connection failed', description: r.error, variant: 'destructive' });
