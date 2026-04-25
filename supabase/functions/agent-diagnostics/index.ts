@@ -61,12 +61,12 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    // Settings
-    const { data: settings } = await supabase
-      .from('app_settings')
-      .select('*')
-      .eq('id', 1)
-      .maybeSingle();
+    // Settings (timeout-guarded)
+    const settingsRes: any = await withTimeout(
+      supabase.from('app_settings').select('*').eq('id', 1).maybeSingle(),
+      4000, { data: null } as any,
+    );
+    const settings = settingsRes?.data;
 
     // Local worker liveness via pending_commands recency
     const ninetySecAgo = new Date(Date.now() - 90_000).toISOString();
