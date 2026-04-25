@@ -774,6 +774,23 @@ app.post('/api/process/:id', async (req, res) => {
   res.json({ started: true });
 });
 
+// Serve screenshots captured by browser_research so the Job Queue UI can render
+// openable preview links for each researched source page.
+app.get('/api/browser-research/screenshot/:file', (req, res) => {
+  try {
+    const { SCREENSHOT_DIR } = require('./browserResearch');
+    const file = String(req.params.file || '').replace(/[^a-zA-Z0-9._-]/g, '');
+    if (!file) return res.status(400).end('Bad filename');
+    const full = path.join(SCREENSHOT_DIR, file);
+    if (!full.startsWith(SCREENSHOT_DIR) || !fs.existsSync(full)) return res.status(404).end('Not found');
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    fs.createReadStream(full).pipe(res);
+  } catch (e) {
+    res.status(500).end(String(e.message || e));
+  }
+});
+
 async function triggerPendingUploadProcessing(limit = 5) {
   const { data: jobs } = await supabase
     .from('upload_jobs')
