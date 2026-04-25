@@ -1479,6 +1479,47 @@ async function processPendingCommands() {
                 status: 'failed', result: err.message, completed_at: new Date().toISOString(),
               }).eq('id', cmd.id);
             }
+          } else if (cmd.command === 'browser_research') {
+            // Deterministic local browser research: fetch sources, open the local browser,
+            // capture screenshots + page text, optionally send screenshots to Telegram,
+            // and persist a structured result for the Job Queue UI to render as openable links.
+            try {
+              const { runBrowserResearch } = require('./browserResearch');
+              const settings = await getSettings();
+              const { sendTelegramPhoto } = require('./telegram');
+              const result = await runBrowserResearch(cmd.args || {}, {
+                settings,
+                sendTelegram: notifyTelegram,
+                sendTelegramPhoto,
+              });
+              const screenshotLinks = (result.screenshots || []).map((s) => ({
+                kind: 'screenshot',
+                label: `📸 ${s.label || 'Screenshot'}`,
+                url: `${settings.local_agent_url || 'http://localhost:3001'}/api/browser-research/screenshot/${encodeURIComponent(s.file)}`,
+              }));
+              const persisted = {
+                provider: 'local-browser',
+                summary: result.summary,
+                query: result.query,
+                sources: result.sources,
+                captures: result.captures,
+                links: [...(result.links || []), ...screenshotLinks],
+              };
+              await supabase.from('pending_commands').update({
+                status: result.ok ? 'completed' : 'failed',
+                result: JSON.stringify(persisted),
+                completed_at: new Date().toISOString(),
+              }).eq('id', cmd.id);
+              const tgSummary = `🔎 Research done: "${result.query}"\n${result.summary}\n\n` +
+                (result.sources || []).slice(0, 5).map((s, i) => `${i + 1}. ${s.title}\n${s.url}`).join('\n');
+              await notifyTelegram(settings, tgSummary);
+              console.log(`[Commands] browser_research done: ${(result.sources || []).length} sources, ${(result.screenshots || []).length} screenshots`);
+            } catch (err) {
+              await supabase.from('pending_commands').update({
+                status: 'failed', result: JSON.stringify({ ok: false, error: err.message }),
+                completed_at: new Date().toISOString(),
+              }).eq('id', cmd.id);
+            }
           } else if (cmd.command && cmd.command.startsWith('agent_')) {
             // Agent workspace tools (write_file, read_file, list_files, run_shell, open_in_browser, serve_preview)
             try {
