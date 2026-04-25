@@ -72,24 +72,26 @@ type DiagnosticsSnapshot = {
   runs_24h: { total: number; completed: number; failed: number; running: number };
 };
 
-function useAgentDiagnostics() {
+function useAgentDiagnostics(enabled: boolean) {
   const [data, setData] = useState<DiagnosticsSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
 
   const refresh = useCallback(async () => {
+    if (!enabled) { setData(null); return; }
     setLoading(true);
     try {
       const { data: resp, error } = await supabase.functions.invoke('agent-diagnostics', { body: {} });
       if (!error && resp) setData(resp as DiagnosticsSnapshot);
     } catch { /* silent */ }
     finally { setLoading(false); }
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
+    if (!enabled) { setData(null); return; }
     refresh();
     const id = setInterval(refresh, 60_000);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [enabled, refresh]);
 
   return { data, loading, refresh };
 }
@@ -126,7 +128,6 @@ function useLiveBuildInfo(serverConnected: boolean) {
 
 export default function AppLayout() {
   const { status: serverStatus, health: localHealth, refresh: refreshLocalHealth, isLocalhost } = useLocalServerStatus();
-  const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics();
   const queryClient = useQueryClient();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -139,6 +140,7 @@ export default function AppLayout() {
 
   const uploadMode = settings?.uploadMode || 'local';
   const isCloud = uploadMode === 'cloud';
+  const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics(isCloud);
   const liveBuild = useLiveBuildInfo(serverStatus === 'connected');
 
   const buildLabel = formatBuildLabel(
