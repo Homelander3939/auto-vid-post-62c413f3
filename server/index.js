@@ -1018,6 +1018,8 @@ app.post('/api/ai-chat', async (req, res) => {
       return res.status(400).json({ error: 'messages array is required' });
     }
 
+    await refreshLMStudioConfigFromSettings(supabase);
+
     // Stream response from LM Studio
     const streamResp = await streamLMStudio(messages, supabase);
     if (!streamResp.ok) {
