@@ -331,7 +331,7 @@ export default function AIChat() {
     if (!telegramEnabled || !resolvedChatId || !text.trim()) return;
     try {
       await supabase.functions.invoke('send-telegram', {
-        body: { chat_id: resolvedChatId, text: text.slice(0, 3900), mirror: false },
+        body: { chat_id: resolvedChatId, text: text.slice(0, 3900) },
       });
     } catch (e) {
       console.error('Mirror to Telegram failed:', e);
@@ -366,7 +366,6 @@ export default function AIChat() {
           text: caption?.slice(0, 1000),
           photo_base64: base64,
           photo_mime_type: file.type || blob.type || 'image/png',
-          mirror: false,
         },
       });
     } catch (error) {

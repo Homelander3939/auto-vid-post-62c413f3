@@ -459,25 +459,6 @@ function getAutomationBlockReason(automationMode: string, toolName: string, args
 
 /* ── Telegram live-status (edits a single message in place) ──────────── */
 
-async function mirrorTgBot(chatId: string, text: string, source: string) {
-  try {
-    const url = Deno.env.get('SUPABASE_URL');
-    const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    if (!url || !key || !chatId || !text) return;
-    const sb = createClient(url, key);
-    const updateId = -Math.floor(Date.now() * 1000 + Math.random() * 1000);
-    await sb.from('telegram_messages').insert({
-      update_id: updateId,
-      chat_id: Number(chatId),
-      text: text.slice(0, 4000),
-      is_bot: true,
-      raw_update: { source, synthetic: true },
-    });
-  } catch (e) {
-    console.error('mirrorTgBot failed:', e);
-  }
-}
-
 async function tgSend(chatId: string, text: string, lovKey: string, tgKey: string): Promise<number | null> {
   try {
     const r = await fetch(`${TELEGRAM_GATEWAY}/sendMessage`, {
@@ -490,7 +471,6 @@ async function tgSend(chatId: string, text: string, lovKey: string, tgKey: strin
       body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 3900) }),
     });
     const d = await r.json();
-    await mirrorTgBot(chatId, text, 'agent-run');
     return d?.result?.message_id ?? null;
   } catch (e) {
     console.error('tgSend failed:', e);
@@ -509,7 +489,6 @@ async function tgEdit(chatId: string, messageId: number, text: string, lovKey: s
       },
       body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: text.slice(0, 3900) }),
     });
-    await mirrorTgBot(chatId, text, 'agent-run-edit');
   } catch (e) {
     console.error('tgEdit failed:', e);
   }

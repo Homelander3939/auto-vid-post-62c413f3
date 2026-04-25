@@ -185,25 +185,6 @@ async function loadTelegramPreviewImages(supabase: any, imagePaths: string[]): P
   return loaded.filter(Boolean) as TelegramPreviewImage[];
 }
 
-async function mirrorTgBot(chatId: number, text: string, source: string) {
-  try {
-    const url = Deno.env.get('SUPABASE_URL');
-    const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    if (!url || !key || !chatId || !text) return;
-    const sb = createClient(url, key);
-    const updateId = -Math.floor(Date.now() * 1000 + Math.random() * 1000);
-    await sb.from('telegram_messages').insert({
-      update_id: updateId,
-      chat_id: Number(chatId),
-      text: text.slice(0, 4000),
-      is_bot: true,
-      raw_update: { source, synthetic: true },
-    });
-  } catch (e) {
-    console.error('[generate-social-post] mirrorTgBot failed:', e);
-  }
-}
-
 async function sendTelegramText(opts: {
   lovableApiKey: string; telegramApiKey: string; chatId: number; text: string;
 }): Promise<{ ok: boolean; error?: string }> {
@@ -225,7 +206,6 @@ async function sendTelegramText(opts: {
   if (!r.ok || j?.ok === false) {
     return { ok: false, error: `sendMessage ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
   }
-  await mirrorTgBot(opts.chatId, opts.text, 'generate-social-post');
   return { ok: true };
 }
 
@@ -276,8 +256,6 @@ async function sendTelegramGenerationPreview(opts: {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j?.ok === false) {
         imageSent = { ok: false, error: `sendMediaGroup ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
-      } else {
-        await mirrorTgBot(chatId, `📷 ${caption}`, 'generate-social-post-media');
       }
     } else if (photos.length === 1) {
       const photo = photos[0];
@@ -304,8 +282,6 @@ async function sendTelegramGenerationPreview(opts: {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j?.ok === false) {
         imageSent = { ok: false, error: `sendPhoto ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
-      } else {
-        await mirrorTgBot(chatId, `📷 ${caption}`, 'generate-social-post-photo');
       }
     } else {
       imageSent = await sendTelegramText({ lovableApiKey, telegramApiKey, chatId, text: caption });
