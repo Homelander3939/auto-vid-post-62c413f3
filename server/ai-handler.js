@@ -840,5 +840,8 @@ module.exports = {
   callLMStudioWithTools,
   streamLMStudio,
   processTelegramAIResponse,
+  discoverLMStudioModels,
+  refreshLMStudioConfigFromSettings,
+  testLMStudioConnection,
   LM_STUDIO_URL,
 };
