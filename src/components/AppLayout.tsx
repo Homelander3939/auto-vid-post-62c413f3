@@ -81,7 +81,35 @@ function useAgentDiagnostics() {
   return { data, loading, refresh };
 }
 
-export default function AppLayout() {
+type LiveBuildInfo = {
+  version?: string;
+  commit?: string;
+  branch?: string;
+  buildNumber?: string;
+  lastCommitAt?: string;
+  lastCommitMessage?: string;
+  source?: string;
+};
+
+function useLiveBuildInfo(serverConnected: boolean) {
+  const [info, setInfo] = useState<LiveBuildInfo | null>(null);
+  useEffect(() => {
+    if (!serverConnected) { setInfo(null); return; }
+    let mounted = true;
+    const load = async () => {
+      try {
+        const resp = await fetch('http://localhost:3001/api/build-info', { signal: AbortSignal.timeout(3000) });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (mounted) setInfo(data);
+      } catch { /* ignore */ }
+    };
+    load();
+    const id = setInterval(load, 15_000); // re-poll every 15s so footer reflects fresh `git pull`
+    return () => { mounted = false; clearInterval(id); };
+  }, [serverConnected]);
+  return info;
+}
   const serverStatus = useLocalServerStatus();
   const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics();
   const queryClient = useQueryClient();
