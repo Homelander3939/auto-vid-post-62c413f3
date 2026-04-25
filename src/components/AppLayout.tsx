@@ -50,6 +50,37 @@ function useLocalServerStatus() {
   return status;
 }
 
+type DiagnosticsSnapshot = {
+  overall: 'healthy' | 'degraded' | 'down';
+  issues: string[];
+  gateway: { ok: boolean; latencyMs: number; error?: string };
+  local_worker: { alive: boolean; last_seen_at: string | null };
+  providers: any;
+  runs_24h: { total: number; completed: number; failed: number; running: number };
+};
+
+function useAgentDiagnostics() {
+  const [data, setData] = useState<DiagnosticsSnapshot | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data: resp, error } = await supabase.functions.invoke('agent-diagnostics', { body: {} });
+      if (!error && resp) setData(resp as DiagnosticsSnapshot);
+    } catch { /* silent */ }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 60_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return { data, loading, refresh };
+}
+
 export default function AppLayout() {
   const serverStatus = useLocalServerStatus();
   const queryClient = useQueryClient();
