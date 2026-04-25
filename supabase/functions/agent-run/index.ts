@@ -1033,6 +1033,41 @@ async function queueLocalCommand(supabase: any, command: string, args: any): Pro
   return await waitForLocalCommand(supabase, data.id);
 }
 
+/**
+ * Preflight: detect whether the local worker is alive by inspecting recent
+ * pending_commands activity. The cloud edge function cannot reach localhost
+ * directly, so we infer health from the queue being drained. Returns a
+ * human-readable warning string when the worker appears offline.
+ */
+async function checkLocalWorkerHealth(supabase: any): Promise<{ alive: boolean; lastSeenAt: string | null; note: string }> {
+  // 1) Any command completed in the last 90 seconds → worker is alive.
+  const ninetySecAgo = new Date(Date.now() - 90_000).toISOString();
+  const { data: recent } = await supabase
+    .from('pending_commands')
+    .select('completed_at')
+    .gte('completed_at', ninetySecAgo)
+    .order('completed_at', { ascending: false })
+    .limit(1);
+  if (recent && recent.length > 0) {
+    return { alive: true, lastSeenAt: recent[0].completed_at, note: 'Local worker is responding.' };
+  }
+  // 2) Otherwise look at last-ever completion to give a useful timestamp.
+  const { data: lastEver } = await supabase
+    .from('pending_commands')
+    .select('completed_at')
+    .not('completed_at', 'is', null)
+    .order('completed_at', { ascending: false })
+    .limit(1);
+  const lastSeen = lastEver?.[0]?.completed_at || null;
+  return {
+    alive: false,
+    lastSeenAt: lastSeen,
+    note: lastSeen
+      ? `Local worker last active ${lastSeen}. It may be offline — start smart-launcher.bat.`
+      : 'Local worker has never connected. Start smart-launcher.bat on your PC.',
+  };
+}
+
 function validatePlannedToolCall(hasPlan: boolean, callIndex: number, name: string): string | null {
   if (!hasPlan && name !== 'plan') {
     return 'You must call plan first before any other tool. Re-issue your next response as a single plan tool call.';
@@ -1070,6 +1105,19 @@ async function runAgent(supabase: any, runId: string, lovableKey: string, telegr
       titles: relevantMemories.map((memory: any) => memory.title),
     });
   }
+
+  // Preflight: local-worker health (cloud edge function can't reach localhost,
+  // so we infer health from pending_commands queue activity). Surface a clear
+  // event up front so users immediately see "worker offline" instead of waiting
+  // 90s for the first shell/file/browser tool to time out.
+  const localHealth = await checkLocalWorkerHealth(supabase);
+  await appendEvent(supabase, runId, {
+    type: localHealth.alive ? 'preflight_ok' : 'preflight_warning',
+    component: 'local_worker',
+    alive: localHealth.alive,
+    last_seen_at: localHealth.lastSeenAt,
+    message: localHealth.note,
+  });
 
   const systemPrompt = `You are an elite autonomous local-PC agent inspired by Claude Code, OpenClaw, and Hermes.
 
@@ -1110,6 +1158,29 @@ async function runAgent(supabase: any, runId: string, lovableKey: string, telegr
 
 User request: ${run.prompt}`;
 
+  // Extra scaffolding for smaller / local models (Qwen3, Gemma, GLM, Mistral,
+  // Llama 3.x running through LM Studio). They benefit from very explicit,
+  // example-driven instructions and stricter format reminders, otherwise they
+  // tend to produce free-form prose instead of tool calls.
+  const isLocalOrSmallModel =
+    providers.chat.provider === 'lmstudio' ||
+    /qwen|gemma|glm|mistral|llama-?3|phi-?3/i.test(providers.chat.model || '');
+  const smallModelGuide = isLocalOrSmallModel ? `
+
+# Small / local model protocol (Qwen / Gemma / GLM / Llama)
+You are running on a smaller local model. Follow these strict rules so you stay reliable:
+- ALWAYS respond with a tool call. Never reply with prose only — wrap every action inside one of the available tools.
+- ONE tool call per turn. Wait for the result, then issue the next one.
+- Keep tool arguments minimal and concrete. No long explanations inside arguments.
+- For research tasks: \`plan\` → \`research_deep\` (1-3 focused queries) → \`write_file\` (save findings as markdown) → \`finish\`.
+- For build tasks: \`plan\` → \`write_file\` (one file at a time) → \`serve_preview\` → \`open_in_browser\` → \`finish\`.
+- For local-PC automation: \`plan\` → \`run_shell\` (single command) → observe → next \`run_shell\` → \`finish\`.
+- For browser automation: \`plan\` → \`browser_task\` with a clear task string → \`finish\`.
+- If you don't know something, use \`research_deep\` instead of guessing.
+- If a tool fails twice in a row with the same error, switch strategy (different tool or simpler approach) instead of retrying identically.
+- ALWAYS finish with the \`finish\` tool. Don't trail off.
+` : '';
+
   // Find matching skills (simple keyword overlap on triggers + name)
   const promptLow = run.prompt.toLowerCase();
   const { data: allSkills } = await supabase.from('agent_skills').select('*').eq('enabled', true);
@@ -1134,7 +1205,7 @@ ${(sk.steps || []).map((s: any, j: number) => `  ${j + 1}. ${s.note || s.tool}`)
     ? `\n\n# Relevant persistent memory\n${relevantMemories.map((memory: any, index: number) => `## Memory ${index + 1}: ${memory.title}\nType: ${memory.memory_type}\nTags: ${(memory.tags || []).join(', ') || 'none'}\n${memory.content}`).join('\n\n')}`
     : '';
 
-  const systemPromptFull = systemPrompt + skillContext + memoryContext + `\n\n# Skills system
+  const systemPromptFull = systemPrompt + smallModelGuide + skillContext + memoryContext + `\n\n# Skills system
 You can also call \`save_skill\` after a successful novel routine — it proposes saving the workflow so the user can approve and reuse it later. Only propose when the task is genuinely repeatable.`;
 
   const messages: any[] = [
@@ -1289,17 +1360,17 @@ You can also call \`save_skill\` after a successful novel routine — it propose
         } else if (name === 'chain_skill') {
           const r = await chainSkill(supabase, args);
           ok = r.ok;
-          toolResultText = ok
+          toolResultText = ok && r.data
             ? `Loaded skill "${r.data.name}".\nDescription: ${r.data.description || 'n/a'}\nSteps:\n${(r.data.steps || []).map((step: any, index: number) => `${index + 1}. ${step.note || step.tool || JSON.stringify(step)}`).join('\n')}\n\nInstructions:\n${r.data.system_prompt || ''}`.slice(0, 6000)
             : r.summary;
           toolResultData = r.data || null;
-          if (ok) await appendEvent(supabase, runId, { type: 'skill_chained', name: r.data.name, id: r.data.id });
+          if (ok && r.data) await appendEvent(supabase, runId, { type: 'skill_chained', name: r.data.name, id: r.data.id });
         } else if (name === 'improve_skill') {
           const r = await improveSkill(supabase, args);
           ok = r.ok;
           toolResultText = r.summary;
           toolResultData = r.data || null;
-          if (ok) await appendEvent(supabase, runId, { type: 'skill_improved', name: r.data.name, id: r.data.id });
+          if (ok && r.data) await appendEvent(supabase, runId, { type: 'skill_improved', name: r.data.name, id: r.data.id });
         } else if (name === 'save_skill') {
           await setStatus(supabase, runId, {
             pending_skill: {

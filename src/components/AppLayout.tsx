@@ -1,11 +1,12 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { Settings, LayoutDashboard, Upload, Clock, BookOpen, MessageSquare, Wifi, WifiOff, Cloud, Monitor, Globe, Menu, X, Sparkles, Brain } from 'lucide-react';
+import { Settings, LayoutDashboard, Upload, Clock, BookOpen, MessageSquare, Wifi, WifiOff, Cloud, Monitor, Globe, Menu, X, Sparkles, Brain, Activity, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useEffect, useState, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getSettings, saveSettings } from '@/lib/storage';
 import { formatBuildLabel } from '@/lib/buildInfo';
+import { supabase } from '@/integrations/supabase/client';
 import ThemeToggle from '@/components/ThemeToggle';
 
 const navItems = [
@@ -49,8 +50,40 @@ function useLocalServerStatus() {
   return status;
 }
 
+type DiagnosticsSnapshot = {
+  overall: 'healthy' | 'degraded' | 'down';
+  issues: string[];
+  gateway: { ok: boolean; latencyMs: number; error?: string };
+  local_worker: { alive: boolean; last_seen_at: string | null };
+  providers: any;
+  runs_24h: { total: number; completed: number; failed: number; running: number };
+};
+
+function useAgentDiagnostics() {
+  const [data, setData] = useState<DiagnosticsSnapshot | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data: resp, error } = await supabase.functions.invoke('agent-diagnostics', { body: {} });
+      if (!error && resp) setData(resp as DiagnosticsSnapshot);
+    } catch { /* silent */ }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 60_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return { data, loading, refresh };
+}
+
 export default function AppLayout() {
   const serverStatus = useLocalServerStatus();
+  const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics();
   const queryClient = useQueryClient();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -210,6 +243,62 @@ export default function AppLayout() {
               )}
             </div>
           )}
+
+          {/* AI / Agent diagnostics badge */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={refreshDiagnostics}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs w-full border border-border bg-secondary/40 hover:bg-secondary text-left"
+              >
+                {!diagnostics ? (
+                  <>
+                    <Activity className="w-3.5 h-3.5 text-muted-foreground animate-pulse" />
+                    <span className="text-muted-foreground">Diagnostics…</span>
+                  </>
+                ) : diagnostics.overall === 'healthy' ? (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span className="text-emerald-700 dark:text-emerald-400 font-medium">AI healthy</span>
+                  </>
+                ) : diagnostics.overall === 'degraded' ? (
+                  <>
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                    <span className="text-amber-700 dark:text-amber-400 font-medium">AI degraded</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{diagnostics.issues.length}</span>
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle className="w-3.5 h-3.5 text-destructive" />
+                    <span className="text-destructive font-medium">AI down</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{diagnostics.issues.length}</span>
+                  </>
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" className="max-w-[300px] space-y-1">
+              {diagnostics ? (
+                <>
+                  <div className="text-xs font-medium">Agent diagnostics</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Gateway: {diagnostics.gateway.ok ? `${diagnostics.gateway.latencyMs}ms` : (diagnostics.gateway.error || 'down')}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Worker: {diagnostics.local_worker.alive ? 'alive' : (diagnostics.local_worker.last_seen_at ? `seen ${new Date(diagnostics.local_worker.last_seen_at).toLocaleTimeString()}` : 'never')}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    24h runs: {diagnostics.runs_24h.completed}✓ / {diagnostics.runs_24h.failed}✗ / {diagnostics.runs_24h.running}⏳
+                  </div>
+                  {diagnostics.issues.length > 0 && (
+                    <ul className="text-[11px] text-amber-600 dark:text-amber-400 list-disc pl-3 mt-1">
+                      {diagnostics.issues.slice(0, 4).map((i, k) => <li key={k}>{i}</li>)}
+                    </ul>
+                  )}
+                  <div className="text-[10px] text-muted-foreground pt-1">Click to refresh</div>
+                </>
+              ) : 'Loading diagnostics…'}
+            </TooltipContent>
+          </Tooltip>
 
           <p className="text-xs px-1">
             <span className="block font-medium text-foreground/85">{buildMetaLabel}</span>

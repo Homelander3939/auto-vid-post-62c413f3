@@ -820,7 +820,7 @@ serve(async (req) => {
         .order('created_at', { ascending: false })
         .limit(10);
 
-      const ctx = await getAppContextFast(supabase, String(text || ''));
+      const ctx = await getAppContextFast(supabase, String(telegram_user_text || ''));
       const sys = buildSystemPrompt(ctx, true);
       const historyMsgs = ((history || []) as any[])
         .reverse()
