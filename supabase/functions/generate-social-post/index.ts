@@ -276,6 +276,8 @@ async function sendTelegramGenerationPreview(opts: {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j?.ok === false) {
         imageSent = { ok: false, error: `sendMediaGroup ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
+      } else {
+        await mirrorTgBot(chatId, `📷 ${caption}`, 'generate-social-post-media');
       }
     } else if (photos.length === 1) {
       const photo = photos[0];
