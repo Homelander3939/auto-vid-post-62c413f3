@@ -557,6 +557,28 @@ async function executeTool(
       return `📊 Stats scrape queued for ${args.platform}. Results in Telegram within ~60s.`;
     }
     case 'open_browser': {
+      // Heuristic: if the user is asking the browser to RESEARCH something
+      // (find news, summarize a site, send top 3 posts, take a screenshot of X),
+      // queue the deterministic browser_research command so the local worker
+      // actually navigates to sources, screenshots them, and returns a structured
+      // result with openable links + screenshot previews. Pure "open URL" tasks
+      // still go through open_browser as before.
+      const task = String(args.task || '');
+      const isResearchy = /\b(research|find|news|latest|top\s*\d+|summari[sz]e|investigate|compare|search|posts?\s+about|screenshot)\b/i.test(task);
+      if (isResearchy) {
+        const { error } = await supabase.from('pending_commands').insert({
+          command: 'browser_research',
+          args: {
+            query: task,
+            count: 6,
+            max_screenshots: 3,
+            send_screenshots: true,
+          },
+          status: 'pending',
+        });
+        if (error) return `❌ ${error.message}`;
+        return `🌐 Local browser research started: "${truncatePrompt(task, 100)}". Live progress in the Job Queue; sources, screenshots, and a Telegram preview will follow within ~1 minute.`;
+      }
       const { error } = await supabase.from('pending_commands').insert({
         command: 'open_browser',
         args: { task: args.task, url: args.url || null },

@@ -1,168 +1,139 @@
-<final-text>
-Goal: restore a single, reliable AI stack so chat, skills, memory, search, image generation, and agentic flows work together with your configured API keys, without changing video upload or social posting behavior.
+Goal: make every non-video AI action produce a real visible result across Job Queue, Telegram, and AI Chat; make local browser research actually navigate/read/capture pages using LM Studio vision; and synchronize Instagram/social post outcomes back into AI Chat. Do not change video upload execution/uploaders.
 
-1. Lock scope and preserve working subsystems
-- Do not change video upload execution, scheduled uploads, local uploaders, or social post publishing behavior.
-- Treat the current post-generation flow as the known-good reference for provider handling and fallback behavior.
-- Only touch the AI chat, autonomous agent, skills/memory, settings, and the local agent bridge.
+Findings from the screenshots and code
+- Telegram still receives raw local-model reasoning in some paths, especially the local worker `ai_response` path and generic browser task path.
+- Local browser tasks are too generic: `runBrowserTask()` opens a page, asks the small local model for one Playwright action at a time, then returns only `finalUrl/finalTitle`. It does not reliably extract the requested result, does not save screenshots, and does not send screenshots/artifacts back.
+- AI Chat is not truly synchronized with Telegram because many Telegram messages sent by the local worker and generation functions are not inserted into `telegram_messages`; Telegram getUpdates will not return the bot’s own sent messages.
+- Job Queue already shows `agent_runs`, `generation_jobs`, `social_posts`, and some `pending_commands`, but result links are incomplete. Browser task rows do not expose screenshots/result pages, and agent rows do not show artifact links clearly.
+- Scheduled post generation runs through `run-due-generations`, but it does not always create an immediate visible queue row and final result link in the same way as manual generation.
 
-2. Fix the core architecture split that GitHub Copilot introduced
-- The project currently has two competing AI architectures:
-  - the original local-worker/LM Studio design described in project memory and `server/ai-handler.js`
-  - the newer cloud chat + cloud agent path in `src/pages/AIChat.tsx`, `supabase/functions/ai-chat`, and `supabase/functions/agent-run`
-- Unify them under one rule:
-  - normal chat stays lightweight
-  - anything needing tools, memory, search, image generation, file work, shell, browser, or multi-step reasoning must route into the autonomous agent path
-- Replace the brittle frontend-only heuristic (`shouldLaunchAgentRun`) with a backend intent router plus an explicit “Always use agent” toggle in chat.
+Implementation plan
 
-3. Make model/provider handling consistent everywhere
-- Use one shared provider-resolution layer for:
-  - AI chat
-  - autonomous agent planner/reviewer
-  - connection tests
-  - model listing
-- Enforce save-time validation in Settings so unsupported models like `qwen/qwen3.5-397b-a17b` cannot remain stored for agentic flows.
-- Add a backend migration/self-heal step to normalize existing bad saved model values.
-- Surface fallback reasons in the UI so the user can see when the system is using:
-  - their API key/model
-  - a compatible fallback model
-  - built-in Lovable AI as emergency fallback
-- This directly addresses the logged crash where the autonomous agent tried an unsupported model.
+1. Add a unified result/report layer for all AI tasks
+- Use existing tables where possible: `agent_runs.events/result`, `generation_jobs.events/result/saved_post_id`, `social_posts.platform_results`, and `pending_commands.result`.
+- Standardize result JSON for local commands:
+  - `summary`
+  - `status`
+  - `links[]` with `{ label, url, kind }`
+  - `screenshots[]` with `{ label, url, path }`
+  - `sources[]`
+  - `artifacts[]`
+- Update Job Queue (`AITasksPanel`) to render openable result links for:
+  - generated social drafts (`/social` plus post id when available)
+  - browser final URL
+  - local screenshot URLs
+  - research source URLs
+  - generated image/social image URLs
+  - agent-run artifacts from `finish.artifacts` and `result.artifacts`
 
-4. Fix why chat does not behave like the working post-generation AI
-- The post generator already has stronger provider fallback and image-chain handling than chat.
-- The chat function currently has separate logic and also forces built-in models in key places:
-  - image attachments force a built-in vision model
-  - after tool calls, the second-pass reply always switches to the built-in default model
-- Refactor chat so it follows the same provider policy as the working post-generation flow:
-  - use the configured compatible provider/model for the initial reasoning pass
-  - use an explicit capability matrix for tool-calling compatibility
-  - only fallback when required, and record that fallback visibly
-- Keep the post-generation flow behavior unchanged; only reuse its reliable provider patterns.
+2. Mirror every outgoing Telegram bot message into AI Chat history
+- Wrap all Telegram sending code paths with a shared “send and mirror” behavior.
+- For local worker notifications (`notifyTelegram` in `server/index.js`), after sending Telegram, insert a bot row into `telegram_messages` with `is_bot=true` and `raw_update.source='local-worker'`.
+- For social post publishing results (`server/socialPostProcessor.js`), ensure final success/failure messages are mirrored.
+- For browser tasks and stats checks, mirror summaries and artifact links.
+- For edge functions that send Telegram previews/results (`ai-chat`, `generate-social-post`, `agent-run`), insert matching bot rows where they do not already.
+- Result: AI Chat’s Telegram synced feed will show Instagram/social results, generation previews, browser results, and final agent summaries.
 
-5. Fix search API and image generation API integration end-to-end
-- Research/search problems today:
-  - “auto” testing assumes Brave when any key is present, which mis-tests Tavily/Serper/Firecrawl keys
-  - local-browser fallback depends on the local worker but chat does not preflight that dependency clearly
-- Image problems today:
-  - “auto” testing assumes Unsplash when any image key is present, which mis-tests Google/OpenAI/NVIDIA/xAI keys
-  - model loading in auto mode defaults to built-in instead of the user’s actual provider
-- Implement:
-  - correct provider auto-detection everywhere
-  - proper provider-specific test flow
-  - unified image fallback chain in agent-run using the same pattern already proven in post generation
-  - clear local-worker health checks before using local search/browser tools
-- Result: your own keys become the primary path, with deterministic fallback only when necessary.
+3. Replace generic local browser task behavior with deterministic browser research/report mode
+- Add a dedicated local command for browser research, e.g. `browser_research_report`, instead of relying only on `open_browser`.
+- The command will:
+  - open a persistent local Chromium profile
+  - search the web for the requested query
+  - click/open the top sources one by one
+  - extract page title, URL, visible text, and key snippets
+  - capture screenshots of source pages
+  - optionally use LM Studio vision to summarize what is visible on the screenshots
+  - synthesize the final answer/post drafts locally
+  - save screenshots to a user-visible local/static endpoint or upload them to existing public storage when running through the cloud bridge
+  - return structured result JSON to `pending_commands.result`
+  - send a final Telegram message with sources, open links, and screenshots when requested
+- Keep existing video upload browser sessions untouched.
 
-6. Make skills and memory actually participate in chat
-- Right now skills/memory work only inside the autonomous agent run, not in standard chat.
-- Normal chat also only sends browser-local app messages, while Telegram-visible history is mostly visual and not part of the true model context.
-- Fix by:
-  - moving reusable memory/skill retrieval to the backend request router
-  - loading relevant memories and matched skills for every agentic request
-  - allowing chat to promote itself into an agent run whenever memory/skills/tools are needed
-  - storing durable conversation context server-side instead of only localStorage
-  - ensuring cross-channel history is real context, not just merged UI display
-- Keep durable memory strict: only save reusable facts/workflows/preferences, not every reply.
+4. Give local vision models a real screenshot analysis tool
+- Extend `smart-agent.js`/local browser tooling with explicit tools:
+  - `capture_screenshot`
+  - `analyze_screenshot_with_lmstudio`
+  - `extract_page_text`
+  - `open_source_url`
+  - `finish_with_report`
+- Update local prompts for Qwen/Gemma/GLM-style models:
+  - no hidden thinking in final output
+  - always return strict JSON for action decisions
+  - prefer deterministic DOM/search extraction first
+  - use screenshot vision when page text is insufficient or visual content matters
+  - never claim completion until a report/result artifact is produced
+- Add sanitization at the final Telegram/local worker boundary so even if a model leaks “thinking process”, Telegram receives only the useful result.
 
-7. Strengthen the local agent bridge so agentic flows stop silently degrading
-- The autonomous agent depends on the local worker for:
-  - file reads/writes
-  - shell commands
-  - browser tasks
-  - local search fallback
-  - previews
-- Add explicit backend preflight checks and agent event reporting for:
-  - local worker reachable/unreachable
-  - shell enabled/disabled
-  - workspace path valid/invalid
-  - browser task blocked by safe mode
-- If a local dependency is unavailable, the run should fail with an exact reason in chat and in the activity panel instead of feeling “broken”.
+5. Improve cloud agent routing for local-use requests
+- In `ai-chat` and `agent-run`, route requests like:
+  - “open browser and research…”
+  - “find latest news and send top 3 posts…”
+  - “take screenshot and send me…”
+  - “browse site and report…”
+  to the new `browser_research_report` command or to `agent-run` with browser-report instructions, not to generic `open_browser`.
+- Update `agent-run`’s `browser_task` tool result handling so it returns the report JSON to the planner and saves screenshot/source artifacts in `agent_runs.events`.
+- Increase reliability for local/smaller models by using deterministic pre/post processing around the LLM instead of asking the model to do the whole browser workflow alone.
 
-8. Secure API key handling before relying on your own keys
-- Right now AI/search/image keys are stored in a broadly readable settings table, which is not safe for real API keys.
-- Move sensitive AI/search/image credentials out of public app settings into secure backend-only storage.
-- Keep only non-sensitive selections in settings visible to the app:
-  - provider
-  - model
-  - mode toggles
-  - labels for fallback keys
-- Update chat, agent-run, tests, and the local worker bridge to read real secrets from the secure backend path.
-- This is necessary if you want dependable use of your own keys without exposing them.
+6. Fix post generation/scheduled generation visibility and final links
+- Ensure every manual and scheduled generation creates/updates a `generation_jobs` row immediately.
+- On completion, store `saved_post_id` and `result` consistently.
+- Send a final message to Telegram and AI Chat with:
+  - “Draft ready” / “Posted” status
+  - post id
+  - open link to Social Posts / draft
+  - image link if generated
+  - source links
+- For scheduled generation, include schedule name/run number in events so Job Queue clearly shows what triggered it.
 
-9. Improve visibility so you can see what path the AI is using
-- Add lightweight diagnostics to chat and settings:
-  - current active provider/model
-  - whether fallback occurred
-  - search provider status
-  - image provider status
-  - local worker status
-  - memory enabled / skills matched
-- This turns “it doesn’t work” into a debuggable visible state.
+7. Fix Instagram/social publishing synchronization
+- Keep Instagram uploader behavior unchanged.
+- Update the social post processor around it to:
+  - mirror processing start/final result to AI Chat via `telegram_messages`
+  - include actual platform result URLs when available
+  - include a Job Queue open link to the `social_posts` row/result
+  - mark partial/failure details clearly per platform
+- This addresses “Instagram and AI chat are not synchronized” without touching video upload or Instagram video uploader logic.
 
-10. Regression coverage and validation
-- Add tests for:
-  - model normalization and fallback
-  - provider auto-detection
-  - agent-run planner/reviewer using configured keys
-  - research/image tool execution
-  - skill import, recall, save, improve
-  - memory recall and memory-off behavior
-  - chat-to-agent routing
-- Validate that unchanged areas still behave the same:
-  - video upload queue
-  - scheduled uploads
-  - local platform uploaders
-  - social post generation/publishing flow
-
-Root causes confirmed from the codebase
-- Chat and post generation use different AI pipelines; post generation is more robust.
-- Standard chat does not truly use the skills/memory system; only autonomous agent runs do.
-- Chat routing into the autonomous agent is heuristic and easy to miss.
-- Search/image “auto” test logic is wrong for many key types.
-- The autonomous agent crashed on an unsupported saved model.
-- Tool-driven chat often falls back to built-in AI even when a custom provider is configured.
-- Local-agent capabilities depend on the local worker, but failure states are not surfaced clearly.
-- Sensitive API keys are currently stored in an unsafe place for real production use.
-
-Files likely involved
-- Frontend:
-  - `src/pages/AIChat.tsx`
-  - `src/pages/SettingsPage.tsx`
-  - `src/pages/AgentSkills.tsx`
-  - `src/components/AgentRunPanel.tsx`
-  - `src/lib/socialPosts.ts`
-  - `src/lib/agentChat.ts`
-- Backend functions:
-  - `supabase/functions/_shared/ai-provider.ts`
+8. Harden final responses and remove internal prompt leakage everywhere
+- Apply sanitizer consistently in:
+  - `server/ai-handler.js`
+  - `server/index.js` Telegram notifications for AI/browser tasks
   - `supabase/functions/ai-chat/index.ts`
-  - `supabase/functions/agent-run/index.ts`
-  - `supabase/functions/test-ai-connection/index.ts`
-  - `supabase/functions/test-agent-connection/index.ts`
-  - `supabase/functions/list-ai-models/index.ts`
-  - `supabase/functions/list-image-models/index.ts`
-- Local worker:
-  - `server/index.js`
-  - `server/agentWorkspace.js`
-- Database/backend config:
-  - settings + agent memory/skills/agent run storage
-  - a new secure credential storage layer
-  - one migration to sanitize invalid saved model values
+  - `supabase/functions/agent-run/index.ts` Telegram status/final rendering
+- Strip or replace sections like:
+  - “thinking process”
+  - “analyze user input”
+  - “check context/constraints”
+  - “self-correction/verification”
+  - raw system prompt text
+- For identity/basic questions, return a short direct answer instead of starting agentic task flow.
 
-Explicit no-touch areas
-- `server/uploaders/*`
-- video upload processing flow
-- scheduled upload execution
-- social post publishing behavior
-- the working social post generation output logic, except reusing its provider/fallback patterns where safe and behavior-neutral
+9. Validate only non-video paths
+- Run TypeScript/build checks and focused tests if available.
+- Inspect edge-function code for CORS and response handling.
+- Do not modify video upload uploaders or scheduled video upload logic.
+- After implementation, the expected behavior is:
+  - Ask from Telegram: “open browser, find latest Georgia news, send top 3 social posts”
+  - Job Queue shows an autonomous/browser research row live.
+  - Local browser opens sources, captures screenshots, extracts content, and returns top 3 posts with source links.
+  - Telegram receives final result, links, and screenshots.
+  - AI Chat shows the same bot result because outgoing Telegram messages are mirrored.
+  - Manual and scheduled post generations show final draft links and are mirrored to Telegram/AI Chat.
 
-Definition of done
-- Chat can use your configured model/provider predictably.
-- Search works with your configured research key or clearly falls back locally.
-- Image generation works with your configured image provider/model chain.
-- Agentic flows reliably enter the autonomous agent path when they should.
-- Skills and memory influence real runs, not just the UI.
-- Fallbacks are visible, not silent.
-- Your API keys are no longer exposed through public settings.
-- Video upload and social posting continue to behave exactly as before.
-</final-text>
+Technical files likely to change
+- `server/index.js`
+- `server/uploaders/stats-scraper.js`
+- `server/uploaders/smart-agent.js`
+- `server/socialPostProcessor.js`
+- `server/ai-handler.js`
+- `supabase/functions/ai-chat/index.ts`
+- `supabase/functions/agent-run/index.ts`
+- `supabase/functions/generate-social-post/index.ts`
+- `supabase/functions/run-due-generations/index.ts`
+- `src/components/AITasksPanel.tsx`
+- possibly `src/lib/socialPosts.ts` for typing/result parsing
+
+Scope guard
+- No changes to video upload execution logic.
+- No changes to YouTube/TikTok/Instagram video uploader flows except using existing exported helpers if already present.
+- Focus is AI chat, Telegram sync, social post generation/publishing notifications, local browser research, screenshots, and Job Queue result links.

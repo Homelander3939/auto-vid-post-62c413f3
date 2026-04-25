@@ -88,12 +88,50 @@ async function getSettings() {
   };
 }
 
+// Strip leaked LLM "thinking process" sections (common with Qwen/Gemma) so Telegram + chat
+// only see the useful result. Mirrors the sanitization done in the cloud edge functions.
+function sanitizeOutgoingMessage(text) {
+  let s = String(text || '').trim();
+  if (!s) return s;
+  const leakMarkers = [
+    /(?:^|\n)\s*(?:here'?s\s+(?:a\s+)?)?thinking process\s*:/i,
+    /(?:^|\n)\s*\d+\.\s*\*\*(?:analy[sz]e user input|check context|formulate response|self-correction|verification)\b/i,
+    /(?:^|\n)\s*(?:draft|self-correction\/verification)\s*:/i,
+  ];
+  if (leakMarkers.some((re) => re.test(s))) {
+    const next = s.match(/Next action\s*:\s*([^\n]+)/i)?.[1];
+    s = next ? `Done. Next action: ${next.trim()}` : 'Done.';
+  }
+  return s.slice(0, 3900);
+}
+
 async function notifyTelegram(settings, message) {
+  const text = sanitizeOutgoingMessage(message);
+  if (!text) return;
   if (!settings.telegram?.enabled || !settings.telegram?.chatId) return;
   try {
-    await sendTelegram(settings.telegram.botToken, settings.telegram.chatId, message, settings.backend);
+    await sendTelegram(settings.telegram.botToken, settings.telegram.chatId, text, settings.backend);
   } catch (e) {
     console.error('[Telegram] Notification failed:', e.message);
+  }
+  // Mirror into telegram_messages so AI Chat (web) shows the same bot reply that the
+  // user sees in Telegram. getUpdates does not return our own outgoing messages, so
+  // without this mirror the chat UI never reflects worker-side notifications
+  // (Instagram/social posts, browser results, stats summaries, etc.).
+  try {
+    const numericChat = Number(settings.telegram.chatId);
+    if (Number.isFinite(numericChat)) {
+      await supabase.from('telegram_messages').insert({
+        update_id: -Math.floor(Date.now() + Math.random() * 1000),
+        chat_id: numericChat,
+        text: text.slice(0, 3000),
+        is_bot: true,
+        raw_update: { source: 'local-worker' },
+      });
+    }
+  } catch (e) {
+    // Non-fatal; logging only.
+    console.warn('[Telegram] Mirror to chat history failed:', e.message);
   }
 }
 
@@ -734,6 +772,23 @@ app.post('/api/research/image-search', async (req, res) => {
 app.post('/api/process/:id', async (req, res) => {
   processJob(req.params.id).catch(e => console.error('[Worker] Job error:', e.message));
   res.json({ started: true });
+});
+
+// Serve screenshots captured by browser_research so the Job Queue UI can render
+// openable preview links for each researched source page.
+app.get('/api/browser-research/screenshot/:file', (req, res) => {
+  try {
+    const { SCREENSHOT_DIR } = require('./browserResearch');
+    const file = String(req.params.file || '').replace(/[^a-zA-Z0-9._-]/g, '');
+    if (!file) return res.status(400).end('Bad filename');
+    const full = path.join(SCREENSHOT_DIR, file);
+    if (!full.startsWith(SCREENSHOT_DIR) || !fs.existsSync(full)) return res.status(404).end('Not found');
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    fs.createReadStream(full).pipe(res);
+  } catch (e) {
+    res.status(500).end(String(e.message || e));
+  }
 });
 
 async function triggerPendingUploadProcessing(limit = 5) {
@@ -1439,6 +1494,47 @@ async function processPendingCommands() {
             } catch (err) {
               await supabase.from('pending_commands').update({
                 status: 'failed', result: err.message, completed_at: new Date().toISOString(),
+              }).eq('id', cmd.id);
+            }
+          } else if (cmd.command === 'browser_research') {
+            // Deterministic local browser research: fetch sources, open the local browser,
+            // capture screenshots + page text, optionally send screenshots to Telegram,
+            // and persist a structured result for the Job Queue UI to render as openable links.
+            try {
+              const { runBrowserResearch } = require('./browserResearch');
+              const settings = await getSettings();
+              const { sendTelegramPhoto } = require('./telegram');
+              const result = await runBrowserResearch(cmd.args || {}, {
+                settings,
+                sendTelegram: notifyTelegram,
+                sendTelegramPhoto,
+              });
+              const screenshotLinks = (result.screenshots || []).map((s) => ({
+                kind: 'screenshot',
+                label: `📸 ${s.label || 'Screenshot'}`,
+                url: `${settings.local_agent_url || 'http://localhost:3001'}/api/browser-research/screenshot/${encodeURIComponent(s.file)}`,
+              }));
+              const persisted = {
+                provider: 'local-browser',
+                summary: result.summary,
+                query: result.query,
+                sources: result.sources,
+                captures: result.captures,
+                links: [...(result.links || []), ...screenshotLinks],
+              };
+              await supabase.from('pending_commands').update({
+                status: result.ok ? 'completed' : 'failed',
+                result: JSON.stringify(persisted),
+                completed_at: new Date().toISOString(),
+              }).eq('id', cmd.id);
+              const tgSummary = `🔎 Research done: "${result.query}"\n${result.summary}\n\n` +
+                (result.sources || []).slice(0, 5).map((s, i) => `${i + 1}. ${s.title}\n${s.url}`).join('\n');
+              await notifyTelegram(settings, tgSummary);
+              console.log(`[Commands] browser_research done: ${(result.sources || []).length} sources, ${(result.screenshots || []).length} screenshots`);
+            } catch (err) {
+              await supabase.from('pending_commands').update({
+                status: 'failed', result: JSON.stringify({ ok: false, error: err.message }),
+                completed_at: new Date().toISOString(),
               }).eq('id', cmd.id);
             }
           } else if (cmd.command && cmd.command.startsWith('agent_')) {

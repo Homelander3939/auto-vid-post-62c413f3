@@ -28,7 +28,7 @@ async function listRecentCommands(): Promise<PendingCommand[]> {
   const { data } = await (supabase as any)
     .from('pending_commands')
     .select('*')
-    .in('command', ['research_search', 'image_search', 'open_browser', 'check_stats'])
+    .in('command', ['research_search', 'image_search', 'open_browser', 'browser_research', 'check_stats'])
     .order('created_at', { ascending: false })
     .limit(8);
   return (data || []) as PendingCommand[];
@@ -38,12 +38,14 @@ const COMMAND_ICONS: Record<string, any> = {
   research_search: Search,
   image_search: ImageIcon,
   open_browser: Globe,
+  browser_research: Globe,
   check_stats: Hash,
 };
 const COMMAND_LABELS: Record<string, string> = {
   research_search: 'Web research',
   image_search: 'Image search',
   open_browser: 'Browser task',
+  browser_research: 'Local browser research',
   check_stats: 'Stats check',
 };
 const AGENT_RUN_RECENT_EVENT_TYPES = ['tool_call', 'tool_result', 'thought', 'error', 'review', 'phase', 'finish'];
@@ -172,13 +174,22 @@ function CommandRow({ cmd, onDelete }: { cmd: PendingCommand; onDelete: (id: str
   const label = COMMAND_LABELS[cmd.command] || cmd.command;
   let resultPreview = '';
   let resultCount = 0;
+  let parsedResult: any = null;
   try {
     if (cmd.result) {
-      const parsed = JSON.parse(cmd.result);
-      if (Array.isArray(parsed?.results)) resultCount = parsed.results.length;
-      resultPreview = parsed?.results?.[0]?.title || cmd.result.slice(0, 80);
+      parsedResult = JSON.parse(cmd.result);
+      if (Array.isArray(parsedResult?.results)) resultCount = parsedResult.results.length;
+      if (Array.isArray(parsedResult?.sources)) resultCount = parsedResult.sources.length;
+      resultPreview = parsedResult?.summary
+        || parsedResult?.results?.[0]?.title
+        || parsedResult?.sources?.[0]?.title
+        || cmd.result.slice(0, 80);
     }
   } catch { resultPreview = cmd.result?.slice(0, 80) || ''; }
+
+  const links: Array<{ kind?: string; label?: string; url?: string }> = Array.isArray(parsedResult?.links) ? parsedResult.links : [];
+  const sourceLinks = links.filter((l) => l.kind !== 'screenshot');
+  const screenshotLinks = links.filter((l) => l.kind === 'screenshot');
 
   return (
     <Card className="border bg-card/60">
@@ -194,17 +205,38 @@ function CommandRow({ cmd, onDelete }: { cmd: PendingCommand; onDelete: (id: str
                 {cmd.status}
               </Badge>
               {resultCount > 0 && (
-                <Badge variant="secondary" className="text-[10px] h-5">{resultCount} results</Badge>
+                <Badge variant="secondary" className="text-[10px] h-5">{resultCount} sources</Badge>
+              )}
+              {screenshotLinks.length > 0 && (
+                <Badge variant="secondary" className="text-[10px] h-5">📸 {screenshotLinks.length}</Badge>
               )}
               <span className="text-[10px] text-muted-foreground ml-auto">
                 {new Date(cmd.created_at).toLocaleString()}
               </span>
             </div>
-            {cmd.args?.query && (
-              <p className="text-xs text-muted-foreground line-clamp-1">"{cmd.args.query}"</p>
+            {(cmd.args?.query || parsedResult?.query) && (
+              <p className="text-xs text-muted-foreground line-clamp-1">"{cmd.args?.query || parsedResult?.query}"</p>
             )}
             {resultPreview && cmd.status === 'completed' && (
-              <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">→ {resultPreview}</p>
+              <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5">→ {resultPreview}</p>
+            )}
+            {cmd.status === 'completed' && (sourceLinks.length > 0 || screenshotLinks.length > 0) && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {sourceLinks.slice(0, 4).map((link, i) => (
+                  <a key={`src-${i}`} href={link.url} target="_blank" rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-primary/30 text-primary hover:bg-primary/10 max-w-[200px] truncate">
+                    <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                    <span className="truncate">{link.label || link.url}</span>
+                  </a>
+                ))}
+                {screenshotLinks.map((link, i) => (
+                  <a key={`shot-${i}`} href={link.url} target="_blank" rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-emerald-500/30 text-emerald-700 hover:bg-emerald-500/10">
+                    <ImageIcon className="w-2.5 h-2.5" />
+                    {link.label || `Screenshot ${i + 1}`}
+                  </a>
+                ))}
+              </div>
             )}
           </div>
           <div className="flex flex-col gap-1 items-end">
