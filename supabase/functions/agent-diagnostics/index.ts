@@ -55,7 +55,18 @@ async function probeLovableGateway(key: string): Promise<{ ok: boolean; latencyM
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
-  try {
+  // Hard wall-clock cap so the function can never approach the 150s idle timeout.
+  const wallClock = new Promise<Response>((resolve) => {
+    setTimeout(() => {
+      resolve(new Response(
+        JSON.stringify({ overall: 'down', error: 'agent-diagnostics exceeded 12s wall-clock', issues: ['Diagnostics timed out — backend likely degraded'] }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      ));
+    }, 12_000);
+  });
+
+  const work = (async (): Promise<Response> => {
+   try {
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -164,4 +175,7 @@ Deno.serve(async (req) => {
       status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
+  })();
+
+  return await Promise.race([work, wallClock]);
 });
