@@ -244,6 +244,62 @@ export default function AppLayout() {
             </div>
           )}
 
+          {/* AI / Agent diagnostics badge */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={refreshDiagnostics}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs w-full border border-border bg-secondary/40 hover:bg-secondary text-left"
+              >
+                {!diagnostics ? (
+                  <>
+                    <Activity className="w-3.5 h-3.5 text-muted-foreground animate-pulse" />
+                    <span className="text-muted-foreground">Diagnostics…</span>
+                  </>
+                ) : diagnostics.overall === 'healthy' ? (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span className="text-emerald-700 dark:text-emerald-400 font-medium">AI healthy</span>
+                  </>
+                ) : diagnostics.overall === 'degraded' ? (
+                  <>
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                    <span className="text-amber-700 dark:text-amber-400 font-medium">AI degraded</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{diagnostics.issues.length}</span>
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle className="w-3.5 h-3.5 text-destructive" />
+                    <span className="text-destructive font-medium">AI down</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{diagnostics.issues.length}</span>
+                  </>
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" className="max-w-[300px] space-y-1">
+              {diagnostics ? (
+                <>
+                  <div className="text-xs font-medium">Agent diagnostics</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Gateway: {diagnostics.gateway.ok ? `${diagnostics.gateway.latencyMs}ms` : (diagnostics.gateway.error || 'down')}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Worker: {diagnostics.local_worker.alive ? 'alive' : (diagnostics.local_worker.last_seen_at ? `seen ${new Date(diagnostics.local_worker.last_seen_at).toLocaleTimeString()}` : 'never')}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    24h runs: {diagnostics.runs_24h.completed}✓ / {diagnostics.runs_24h.failed}✗ / {diagnostics.runs_24h.running}⏳
+                  </div>
+                  {diagnostics.issues.length > 0 && (
+                    <ul className="text-[11px] text-amber-600 dark:text-amber-400 list-disc pl-3 mt-1">
+                      {diagnostics.issues.slice(0, 4).map((i, k) => <li key={k}>{i}</li>)}
+                    </ul>
+                  )}
+                  <div className="text-[10px] text-muted-foreground pt-1">Click to refresh</div>
+                </>
+              ) : 'Loading diagnostics…'}
+            </TooltipContent>
+          </Tooltip>
+
           <p className="text-xs px-1">
             <span className="block font-medium text-foreground/85">{buildMetaLabel}</span>
             <span className="block text-[10px] text-muted-foreground mt-0.5">
