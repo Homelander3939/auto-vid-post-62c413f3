@@ -475,6 +475,9 @@ export default function SettingsPage() {
     try {
       const models = await listAIModels(provider, apiKey, baseUrl);
       setAiModels(models);
+      if (provider === 'lmstudio' && models.length > 0) {
+        setAiSettings((s) => models.some((m) => m.id === s.model) ? s : { ...s, model: models[0].id });
+      }
     } catch (e: any) {
       setModelsError(e.message || 'Failed to load models');
       setAiModels([]);
@@ -716,7 +719,7 @@ export default function SettingsPage() {
             LLM Provider
           </CardTitle>
           <CardDescription>
-            Single LLM used for AI Post Generator, AI Chat, and agentic flows. Default uses the Lovable AI Gateway (no key needed). Add your own provider key — or point at <span className="font-mono">LM Studio</span> running on your PC — to override.
+            Single LLM used for AI Post Generator, AI Chat, and agentic flows. Point at <span className="font-mono">LM Studio</span> running on your PC to use your real locally loaded models.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -783,7 +786,7 @@ export default function SettingsPage() {
                 placeholder="http://192.168.50.33:1234"
               />
               <p className="text-[11px] text-muted-foreground">
-                Public URL of LM Studio's OpenAI-compatible server (don't include <span className="font-mono">/v1</span>). The local worker on your PC will reach this directly; the cloud falls back to a hint model list when LM Studio isn't reachable.
+                URL of LM Studio's OpenAI-compatible server (don't include <span className="font-mono">/v1</span>). Models are loaded through your local worker, so this must match the server shown in LM Studio.
               </p>
             </div>
           )}

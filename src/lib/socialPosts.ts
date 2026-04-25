@@ -536,7 +536,23 @@ export async function generatePostWithAI(input: AIGenerateInput): Promise<AIGene
 }
 
 export interface AIModel { id: string; label?: string }
+async function callLocalWorker<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`http://localhost:3001${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.error || `Local worker returned ${response.status}`);
+  return data as T;
+}
+
 export async function listAIModels(provider: string, apiKey: string, baseUrl?: string): Promise<AIModel[]> {
+  if (provider === 'lmstudio') {
+    const data = await callLocalWorker<{ models: AIModel[] }>('/api/ai/models', { apiKey, baseUrl });
+    return data.models || [];
+  }
   const { data, error } = await supabase.functions.invoke('list-ai-models', { body: { provider, apiKey, baseUrl } });
   if (error) throw new Error(error.message || 'Failed to list models');
   if (!data || data.error) throw new Error(data?.error || 'Failed to list models');
@@ -545,6 +561,9 @@ export async function listAIModels(provider: string, apiKey: string, baseUrl?: s
 
 export interface ConnectionTestResult { ok: boolean; error?: string; latency?: number; provider?: string; model?: string; sample?: string }
 export async function testAIConnection(provider: string, apiKey: string, model: string, baseUrl?: string): Promise<ConnectionTestResult> {
+  if (provider === 'lmstudio') {
+    return callLocalWorker<ConnectionTestResult>('/api/ai/test', { apiKey, model, baseUrl });
+  }
   const { data, error } = await supabase.functions.invoke('test-ai-connection', { body: { provider, apiKey, model, baseUrl } });
   if (error) return { ok: false, error: error.message };
   return data as ConnectionTestResult;

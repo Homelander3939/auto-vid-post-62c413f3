@@ -28,7 +28,7 @@ const { checkPlatformStats, formatStatsForTelegram, runBrowserTask } = require('
 const { sendTelegram } = require('./telegram');
 const { scanFolder, scanAllFiles } = require('./folderWatcher');
 const { parseTextFile } = require('./textParser');
-const { processTelegramAIResponse, streamLMStudio, LM_STUDIO_URL } = require('./ai-handler');
+const { processTelegramAIResponse, streamLMStudio, LM_STUDIO_URL, discoverLMStudioModels, refreshLMStudioConfigFromSettings, testLMStudioConnection } = require('./ai-handler');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
@@ -485,6 +485,34 @@ app.get('/', (req, res) => {
 });
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
+
+app.post('/api/ai/models', async (req, res) => {
+  try {
+    const { baseUrl, apiKey } = req.body || {};
+    const config = await refreshLMStudioConfigFromSettings(supabase);
+    const models = await discoverLMStudioModels(baseUrl || config.url, apiKey || config.apiKey);
+    res.json({ models, provider: 'lmstudio', baseUrl: baseUrl || config.url });
+  } catch (err) {
+    console.error('[AI] LM Studio model discovery failed:', err.message);
+    res.status(502).json({ error: err.message || 'Could not load LM Studio models' });
+  }
+});
+
+app.post('/api/ai/test', async (req, res) => {
+  try {
+    const { baseUrl, apiKey, model } = req.body || {};
+    const config = await refreshLMStudioConfigFromSettings(supabase);
+    const result = await testLMStudioConnection({
+      baseUrl: baseUrl || config.url,
+      apiKey: apiKey || config.apiKey,
+      model: model || config.model,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('[AI] LM Studio test failed:', err.message);
+    res.status(502).json({ ok: false, error: err.message || 'LM Studio test failed' });
+  }
+});
 
 // --- Research search endpoint (DuckDuckGo HTML → Brave/Google scrape via persistent browser) ---
 // Used by the cloud AI agent when no research API key is configured.
@@ -989,6 +1017,8 @@ app.post('/api/ai-chat', async (req, res) => {
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'messages array is required' });
     }
+
+    await refreshLMStudioConfigFromSettings(supabase);
 
     // Stream response from LM Studio
     const streamResp = await streamLMStudio(messages, supabase);
