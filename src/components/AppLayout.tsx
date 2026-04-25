@@ -125,7 +125,7 @@ function useLiveBuildInfo(serverConnected: boolean) {
 }
 
 export default function AppLayout() {
-  const serverStatus = useLocalServerStatus();
+  const { status: serverStatus, health: localHealth, refresh: refreshLocalHealth, isLocalhost } = useLocalServerStatus();
   const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics();
   const queryClient = useQueryClient();
   const location = useLocation();
@@ -148,11 +148,15 @@ export default function AppLayout() {
   );
   const effectiveVersion = liveBuild?.version || __APP_VERSION__;
   const effectiveCommit = liveBuild?.commit || __BUILD_COMMIT__;
-  const versionLabel = effectiveVersion ? `v${effectiveVersion}` : '';
+  const versionLabel = effectiveVersion && effectiveVersion !== '0.0.0' ? `v${effectiveVersion}` : '';
   const commitLabel = effectiveCommit ? `Commit ${effectiveCommit}` : '';
-  const primaryBuildLabel = buildLabel !== 'dev' ? buildLabel : (commitLabel || 'dev');
+  const localRevisionLabel = liveBuild?.buildNumber ? `Local rev ${liveBuild.buildNumber}` : '';
+  const primaryBuildLabel = liveBuild?.commit
+    ? [liveBuild.branch || 'local', localRevisionLabel, commitLabel].filter(Boolean).join(' · ')
+    : (buildLabel !== 'dev' ? buildLabel : (commitLabel || 'dev'));
   const buildMetaLabel = [primaryBuildLabel, versionLabel].filter(Boolean).join(' · ');
-  const liveSuffix = liveBuild?.commit ? ` · live ${liveBuild.commit}` : '';
+  const liveSuffix = liveBuild?.commit ? ` · worker ${LOCAL_WORKER_URL} · commit ${liveBuild.commit}` : '';
+  const localAi = localHealth?.ai;
 
   // Close mobile nav on route change
   useEffect(() => {
