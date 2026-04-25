@@ -109,7 +109,8 @@ function useLiveBuildInfo(serverConnected: boolean) {
     return () => { mounted = false; clearInterval(id); };
   }, [serverConnected]);
   return info;
-}
+
+export default function AppLayout() {
   const serverStatus = useLocalServerStatus();
   const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics();
   const queryClient = useQueryClient();
