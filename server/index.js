@@ -486,6 +486,45 @@ app.get('/', (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
 
+// --- Live build info from local git (always reflects the currently-running code) ---
+// The frontend footer polls this so users see the REAL commit/branch after `git pull`,
+// without needing to rebuild Vite. Falls back gracefully if git is unavailable.
+app.get('/api/build-info', (req, res) => {
+  try {
+    const { execSync } = require('node:child_process');
+    const path = require('node:path');
+    const fs = require('node:fs');
+    const repoRoot = path.resolve(__dirname, '..');
+    const run = (cmd) => {
+      try {
+        return execSync(cmd, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 })
+          .toString().trim();
+      } catch { return ''; }
+    };
+    let version = '';
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+      version = String(pkg.version || '');
+    } catch {}
+    const commit = run('git rev-parse --short HEAD');
+    const branch = run('git rev-parse --abbrev-ref HEAD');
+    const revCount = run('git rev-list --count HEAD');
+    const lastCommitTs = run('git log -1 --format=%ct');
+    const lastCommitMsg = run('git log -1 --format=%s');
+    res.json({
+      version,
+      commit,
+      branch,
+      buildNumber: revCount,
+      lastCommitAt: lastCommitTs ? new Date(Number(lastCommitTs) * 1000).toISOString() : '',
+      lastCommitMessage: lastCommitMsg,
+      source: 'local-git',
+    });
+  } catch (err) {
+    res.status(200).json({ source: 'unavailable', error: String(err?.message || err) });
+  }
+});
+
 // --- Research search endpoint (DuckDuckGo HTML → Brave/Google scrape via persistent browser) ---
 // Used by the cloud AI agent when no research API key is configured.
 // Strategy:

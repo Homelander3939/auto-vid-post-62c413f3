@@ -81,6 +81,36 @@ function useAgentDiagnostics() {
   return { data, loading, refresh };
 }
 
+type LiveBuildInfo = {
+  version?: string;
+  commit?: string;
+  branch?: string;
+  buildNumber?: string;
+  lastCommitAt?: string;
+  lastCommitMessage?: string;
+  source?: string;
+};
+
+function useLiveBuildInfo(serverConnected: boolean) {
+  const [info, setInfo] = useState<LiveBuildInfo | null>(null);
+  useEffect(() => {
+    if (!serverConnected) { setInfo(null); return; }
+    let mounted = true;
+    const load = async () => {
+      try {
+        const resp = await fetch('http://localhost:3001/api/build-info', { signal: AbortSignal.timeout(3000) });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (mounted) setInfo(data);
+      } catch { /* ignore */ }
+    };
+    load();
+    const id = setInterval(load, 15_000); // re-poll every 15s so footer reflects fresh `git pull`
+    return () => { mounted = false; clearInterval(id); };
+  }, [serverConnected]);
+  return info;
+}
+
 export default function AppLayout() {
   const serverStatus = useLocalServerStatus();
   const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics();
@@ -96,11 +126,20 @@ export default function AppLayout() {
 
   const uploadMode = settings?.uploadMode || 'local';
   const isCloud = uploadMode === 'cloud';
-  const buildLabel = formatBuildLabel(__BUILD_NAME__, __BUILD_NUMBER__, __PR_NUMBER__);
-  const versionLabel = __APP_VERSION__ ? `v${__APP_VERSION__}` : '';
-  const commitLabel = __BUILD_COMMIT__ ? `Commit ${__BUILD_COMMIT__}` : '';
+  const liveBuild = useLiveBuildInfo(serverStatus === 'connected');
+
+  const buildLabel = formatBuildLabel(
+    liveBuild?.branch || __BUILD_NAME__,
+    liveBuild?.buildNumber || __BUILD_NUMBER__,
+    __PR_NUMBER__,
+  );
+  const effectiveVersion = liveBuild?.version || __APP_VERSION__;
+  const effectiveCommit = liveBuild?.commit || __BUILD_COMMIT__;
+  const versionLabel = effectiveVersion ? `v${effectiveVersion}` : '';
+  const commitLabel = effectiveCommit ? `Commit ${effectiveCommit}` : '';
   const primaryBuildLabel = buildLabel !== 'dev' ? buildLabel : (commitLabel || 'dev');
   const buildMetaLabel = [primaryBuildLabel, versionLabel].filter(Boolean).join(' · ');
+  const liveSuffix = liveBuild?.commit ? ` · live ${liveBuild.commit}` : '';
 
   // Close mobile nav on route change
   useEffect(() => {
@@ -301,9 +340,15 @@ export default function AppLayout() {
           </Tooltip>
 
           <p className="text-xs px-1">
-            <span className="block font-medium text-foreground/85">{buildMetaLabel}</span>
+            <span className="block font-medium text-foreground/85">
+              {buildMetaLabel}
+              {liveBuild?.commit && (
+                <span className="ml-1 text-[10px] text-emerald-500" title={liveBuild.lastCommitMessage || ''}>● live</span>
+              )}
+            </span>
             <span className="block text-[10px] text-muted-foreground mt-0.5">
               {[isCloud ? 'Cloud Mode' : 'Local Mode', isCloud ? 'Cloud DB · Cloud uploads' : 'Cloud DB · Local uploads'].join(' · ')}
+              {liveSuffix}
             </span>
           </p>
         </div>
