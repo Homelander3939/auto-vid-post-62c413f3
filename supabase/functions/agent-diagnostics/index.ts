@@ -70,31 +70,35 @@ Deno.serve(async (req) => {
 
     // Local worker liveness via pending_commands recency
     const ninetySecAgo = new Date(Date.now() - 90_000).toISOString();
-    const { data: recentCompleted } = await supabase
-      .from('pending_commands')
-      .select('completed_at')
-      .gte('completed_at', ninetySecAgo)
-      .order('completed_at', { ascending: false })
-      .limit(1);
+    const dayAgo = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const lovableKey = Deno.env.get('LOVABLE_API_KEY') || '';
+
+    const [recentCompletedRes, lastEverRes, runsRes, gatewayProbe] = await Promise.all([
+      withTimeout(
+        supabase.from('pending_commands').select('completed_at').gte('completed_at', ninetySecAgo).order('completed_at', { ascending: false }).limit(1),
+        4000, { data: null } as any,
+      ),
+      withTimeout(
+        supabase.from('pending_commands').select('completed_at').not('completed_at', 'is', null).order('completed_at', { ascending: false }).limit(1),
+        4000, { data: null } as any,
+      ),
+      withTimeout(
+        supabase.from('agent_runs').select('status').gte('created_at', dayAgo).limit(200),
+        4000, { data: [] } as any,
+      ),
+      lovableKey
+        ? withTimeout(probeLovableGateway(lovableKey), 6000, { ok: false, latencyMs: 6000, error: 'Probe timed out' })
+        : Promise.resolve({ ok: false, latencyMs: 0, error: 'LOVABLE_API_KEY missing' }),
+    ]);
+
+    const recentCompleted = recentCompletedRes?.data;
+    const lastEver = lastEverRes?.data;
+    const runs = runsRes?.data || [];
+
     let lastSeenAt: string | null = recentCompleted?.[0]?.completed_at || null;
-    if (!lastSeenAt) {
-      const { data: lastEver } = await supabase
-        .from('pending_commands')
-        .select('completed_at')
-        .not('completed_at', 'is', null)
-        .order('completed_at', { ascending: false })
-        .limit(1);
-      lastSeenAt = lastEver?.[0]?.completed_at || null;
-    }
+    if (!lastSeenAt) lastSeenAt = lastEver?.[0]?.completed_at || null;
     const workerAlive = !!recentCompleted?.length;
 
-    // Recent agent_runs stats (last 24h)
-    const dayAgo = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    const { data: runs } = await supabase
-      .from('agent_runs')
-      .select('status')
-      .gte('created_at', dayAgo)
-      .limit(200);
     const stats = (runs || []).reduce(
       (acc: any, r: any) => {
         acc.total++;
@@ -105,12 +109,6 @@ Deno.serve(async (req) => {
       },
       { total: 0, completed: 0, failed: 0, running: 0 },
     );
-
-    // Lovable AI gateway probe
-    const lovableKey = Deno.env.get('LOVABLE_API_KEY') || '';
-    const gatewayProbe = lovableKey
-      ? await probeLovableGateway(lovableKey)
-      : { ok: false, latencyMs: 0, error: 'LOVABLE_API_KEY missing' };
 
     const s = settings || ({} as any);
     const providers = {
