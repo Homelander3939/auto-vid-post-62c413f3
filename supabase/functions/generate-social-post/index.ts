@@ -304,6 +304,8 @@ async function sendTelegramGenerationPreview(opts: {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j?.ok === false) {
         imageSent = { ok: false, error: `sendPhoto ${r.status}: ${JSON.stringify(j).slice(0, 200)}` };
+      } else {
+        await mirrorTgBot(chatId, `📷 ${caption}`, 'generate-social-post-photo');
       }
     } else {
       imageSent = await sendTelegramText({ lovableApiKey, telegramApiKey, chatId, text: caption });
