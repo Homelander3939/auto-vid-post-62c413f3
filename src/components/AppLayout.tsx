@@ -83,6 +83,7 @@ function useAgentDiagnostics() {
 
 export default function AppLayout() {
   const serverStatus = useLocalServerStatus();
+  const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics();
   const queryClient = useQueryClient();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
