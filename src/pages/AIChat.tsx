@@ -331,7 +331,7 @@ export default function AIChat() {
     if (!telegramEnabled || !resolvedChatId || !text.trim()) return;
     try {
       await supabase.functions.invoke('send-telegram', {
-        body: { chat_id: resolvedChatId, text: text.slice(0, 3900) },
+        body: { chat_id: resolvedChatId, text: text.slice(0, 3900), mirror: false },
       });
     } catch (e) {
       console.error('Mirror to Telegram failed:', e);
