@@ -183,6 +183,9 @@ serve(async (req) => {
       throw new Error(`Telegram API call failed [${response.status}]: ${JSON.stringify(data)}`);
     }
 
+    if (shouldMirror) {
+      await mirrorBotMessage(Number(numericChatId), text, mirrorTag);
+    }
     return new Response(
       JSON.stringify({ success: true, message_id: data.result?.message_id }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
