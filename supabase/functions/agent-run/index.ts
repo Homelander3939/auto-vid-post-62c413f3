@@ -1106,6 +1106,19 @@ async function runAgent(supabase: any, runId: string, lovableKey: string, telegr
     });
   }
 
+  // Preflight: local-worker health (cloud edge function can't reach localhost,
+  // so we infer health from pending_commands queue activity). Surface a clear
+  // event up front so users immediately see "worker offline" instead of waiting
+  // 90s for the first shell/file/browser tool to time out.
+  const localHealth = await checkLocalWorkerHealth(supabase);
+  await appendEvent(supabase, runId, {
+    type: localHealth.alive ? 'preflight_ok' : 'preflight_warning',
+    component: 'local_worker',
+    alive: localHealth.alive,
+    last_seen_at: localHealth.lastSeenAt,
+    message: localHealth.note,
+  });
+
   const systemPrompt = `You are an elite autonomous local-PC agent inspired by Claude Code, OpenClaw, and Hermes.
 
 # Your environment
