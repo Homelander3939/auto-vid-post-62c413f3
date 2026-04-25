@@ -125,11 +125,20 @@ export default function AppLayout() {
 
   const uploadMode = settings?.uploadMode || 'local';
   const isCloud = uploadMode === 'cloud';
-  const buildLabel = formatBuildLabel(__BUILD_NAME__, __BUILD_NUMBER__, __PR_NUMBER__);
-  const versionLabel = __APP_VERSION__ ? `v${__APP_VERSION__}` : '';
-  const commitLabel = __BUILD_COMMIT__ ? `Commit ${__BUILD_COMMIT__}` : '';
+  const liveBuild = useLiveBuildInfo(serverStatus === 'connected');
+
+  const buildLabel = formatBuildLabel(
+    liveBuild?.branch || __BUILD_NAME__,
+    liveBuild?.buildNumber || __BUILD_NUMBER__,
+    __PR_NUMBER__,
+  );
+  const effectiveVersion = liveBuild?.version || __APP_VERSION__;
+  const effectiveCommit = liveBuild?.commit || __BUILD_COMMIT__;
+  const versionLabel = effectiveVersion ? `v${effectiveVersion}` : '';
+  const commitLabel = effectiveCommit ? `Commit ${effectiveCommit}` : '';
   const primaryBuildLabel = buildLabel !== 'dev' ? buildLabel : (commitLabel || 'dev');
   const buildMetaLabel = [primaryBuildLabel, versionLabel].filter(Boolean).join(' · ');
+  const liveSuffix = liveBuild?.commit ? ` · live ${liveBuild.commit}` : '';
 
   // Close mobile nav on route change
   useEffect(() => {
