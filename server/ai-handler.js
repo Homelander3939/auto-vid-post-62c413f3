@@ -60,6 +60,96 @@ async function lmFetch(endpoint, bodyObj, retried = false) {
   throw new Error(`LM Studio unreachable or no model loaded. Check that LM Studio is running. (${errText})`);
 }
 
+function truncateText(value, max = 120) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function looksLikeSocialPostRequest(text) {
+  return /\b(generate|create|draft|write|make)\b[\s\S]{0,80}\b(post|posts|social|linkedin|facebook|twitter|x\b)\b/i.test(text)
+    || /\b(post|posts)\b[\s\S]{0,80}\b(linkedin|facebook|twitter|x\b)\b/i.test(text);
+}
+
+function looksLikeAgenticRequest(text) {
+  return /\b(open|use|run)\b[\s\S]{0,40}\bbrowser\b/i.test(text)
+    || /\b(research|find out|latest|news|scrape|analy[sz]e|investigate)\b/i.test(text)
+    || /\b(send me|telegram|report back|summari[sz]e)\b[\s\S]{0,80}\b(top|latest|research|news|results?)\b/i.test(text);
+}
+
+function extractSocialPlatforms(text) {
+  const platforms = [];
+  if (/\blinkedin\b/i.test(text)) platforms.push('linkedin');
+  if (/\bfacebook\b|\bfb\b/i.test(text)) platforms.push('facebook');
+  if (/\btwitter\b|\bx\b/i.test(text)) platforms.push('x');
+  return platforms.length ? [...new Set(platforms)] : ['x', 'linkedin', 'facebook'];
+}
+
+async function invokeCloudFunction(backend, functionName, body) {
+  if (!backend?.supabaseUrl || !backend?.supabaseKey) {
+    throw new Error('Cloud function call unavailable: missing backend credentials');
+  }
+  const response = await fetch(`${backend.supabaseUrl}/functions/v1/${functionName}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${backend.supabaseKey}`,
+      'apikey': backend.supabaseKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.error || `${functionName} failed with ${response.status}`);
+  return data;
+}
+
+async function routeDeterministicTelegramTask(text, chatId, backend) {
+  const clean = String(text || '').trim();
+  if (!clean) return null;
+
+  if (looksLikeSocialPostRequest(clean)) {
+    const platforms = extractSocialPlatforms(clean);
+    await invokeCloudFunction(backend, 'generate-social-post', {
+      prompt: clean,
+      platforms,
+      includeImage: true,
+      stream: true,
+    });
+    return `Started post-generation agent for: ${truncateText(clean)}\nPlatforms: ${platforms.join(', ')}\nI will send the draft here for approval when it is ready.`;
+  }
+
+  if (looksLikeAgenticRequest(clean)) {
+    const data = await invokeCloudFunction(backend, 'agent-run', {
+      prompt: clean,
+      source: 'telegram-local-router',
+      telegram_chat_id: chatId,
+    });
+    return `Started local agent task: ${truncateText(clean)}\nRun ID: ${data.runId || 'created'}\nI will report progress and results here.`;
+  }
+
+  return null;
+}
+
+function sanitizeTelegramReply(reply) {
+  let text = String(reply || '').replace(/__AGENT_RUN__:[0-9a-f-]+\n?/gi, '').trim();
+  const leakMarkers = [
+    /(?:^|\n)\s*(?:here'?s\s+(?:a\s+)?)?thinking process\s*:/i,
+    /(?:^|\n)\s*\d+\.\s*\*\*(?:analy[sz]e user input|check context|formulate response|self-correction|verification)\b/i,
+    /(?:^|\n)\s*(?:draft|self-correction\/verification)\s*:/i,
+  ];
+  if (leakMarkers.some((re) => re.test(text))) {
+    const nextAction = text.match(/Next action\s*:\s*([^\n]+)/i)?.[1];
+    text = nextAction ? `Done. Next action: ${nextAction.trim()}` : 'Done. Send the next task.';
+  }
+  return text
+    .replace(/\*\*/g, '')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/```[\s\S]*?```/g, m => m.replace(/```\w*\n?/g, '').replace(/```/g, ''))
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .slice(0, 3900)
+    .trim() || 'Done.';
+}
+
 /* ── Tool definitions for the AI ─────────────── */
 const tools = [
   {
