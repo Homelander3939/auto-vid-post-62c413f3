@@ -3,9 +3,97 @@
 
 const fetch = require('node-fetch');
 
-const LM_STUDIO_URL = process.env.LM_STUDIO_URL || 'http://192.168.50.33:1234';
+let LM_STUDIO_URL = normalizeLMStudioUrl(process.env.LM_STUDIO_URL || 'http://192.168.50.33:1234');
 let LM_STUDIO_MODEL = process.env.LM_STUDIO_MODEL || 'google/gemma-3-27b';
-const LM_STUDIO_API_KEY = process.env.LM_STUDIO_API_KEY || 'lm-studio';
+let LM_STUDIO_API_KEY = process.env.LM_STUDIO_API_KEY || 'lm-studio';
+
+function normalizeLMStudioUrl(value) {
+  const raw = String(value || '').trim() || 'http://localhost:1234';
+  return raw.replace(/\/+$/, '').replace(/\/v1$/i, '');
+}
+
+function withTimeout(ms = 10_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return { controller, done: () => clearTimeout(timer) };
+}
+
+async function discoverLMStudioModels(baseUrl = LM_STUDIO_URL, apiKey = LM_STUDIO_API_KEY) {
+  const url = normalizeLMStudioUrl(baseUrl);
+  const { controller, done } = withTimeout(8_000);
+  try {
+    const resp = await fetch(`${url}/v1/models`, {
+      headers: { 'Authorization': `Bearer ${apiKey || 'lm-studio'}` },
+      signal: controller.signal,
+    });
+    const text = await resp.text();
+    if (!resp.ok) throw new Error(`LM Studio returned ${resp.status}: ${text}`);
+    const data = JSON.parse(text || '{}');
+    const rows = Array.isArray(data.data) ? data.data : Array.isArray(data.models) ? data.models : [];
+    return [...new Map(rows
+      .map((m) => String(m?.id || m?.name || '').trim())
+      .filter(Boolean)
+      .map((id) => [id, { id, label: id }])
+    ).values()];
+  } finally {
+    done();
+  }
+}
+
+async function refreshLMStudioConfigFromSettings(supabase) {
+  try {
+    const { data } = await supabase
+      .from('app_settings')
+      .select('ai_provider, ai_base_url, ai_api_key, ai_model')
+      .eq('id', 1)
+      .single();
+    if (data?.ai_provider === 'lmstudio') {
+      if (data.ai_base_url) LM_STUDIO_URL = normalizeLMStudioUrl(data.ai_base_url);
+      if (data.ai_api_key) LM_STUDIO_API_KEY = data.ai_api_key;
+      if (data.ai_model) LM_STUDIO_MODEL = data.ai_model;
+    }
+  } catch (e) {
+    console.warn('[AI] Could not refresh LM Studio settings:', e.message);
+  }
+  return { url: LM_STUDIO_URL, model: LM_STUDIO_MODEL, apiKey: LM_STUDIO_API_KEY };
+}
+
+async function testLMStudioConnection({ baseUrl, apiKey, model } = {}) {
+  const url = normalizeLMStudioUrl(baseUrl || LM_STUDIO_URL);
+  const key = apiKey || LM_STUDIO_API_KEY || 'lm-studio';
+  let selectedModel = String(model || '').trim();
+  if (!selectedModel) {
+    const models = await discoverLMStudioModels(url, key);
+    selectedModel = models[0]?.id || '';
+  }
+  if (!selectedModel) throw new Error('No loaded LM Studio models found');
+  const started = Date.now();
+  const { controller, done } = withTimeout(20_000);
+  try {
+    const resp = await fetch(`${url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: selectedModel,
+        messages: [{ role: 'user', content: 'Reply with OK.' }],
+        temperature: 0,
+        max_tokens: 16,
+      }),
+      signal: controller.signal,
+    });
+    const text = await resp.text();
+    if (!resp.ok) throw new Error(`LM Studio returned ${resp.status}: ${text}`);
+    LM_STUDIO_URL = url;
+    LM_STUDIO_API_KEY = key;
+    LM_STUDIO_MODEL = selectedModel;
+    return { ok: true, provider: 'lmstudio', model: selectedModel, latency: Date.now() - started };
+  } finally {
+    done();
+  }
+}
 
 /**
  * Resilient fetch wrapper for LM Studio.
