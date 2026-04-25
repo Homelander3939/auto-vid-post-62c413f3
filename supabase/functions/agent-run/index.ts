@@ -1334,7 +1334,7 @@ You can also call \`save_skill\` after a successful novel routine — it propose
           ok = r.ok;
           toolResultText = r.summary;
           toolResultData = r.data || null;
-          if (ok) await appendEvent(supabase, runId, { type: 'skill_improved', name: r.data.name, id: r.data.id });
+          if (ok && r.data) await appendEvent(supabase, runId, { type: 'skill_improved', name: r.data.name, id: r.data.id });
         } else if (name === 'save_skill') {
           await setStatus(supabase, runId, {
             pending_skill: {
