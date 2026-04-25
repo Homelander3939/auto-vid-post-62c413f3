@@ -22,45 +22,32 @@ const navItems = [
 ];
 
 type ServerStatus = 'connected' | 'disconnected' | 'checking';
-const LOCAL_WORKER_URL = 'http://localhost:3001';
-
-type LocalWorkerHealth = {
-  status: string;
-  mode: string;
-  port?: number;
-  ai?: { ok: boolean; url?: string; model?: string; status?: number; error?: string };
-};
 
 function useLocalServerStatus() {
   const isLocalhost = typeof window !== 'undefined' && (
     window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
   );
   const [status, setStatus] = useState<ServerStatus>(isLocalhost ? 'checking' : 'disconnected');
-  const [health, setHealth] = useState<LocalWorkerHealth | null>(null);
-
-  const check = useCallback(async () => {
-    if (!isLocalhost) return;
-      try {
-        const resp = await fetch(`${LOCAL_WORKER_URL}/api/health`, { cache: 'no-store', signal: AbortSignal.timeout(3000) });
-        setStatus(resp.ok ? 'connected' : 'disconnected');
-        setHealth(resp.ok ? await resp.json() : null);
-      } catch {
-        setStatus('disconnected');
-        setHealth(null);
-      }
-  }, [isLocalhost]);
 
   useEffect(() => {
-    // Skip health checks when running in the cloud preview — localhost worker is only reachable from the user's PC.
+    // Skip health checks when running in the cloud preview — localhost:3001 is unreachable
     if (!isLocalhost) return;
-    let mounted = true;
-    const safeCheck = async () => { if (mounted) await check(); };
-    safeCheck();
-    const interval = setInterval(safeCheck, 10000);
-    return () => { mounted = false; clearInterval(interval); };
-  }, [check, isLocalhost]);
 
-  return { status, health, refresh: check, isLocalhost };
+    let mounted = true;
+    const check = async () => {
+      try {
+        const resp = await fetch('http://localhost:3001/api/health', { signal: AbortSignal.timeout(3000) });
+        if (mounted) setStatus(resp.ok ? 'connected' : 'disconnected');
+      } catch {
+        if (mounted) setStatus('disconnected');
+      }
+    };
+    check();
+    const interval = setInterval(check, 10000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, [isLocalhost]);
+
+  return status;
 }
 
 type DiagnosticsSnapshot = {
@@ -72,62 +59,31 @@ type DiagnosticsSnapshot = {
   runs_24h: { total: number; completed: number; failed: number; running: number };
 };
 
-function useAgentDiagnostics(enabled: boolean) {
+function useAgentDiagnostics() {
   const [data, setData] = useState<DiagnosticsSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (!enabled) { setData(null); return; }
     setLoading(true);
     try {
       const { data: resp, error } = await supabase.functions.invoke('agent-diagnostics', { body: {} });
       if (!error && resp) setData(resp as DiagnosticsSnapshot);
     } catch { /* silent */ }
     finally { setLoading(false); }
-  }, [enabled]);
+  }, []);
 
   useEffect(() => {
-    if (!enabled) { setData(null); return; }
     refresh();
     const id = setInterval(refresh, 60_000);
     return () => clearInterval(id);
-  }, [enabled, refresh]);
+  }, [refresh]);
 
   return { data, loading, refresh };
 }
 
-type LiveBuildInfo = {
-  version?: string;
-  commit?: string;
-  branch?: string;
-  buildNumber?: string;
-  lastCommitAt?: string;
-  lastCommitMessage?: string;
-  source?: string;
-};
-
-function useLiveBuildInfo(serverConnected: boolean) {
-  const [info, setInfo] = useState<LiveBuildInfo | null>(null);
-  useEffect(() => {
-    if (!serverConnected) { setInfo(null); return; }
-    let mounted = true;
-    const load = async () => {
-      try {
-        const resp = await fetch('http://localhost:3001/api/build-info', { signal: AbortSignal.timeout(3000) });
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (mounted) setInfo(data);
-      } catch { /* ignore */ }
-    };
-    load();
-    const id = setInterval(load, 15_000); // re-poll every 15s so footer reflects fresh `git pull`
-    return () => { mounted = false; clearInterval(id); };
-  }, [serverConnected]);
-  return info;
-}
-
 export default function AppLayout() {
-  const { status: serverStatus, health: localHealth, refresh: refreshLocalHealth, isLocalhost } = useLocalServerStatus();
+  const serverStatus = useLocalServerStatus();
+  const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics();
   const queryClient = useQueryClient();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -140,25 +96,11 @@ export default function AppLayout() {
 
   const uploadMode = settings?.uploadMode || 'local';
   const isCloud = uploadMode === 'cloud';
-  const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics(isCloud);
-  const liveBuild = useLiveBuildInfo(serverStatus === 'connected');
-
-  const buildLabel = formatBuildLabel(
-    liveBuild?.branch || __BUILD_NAME__,
-    liveBuild?.buildNumber || __BUILD_NUMBER__,
-    __PR_NUMBER__,
-  );
-  const effectiveVersion = liveBuild?.version || __APP_VERSION__;
-  const effectiveCommit = liveBuild?.commit || __BUILD_COMMIT__;
-  const versionLabel = effectiveVersion && effectiveVersion !== '0.0.0' ? `v${effectiveVersion}` : '';
-  const commitLabel = effectiveCommit ? `Commit ${effectiveCommit}` : '';
-  const localRevisionLabel = liveBuild?.buildNumber ? `Local rev ${liveBuild.buildNumber}` : '';
-  const primaryBuildLabel = liveBuild?.commit
-    ? [liveBuild.branch || 'local', localRevisionLabel, commitLabel].filter(Boolean).join(' · ')
-    : (buildLabel !== 'dev' ? buildLabel : (commitLabel || 'dev'));
+  const buildLabel = formatBuildLabel(__BUILD_NAME__, __BUILD_NUMBER__, __PR_NUMBER__);
+  const versionLabel = __APP_VERSION__ ? `v${__APP_VERSION__}` : '';
+  const commitLabel = __BUILD_COMMIT__ ? `Commit ${__BUILD_COMMIT__}` : '';
+  const primaryBuildLabel = buildLabel !== 'dev' ? buildLabel : (commitLabel || 'dev');
   const buildMetaLabel = [primaryBuildLabel, versionLabel].filter(Boolean).join(' · ');
-  const liveSuffix = liveBuild?.commit ? ` · worker ${LOCAL_WORKER_URL} · commit ${liveBuild.commit}` : '';
-  const localAi = localHealth?.ai;
 
   // Close mobile nav on route change
   useEffect(() => {
@@ -293,7 +235,7 @@ export default function AppLayout() {
                 <>
                   <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/40" />
                   <span className="text-xs text-muted-foreground">
-                    {!isLocalhost
+                    {typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
                       ? 'Preview mode — use localhost:8081'
                       : 'Local server offline'}
                   </span>
@@ -306,27 +248,10 @@ export default function AppLayout() {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={isCloud ? refreshDiagnostics : refreshLocalHealth}
+                onClick={refreshDiagnostics}
                 className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs w-full border border-border bg-secondary/40 hover:bg-secondary text-left"
               >
-                {!isCloud ? (
-                  serverStatus !== 'connected' ? (
-                    <>
-                      <AlertTriangle className="w-3.5 h-3.5 text-destructive" />
-                      <span className="text-destructive font-medium">Worker offline</span>
-                    </>
-                  ) : localAi?.ok ? (
-                    <>
-                      <CheckCircle2 className="w-3.5 h-3.5 text-primary" />
-                      <span className="text-primary font-medium">Local AI ready</span>
-                    </>
-                  ) : (
-                    <>
-                      <AlertTriangle className="w-3.5 h-3.5 text-destructive" />
-                      <span className="text-destructive font-medium">Local AI down</span>
-                    </>
-                  )
-                ) : !diagnostics ? (
+                {!diagnostics ? (
                   <>
                     <Activity className="w-3.5 h-3.5 text-muted-foreground animate-pulse" />
                     <span className="text-muted-foreground">Diagnostics…</span>
@@ -352,17 +277,7 @@ export default function AppLayout() {
               </button>
             </TooltipTrigger>
             <TooltipContent side="right" className="max-w-[300px] space-y-1">
-              {!isCloud ? (
-                <>
-                  <div className="text-xs font-medium">Local worker status</div>
-                  <div className="text-[11px] text-muted-foreground">Frontend: localhost:8081</div>
-                  <div className="text-[11px] text-muted-foreground">Worker API: {serverStatus === 'connected' ? LOCAL_WORKER_URL : 'not reachable'}</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    LM Studio: {localAi?.ok ? (localAi.model || 'model loaded') : (localAi?.error || 'not reachable')}
-                  </div>
-                  <div className="text-[10px] text-muted-foreground pt-1">Click to refresh local status</div>
-                </>
-              ) : diagnostics ? (
+              {diagnostics ? (
                 <>
                   <div className="text-xs font-medium">Agent diagnostics</div>
                   <div className="text-[11px] text-muted-foreground">
@@ -386,15 +301,9 @@ export default function AppLayout() {
           </Tooltip>
 
           <p className="text-xs px-1">
-            <span className="block font-medium text-foreground/85">
-              {buildMetaLabel}
-              {liveBuild?.commit && (
-                <span className="ml-1 text-[10px] text-emerald-500" title={liveBuild.lastCommitMessage || ''}>● live</span>
-              )}
-            </span>
+            <span className="block font-medium text-foreground/85">{buildMetaLabel}</span>
             <span className="block text-[10px] text-muted-foreground mt-0.5">
               {[isCloud ? 'Cloud Mode' : 'Local Mode', isCloud ? 'Cloud DB · Cloud uploads' : 'Cloud DB · Local uploads'].join(' · ')}
-              {liveSuffix}
             </span>
           </p>
         </div>

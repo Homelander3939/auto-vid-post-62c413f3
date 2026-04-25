@@ -48,7 +48,6 @@ const {
 const app = express();
 app.use(cors());
 app.use(express.json());
-const localFetch = globalThis.fetch || require('node-fetch');
 
 // --- Supabase client ---
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://mgcfeddzbgpcnzdgxzfp.supabase.co';
@@ -57,7 +56,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // Track jobs currently being processed to prevent duplicates
 const processingJobs = new Set();
-const serverStartedAt = new Date().toISOString();
 
 // --- Helpers ---
 async function getSettings() {
@@ -486,71 +484,7 @@ app.get('/', (req, res) => {
   });
 });
 
-async function getLocalAiSnapshot() {
-  try {
-    const resp = await localFetch(`${LM_STUDIO_URL}/v1/models`, {
-      headers: { Authorization: `Bearer ${process.env.LM_STUDIO_API_KEY || 'lm-studio'}` },
-      signal: AbortSignal.timeout(2500),
-    });
-    if (!resp.ok) return { ok: false, url: LM_STUDIO_URL, status: resp.status, model: process.env.LM_STUDIO_MODEL || '' };
-    const data = await resp.json();
-    const model = data?.data?.[0]?.id || process.env.LM_STUDIO_MODEL || '';
-    return { ok: true, url: LM_STUDIO_URL, model };
-  } catch (err) {
-    return { ok: false, url: LM_STUDIO_URL, error: err?.message || 'LM Studio unreachable', model: process.env.LM_STUDIO_MODEL || '' };
-  }
-}
-
-app.get('/api/health', async (req, res) => {
-  res.json({
-    status: 'ok',
-    mode: 'local',
-    port: PORT,
-    ai: await getLocalAiSnapshot(),
-  });
-});
-
-// --- Live build info from local git (always reflects the currently-running code) ---
-// The frontend footer polls this so users see the REAL commit/branch after `git pull`,
-// without needing to rebuild Vite. Falls back gracefully if git is unavailable.
-app.get('/api/build-info', (req, res) => {
-  try {
-    const { execSync } = require('node:child_process');
-    const path = require('node:path');
-    const fs = require('node:fs');
-    const repoRoot = path.resolve(__dirname, '..');
-    const run = (cmd) => {
-      try {
-        return execSync(cmd, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 })
-          .toString().trim();
-      } catch { return ''; }
-    };
-    let version = '';
-    try {
-      const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-      version = String(pkg.version || '');
-    } catch {}
-    const commit = run('git rev-parse --short HEAD');
-    const branch = run('git rev-parse --abbrev-ref HEAD');
-    const revCount = run('git rev-list --count HEAD');
-    const lastCommitTs = run('git log -1 --format=%ct');
-    const lastCommitMsg = run('git log -1 --format=%s');
-    const serverPkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
-    res.json({
-      version,
-      serverVersion: String(serverPkg.version || ''),
-      commit,
-      branch,
-      buildNumber: revCount,
-      lastCommitAt: lastCommitTs ? new Date(Number(lastCommitTs) * 1000).toISOString() : '',
-      lastCommitMessage: lastCommitMsg,
-      startedAt: serverStartedAt,
-      source: 'local-git',
-    });
-  } catch (err) {
-    res.status(200).json({ source: 'unavailable', error: String(err?.message || err) });
-  }
-});
+app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
 
 // --- Research search endpoint (DuckDuckGo HTML → Brave/Google scrape via persistent browser) ---
 // Used by the cloud AI agent when no research API key is configured.
