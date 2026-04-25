@@ -1205,7 +1205,7 @@ ${(sk.steps || []).map((s: any, j: number) => `  ${j + 1}. ${s.note || s.tool}`)
     ? `\n\n# Relevant persistent memory\n${relevantMemories.map((memory: any, index: number) => `## Memory ${index + 1}: ${memory.title}\nType: ${memory.memory_type}\nTags: ${(memory.tags || []).join(', ') || 'none'}\n${memory.content}`).join('\n\n')}`
     : '';
 
-  const systemPromptFull = systemPrompt + skillContext + memoryContext + `\n\n# Skills system
+  const systemPromptFull = systemPrompt + smallModelGuide + skillContext + memoryContext + `\n\n# Skills system
 You can also call \`save_skill\` after a successful novel routine — it proposes saving the workflow so the user can approve and reuse it later. Only propose when the task is genuinely repeatable.`;
 
   const messages: any[] = [
