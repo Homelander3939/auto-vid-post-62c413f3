@@ -88,12 +88,50 @@ async function getSettings() {
   };
 }
 
+// Strip leaked LLM "thinking process" sections (common with Qwen/Gemma) so Telegram + chat
+// only see the useful result. Mirrors the sanitization done in the cloud edge functions.
+function sanitizeOutgoingMessage(text) {
+  let s = String(text || '').trim();
+  if (!s) return s;
+  const leakMarkers = [
+    /(?:^|\n)\s*(?:here'?s\s+(?:a\s+)?)?thinking process\s*:/i,
+    /(?:^|\n)\s*\d+\.\s*\*\*(?:analy[sz]e user input|check context|formulate response|self-correction|verification)\b/i,
+    /(?:^|\n)\s*(?:draft|self-correction\/verification)\s*:/i,
+  ];
+  if (leakMarkers.some((re) => re.test(s))) {
+    const next = s.match(/Next action\s*:\s*([^\n]+)/i)?.[1];
+    s = next ? `Done. Next action: ${next.trim()}` : 'Done.';
+  }
+  return s.slice(0, 3900);
+}
+
 async function notifyTelegram(settings, message) {
+  const text = sanitizeOutgoingMessage(message);
+  if (!text) return;
   if (!settings.telegram?.enabled || !settings.telegram?.chatId) return;
   try {
-    await sendTelegram(settings.telegram.botToken, settings.telegram.chatId, message, settings.backend);
+    await sendTelegram(settings.telegram.botToken, settings.telegram.chatId, text, settings.backend);
   } catch (e) {
     console.error('[Telegram] Notification failed:', e.message);
+  }
+  // Mirror into telegram_messages so AI Chat (web) shows the same bot reply that the
+  // user sees in Telegram. getUpdates does not return our own outgoing messages, so
+  // without this mirror the chat UI never reflects worker-side notifications
+  // (Instagram/social posts, browser results, stats summaries, etc.).
+  try {
+    const numericChat = Number(settings.telegram.chatId);
+    if (Number.isFinite(numericChat)) {
+      await supabase.from('telegram_messages').insert({
+        update_id: -Math.floor(Date.now() + Math.random() * 1000),
+        chat_id: numericChat,
+        text: text.slice(0, 3000),
+        is_bot: true,
+        raw_update: { source: 'local-worker' },
+      });
+    }
+  } catch (e) {
+    // Non-fatal; logging only.
+    console.warn('[Telegram] Mirror to chat history failed:', e.message);
   }
 }
 
