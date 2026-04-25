@@ -104,7 +104,9 @@ serve(async (req) => {
     const TELEGRAM_API_KEY = Deno.env.get('TELEGRAM_API_KEY');
     if (!TELEGRAM_API_KEY) throw new Error('TELEGRAM_API_KEY is not configured');
 
-    const { chat_id, text, parse_mode, action, photo_base64, photo_mime_type } = await req.json();
+    const { chat_id, text, parse_mode, action, photo_base64, photo_mime_type, mirror_source, mirror } = await req.json();
+    const shouldMirror = mirror !== false;
+    const mirrorTag = typeof mirror_source === 'string' && mirror_source ? mirror_source : 'edge-send-telegram';
 
     // Ensure chat_id is a number for Telegram API
     const numericChatId = typeof chat_id === 'string' ? Number(chat_id) : chat_id;
