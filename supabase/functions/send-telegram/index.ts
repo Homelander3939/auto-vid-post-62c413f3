@@ -130,6 +130,9 @@ serve(async (req) => {
         parseMode: parse_mode || 'HTML',
       });
 
+      if (shouldMirror) {
+        await mirrorBotMessage(Number(numericChatId), text ? `📷 ${text}` : '📷 [photo]', mirrorTag);
+      }
       return new Response(
         JSON.stringify({ success: true, message_id: photoResult.result?.message_id }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
