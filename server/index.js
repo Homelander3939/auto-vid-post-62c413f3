@@ -484,7 +484,29 @@ app.get('/', (req, res) => {
   });
 });
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
+async function getLocalAiSnapshot() {
+  try {
+    const resp = await fetch(`${LM_STUDIO_URL}/v1/models`, {
+      headers: { Authorization: `Bearer ${process.env.LM_STUDIO_API_KEY || 'lm-studio'}` },
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!resp.ok) return { ok: false, url: LM_STUDIO_URL, status: resp.status, model: process.env.LM_STUDIO_MODEL || '' };
+    const data = await resp.json();
+    const model = data?.data?.[0]?.id || process.env.LM_STUDIO_MODEL || '';
+    return { ok: true, url: LM_STUDIO_URL, model };
+  } catch (err) {
+    return { ok: false, url: LM_STUDIO_URL, error: err?.message || 'LM Studio unreachable', model: process.env.LM_STUDIO_MODEL || '' };
+  }
+}
+
+app.get('/api/health', async (req, res) => {
+  res.json({
+    status: 'ok',
+    mode: 'local',
+    port: PORT,
+    ai: await getLocalAiSnapshot(),
+  });
+});
 
 // --- Live build info from local git (always reflects the currently-running code) ---
 // The frontend footer polls this so users see the REAL commit/branch after `git pull`,
