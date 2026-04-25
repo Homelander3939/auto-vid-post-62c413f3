@@ -291,7 +291,7 @@ export default function AppLayout() {
                 <>
                   <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/40" />
                   <span className="text-xs text-muted-foreground">
-                    {typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+                    {!isLocalhost
                       ? 'Preview mode — use localhost:8081'
                       : 'Local server offline'}
                   </span>
@@ -304,10 +304,27 @@ export default function AppLayout() {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={refreshDiagnostics}
+                onClick={isCloud ? refreshDiagnostics : refreshLocalHealth}
                 className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs w-full border border-border bg-secondary/40 hover:bg-secondary text-left"
               >
-                {!diagnostics ? (
+                {!isCloud ? (
+                  serverStatus !== 'connected' ? (
+                    <>
+                      <AlertTriangle className="w-3.5 h-3.5 text-destructive" />
+                      <span className="text-destructive font-medium">Worker offline</span>
+                    </>
+                  ) : localAi?.ok ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-primary" />
+                      <span className="text-primary font-medium">Local AI ready</span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle className="w-3.5 h-3.5 text-destructive" />
+                      <span className="text-destructive font-medium">Local AI down</span>
+                    </>
+                  )
+                ) : !diagnostics ? (
                   <>
                     <Activity className="w-3.5 h-3.5 text-muted-foreground animate-pulse" />
                     <span className="text-muted-foreground">Diagnostics…</span>
@@ -333,7 +350,17 @@ export default function AppLayout() {
               </button>
             </TooltipTrigger>
             <TooltipContent side="right" className="max-w-[300px] space-y-1">
-              {diagnostics ? (
+              {!isCloud ? (
+                <>
+                  <div className="text-xs font-medium">Local worker status</div>
+                  <div className="text-[11px] text-muted-foreground">Frontend: localhost:8081</div>
+                  <div className="text-[11px] text-muted-foreground">Worker API: {serverStatus === 'connected' ? LOCAL_WORKER_URL : 'not reachable'}</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    LM Studio: {localAi?.ok ? (localAi.model || 'model loaded') : (localAi?.error || 'not reachable')}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground pt-1">Click to refresh local status</div>
+                </>
+              ) : diagnostics ? (
                 <>
                   <div className="text-xs font-medium">Agent diagnostics</div>
                   <div className="text-[11px] text-muted-foreground">
