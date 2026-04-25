@@ -1033,6 +1033,41 @@ async function queueLocalCommand(supabase: any, command: string, args: any): Pro
   return await waitForLocalCommand(supabase, data.id);
 }
 
+/**
+ * Preflight: detect whether the local worker is alive by inspecting recent
+ * pending_commands activity. The cloud edge function cannot reach localhost
+ * directly, so we infer health from the queue being drained. Returns a
+ * human-readable warning string when the worker appears offline.
+ */
+async function checkLocalWorkerHealth(supabase: any): Promise<{ alive: boolean; lastSeenAt: string | null; note: string }> {
+  // 1) Any command completed in the last 90 seconds → worker is alive.
+  const ninetySecAgo = new Date(Date.now() - 90_000).toISOString();
+  const { data: recent } = await supabase
+    .from('pending_commands')
+    .select('completed_at')
+    .gte('completed_at', ninetySecAgo)
+    .order('completed_at', { ascending: false })
+    .limit(1);
+  if (recent && recent.length > 0) {
+    return { alive: true, lastSeenAt: recent[0].completed_at, note: 'Local worker is responding.' };
+  }
+  // 2) Otherwise look at last-ever completion to give a useful timestamp.
+  const { data: lastEver } = await supabase
+    .from('pending_commands')
+    .select('completed_at')
+    .not('completed_at', 'is', null)
+    .order('completed_at', { ascending: false })
+    .limit(1);
+  const lastSeen = lastEver?.[0]?.completed_at || null;
+  return {
+    alive: false,
+    lastSeenAt: lastSeen,
+    note: lastSeen
+      ? `Local worker last active ${lastSeen}. It may be offline — start smart-launcher.bat.`
+      : 'Local worker has never connected. Start smart-launcher.bat on your PC.',
+  };
+}
+
 function validatePlannedToolCall(hasPlan: boolean, callIndex: number, name: string): string | null {
   if (!hasPlan && name !== 'plan') {
     return 'You must call plan first before any other tool. Re-issue your next response as a single plan tool call.';
