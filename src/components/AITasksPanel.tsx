@@ -28,7 +28,7 @@ async function listRecentCommands(): Promise<PendingCommand[]> {
   const { data } = await (supabase as any)
     .from('pending_commands')
     .select('*')
-    .in('command', ['research_search', 'image_search', 'open_browser', 'check_stats'])
+    .in('command', ['research_search', 'image_search', 'open_browser', 'browser_research', 'check_stats'])
     .order('created_at', { ascending: false })
     .limit(8);
   return (data || []) as PendingCommand[];
@@ -38,12 +38,14 @@ const COMMAND_ICONS: Record<string, any> = {
   research_search: Search,
   image_search: ImageIcon,
   open_browser: Globe,
+  browser_research: Globe,
   check_stats: Hash,
 };
 const COMMAND_LABELS: Record<string, string> = {
   research_search: 'Web research',
   image_search: 'Image search',
   open_browser: 'Browser task',
+  browser_research: 'Local browser research',
   check_stats: 'Stats check',
 };
 const AGENT_RUN_RECENT_EVENT_TYPES = ['tool_call', 'tool_result', 'thought', 'error', 'review', 'phase', 'finish'];
