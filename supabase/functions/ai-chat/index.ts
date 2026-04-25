@@ -499,7 +499,7 @@ async function executeTool(
           prompt: args.prompt,
           platforms,
           includeImage: args.include_image !== false,
-          stream: false,
+          stream: true,
           existingJobId: jobId,
         };
         // Fire-and-forget — the function streams via SSE, mirrors every step into
