@@ -366,6 +366,7 @@ export default function AIChat() {
           text: caption?.slice(0, 1000),
           photo_base64: base64,
           photo_mime_type: file.type || blob.type || 'image/png',
+          mirror: false,
         },
       });
     } catch (error) {
