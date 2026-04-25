@@ -1324,11 +1324,11 @@ You can also call \`save_skill\` after a successful novel routine — it propose
         } else if (name === 'chain_skill') {
           const r = await chainSkill(supabase, args);
           ok = r.ok;
-          toolResultText = ok
+          toolResultText = ok && r.data
             ? `Loaded skill "${r.data.name}".\nDescription: ${r.data.description || 'n/a'}\nSteps:\n${(r.data.steps || []).map((step: any, index: number) => `${index + 1}. ${step.note || step.tool || JSON.stringify(step)}`).join('\n')}\n\nInstructions:\n${r.data.system_prompt || ''}`.slice(0, 6000)
             : r.summary;
           toolResultData = r.data || null;
-          if (ok) await appendEvent(supabase, runId, { type: 'skill_chained', name: r.data.name, id: r.data.id });
+          if (ok && r.data) await appendEvent(supabase, runId, { type: 'skill_chained', name: r.data.name, id: r.data.id });
         } else if (name === 'improve_skill') {
           const r = await improveSkill(supabase, args);
           ok = r.ok;
