@@ -1158,6 +1158,29 @@ async function runAgent(supabase: any, runId: string, lovableKey: string, telegr
 
 User request: ${run.prompt}`;
 
+  // Extra scaffolding for smaller / local models (Qwen3, Gemma, GLM, Mistral,
+  // Llama 3.x running through LM Studio). They benefit from very explicit,
+  // example-driven instructions and stricter format reminders, otherwise they
+  // tend to produce free-form prose instead of tool calls.
+  const isLocalOrSmallModel =
+    providers.chat.provider === 'lmstudio' ||
+    /qwen|gemma|glm|mistral|llama-?3|phi-?3/i.test(providers.chat.model || '');
+  const smallModelGuide = isLocalOrSmallModel ? `
+
+# Small / local model protocol (Qwen / Gemma / GLM / Llama)
+You are running on a smaller local model. Follow these strict rules so you stay reliable:
+- ALWAYS respond with a tool call. Never reply with prose only — wrap every action inside one of the available tools.
+- ONE tool call per turn. Wait for the result, then issue the next one.
+- Keep tool arguments minimal and concrete. No long explanations inside arguments.
+- For research tasks: \`plan\` → \`research_deep\` (1-3 focused queries) → \`write_file\` (save findings as markdown) → \`finish\`.
+- For build tasks: \`plan\` → \`write_file\` (one file at a time) → \`serve_preview\` → \`open_in_browser\` → \`finish\`.
+- For local-PC automation: \`plan\` → \`run_shell\` (single command) → observe → next \`run_shell\` → \`finish\`.
+- For browser automation: \`plan\` → \`browser_task\` with a clear task string → \`finish\`.
+- If you don't know something, use \`research_deep\` instead of guessing.
+- If a tool fails twice in a row with the same error, switch strategy (different tool or simpler approach) instead of retrying identically.
+- ALWAYS finish with the \`finish\` tool. Don't trail off.
+` : '';
+
   // Find matching skills (simple keyword overlap on triggers + name)
   const promptLow = run.prompt.toLowerCase();
   const { data: allSkills } = await supabase.from('agent_skills').select('*').eq('enabled', true);
