@@ -509,6 +509,17 @@ async function executeTool(
           method: 'POST',
           headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify(kickBody),
+        }).then(async (response) => {
+          if (!response.ok) {
+            console.warn('generate-social-post kick failed:', response.status, (await response.text()).slice(0, 300));
+            return;
+          }
+          const reader = response.body?.getReader();
+          if (!reader) return;
+          while (true) {
+            const { done } = await reader.read();
+            if (done) break;
+          }
         }).catch((e) => console.warn('generate-social-post kick failed:', e));
 
         return `✨ Started agent for "${truncatePrompt(args.prompt)}" → ${platformsLabel}. Open the Job Queue to watch live steps (research, sources, image search). I'll send the full draft (image + per-platform variants + sources) to Telegram in 1-2 minutes. Reply "post" to publish, "edit <text>" to revise, or "skip" to discard. Nothing publishes without your approval.`;
