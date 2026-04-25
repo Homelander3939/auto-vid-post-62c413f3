@@ -102,6 +102,7 @@ async function testLMStudioConnection({ baseUrl, apiKey, model } = {}) {
  */
 async function lmFetch(endpoint, bodyObj, retried = false) {
   const url = `${LM_STUDIO_URL}${endpoint}`;
+  const { controller, done } = withTimeout(120_000);
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
@@ -109,7 +110,9 @@ async function lmFetch(endpoint, bodyObj, retried = false) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(bodyObj),
+    signal: controller.signal,
   }).catch(err => ({ ok: false, status: 0, _networkError: err }));
+  done();
 
   // If success, return
   if (resp.ok) return resp;
@@ -123,13 +126,8 @@ async function lmFetch(endpoint, bodyObj, retried = false) {
   // Try to discover the currently loaded model
   console.warn(`[AI] LM Studio request failed (status ${resp.status || 'network error'}), discovering loaded model...`);
   try {
-    const modelsResp = await fetch(`${LM_STUDIO_URL}/v1/models`, {
-      headers: { 'Authorization': `Bearer ${LM_STUDIO_API_KEY}` },
-    });
-    if (modelsResp.ok) {
-      const modelsData = await modelsResp.json();
-      const loaded = modelsData.data?.filter(m => m.id && m.object === 'model');
-      if (loaded && loaded.length > 0) {
+    const loaded = await discoverLMStudioModels();
+    if (loaded && loaded.length > 0) {
         const newModel = loaded[0].id;
         if (newModel !== LM_STUDIO_MODEL) {
           console.log(`[AI] Model changed: ${LM_STUDIO_MODEL} → ${newModel}. Retrying...`);
@@ -137,7 +135,6 @@ async function lmFetch(endpoint, bodyObj, retried = false) {
           bodyObj.model = newModel;
         }
         return lmFetch(endpoint, bodyObj, true);
-      }
     }
   } catch (discoverErr) {
     console.warn(`[AI] Model discovery failed: ${discoverErr.message}`);
