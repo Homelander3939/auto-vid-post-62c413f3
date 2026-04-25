@@ -340,9 +340,15 @@ export default function AppLayout() {
           </Tooltip>
 
           <p className="text-xs px-1">
-            <span className="block font-medium text-foreground/85">{buildMetaLabel}</span>
+            <span className="block font-medium text-foreground/85">
+              {buildMetaLabel}
+              {liveBuild?.commit && (
+                <span className="ml-1 text-[10px] text-emerald-500" title={liveBuild.lastCommitMessage || ''}>● live</span>
+              )}
+            </span>
             <span className="block text-[10px] text-muted-foreground mt-0.5">
               {[isCloud ? 'Cloud Mode' : 'Local Mode', isCloud ? 'Cloud DB · Cloud uploads' : 'Cloud DB · Local uploads'].join(' · ')}
+              {liveSuffix}
             </span>
           </p>
         </div>
