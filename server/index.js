@@ -48,6 +48,7 @@ const {
 const app = express();
 app.use(cors());
 app.use(express.json());
+const localFetch = globalThis.fetch || require('node-fetch');
 
 // --- Supabase client ---
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://mgcfeddzbgpcnzdgxzfp.supabase.co';
@@ -56,6 +57,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // Track jobs currently being processed to prevent duplicates
 const processingJobs = new Set();
+const serverStartedAt = new Date().toISOString();
 
 // --- Helpers ---
 async function getSettings() {
@@ -486,7 +488,7 @@ app.get('/', (req, res) => {
 
 async function getLocalAiSnapshot() {
   try {
-    const resp = await fetch(`${LM_STUDIO_URL}/v1/models`, {
+    const resp = await localFetch(`${LM_STUDIO_URL}/v1/models`, {
       headers: { Authorization: `Bearer ${process.env.LM_STUDIO_API_KEY || 'lm-studio'}` },
       signal: AbortSignal.timeout(2500),
     });
