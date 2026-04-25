@@ -22,32 +22,45 @@ const navItems = [
 ];
 
 type ServerStatus = 'connected' | 'disconnected' | 'checking';
+const LOCAL_WORKER_URL = 'http://localhost:3001';
+
+type LocalWorkerHealth = {
+  status: string;
+  mode: string;
+  port?: number;
+  ai?: { ok: boolean; url?: string; model?: string; status?: number; error?: string };
+};
 
 function useLocalServerStatus() {
   const isLocalhost = typeof window !== 'undefined' && (
     window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
   );
   const [status, setStatus] = useState<ServerStatus>(isLocalhost ? 'checking' : 'disconnected');
+  const [health, setHealth] = useState<LocalWorkerHealth | null>(null);
 
-  useEffect(() => {
-    // Skip health checks when running in the cloud preview — localhost:3001 is unreachable
+  const check = useCallback(async () => {
     if (!isLocalhost) return;
-
-    let mounted = true;
-    const check = async () => {
       try {
-        const resp = await fetch('http://localhost:3001/api/health', { signal: AbortSignal.timeout(3000) });
-        if (mounted) setStatus(resp.ok ? 'connected' : 'disconnected');
+        const resp = await fetch(`${LOCAL_WORKER_URL}/api/health`, { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+        setStatus(resp.ok ? 'connected' : 'disconnected');
+        setHealth(resp.ok ? await resp.json() : null);
       } catch {
-        if (mounted) setStatus('disconnected');
+        setStatus('disconnected');
+        setHealth(null);
       }
-    };
-    check();
-    const interval = setInterval(check, 10000);
-    return () => { mounted = false; clearInterval(interval); };
   }, [isLocalhost]);
 
-  return status;
+  useEffect(() => {
+    // Skip health checks when running in the cloud preview — localhost worker is only reachable from the user's PC.
+    if (!isLocalhost) return;
+    let mounted = true;
+    const safeCheck = async () => { if (mounted) await check(); };
+    safeCheck();
+    const interval = setInterval(safeCheck, 10000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, [check, isLocalhost]);
+
+  return { status, health, refresh: check, isLocalhost };
 }
 
 type DiagnosticsSnapshot = {
