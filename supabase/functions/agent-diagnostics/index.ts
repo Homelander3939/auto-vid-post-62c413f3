@@ -20,26 +20,35 @@ function maskKey(k?: string | null): string {
   return `${t.slice(0, 4)}…${t.slice(-3)}`;
 }
 
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(fallback), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }).catch(() => { clearTimeout(t); resolve(fallback); });
+  });
+}
+
 async function probeLovableGateway(key: string): Promise<{ ok: boolean; latencyMs: number; status?: number; error?: string }> {
   const t0 = Date.now();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
   try {
-    const resp = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'google/gemini-3-flash-preview',
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
-      }),
-      signal: AbortSignal.timeout(8000),
+    // HEAD/OPTIONS to base URL — avoids burning a chat completion and is much faster.
+    const resp = await fetch('https://ai.gateway.lovable.dev/v1/models', {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${key}` },
+      signal: ctrl.signal,
     });
+    clearTimeout(timer);
     const latency = Date.now() - t0;
+    // Drain body to avoid leaks
+    try { await resp.text(); } catch {}
     if (resp.status === 401 || resp.status === 403) return { ok: false, latencyMs: latency, status: resp.status, error: 'Unauthorized — LOVABLE_API_KEY invalid.' };
     if (resp.status === 402) return { ok: false, latencyMs: latency, status: 402, error: 'Out of credits.' };
     if (resp.status === 429) return { ok: true, latencyMs: latency, status: 429, error: 'Rate limited (gateway alive).' };
-    return { ok: resp.ok, latencyMs: latency, status: resp.status };
+    return { ok: resp.ok || resp.status === 404, latencyMs: latency, status: resp.status };
   } catch (e: any) {
-    return { ok: false, latencyMs: Date.now() - t0, error: e?.message || 'fetch failed' };
+    clearTimeout(timer);
+    return { ok: false, latencyMs: Date.now() - t0, error: e?.name === 'AbortError' ? 'Gateway probe timed out (5s)' : (e?.message || 'fetch failed') };
   }
 }
 
@@ -52,40 +61,44 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    // Settings
-    const { data: settings } = await supabase
-      .from('app_settings')
-      .select('*')
-      .eq('id', 1)
-      .maybeSingle();
+    // Settings (timeout-guarded)
+    const settingsRes: any = await withTimeout(
+      supabase.from('app_settings').select('*').eq('id', 1).maybeSingle(),
+      4000, { data: null } as any,
+    );
+    const settings = settingsRes?.data;
 
     // Local worker liveness via pending_commands recency
     const ninetySecAgo = new Date(Date.now() - 90_000).toISOString();
-    const { data: recentCompleted } = await supabase
-      .from('pending_commands')
-      .select('completed_at')
-      .gte('completed_at', ninetySecAgo)
-      .order('completed_at', { ascending: false })
-      .limit(1);
+    const dayAgo = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const lovableKey = Deno.env.get('LOVABLE_API_KEY') || '';
+
+    const [recentCompletedRes, lastEverRes, runsRes, gatewayProbe] = await Promise.all([
+      withTimeout(
+        supabase.from('pending_commands').select('completed_at').gte('completed_at', ninetySecAgo).order('completed_at', { ascending: false }).limit(1),
+        4000, { data: null } as any,
+      ),
+      withTimeout(
+        supabase.from('pending_commands').select('completed_at').not('completed_at', 'is', null).order('completed_at', { ascending: false }).limit(1),
+        4000, { data: null } as any,
+      ),
+      withTimeout(
+        supabase.from('agent_runs').select('status').gte('created_at', dayAgo).limit(200),
+        4000, { data: [] } as any,
+      ),
+      lovableKey
+        ? withTimeout(probeLovableGateway(lovableKey), 6000, { ok: false, latencyMs: 6000, error: 'Probe timed out' })
+        : Promise.resolve({ ok: false, latencyMs: 0, error: 'LOVABLE_API_KEY missing' }),
+    ]);
+
+    const recentCompleted = recentCompletedRes?.data;
+    const lastEver = lastEverRes?.data;
+    const runs = runsRes?.data || [];
+
     let lastSeenAt: string | null = recentCompleted?.[0]?.completed_at || null;
-    if (!lastSeenAt) {
-      const { data: lastEver } = await supabase
-        .from('pending_commands')
-        .select('completed_at')
-        .not('completed_at', 'is', null)
-        .order('completed_at', { ascending: false })
-        .limit(1);
-      lastSeenAt = lastEver?.[0]?.completed_at || null;
-    }
+    if (!lastSeenAt) lastSeenAt = lastEver?.[0]?.completed_at || null;
     const workerAlive = !!recentCompleted?.length;
 
-    // Recent agent_runs stats (last 24h)
-    const dayAgo = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    const { data: runs } = await supabase
-      .from('agent_runs')
-      .select('status')
-      .gte('created_at', dayAgo)
-      .limit(200);
     const stats = (runs || []).reduce(
       (acc: any, r: any) => {
         acc.total++;
@@ -96,12 +109,6 @@ Deno.serve(async (req) => {
       },
       { total: 0, completed: 0, failed: 0, running: 0 },
     );
-
-    // Lovable AI gateway probe
-    const lovableKey = Deno.env.get('LOVABLE_API_KEY') || '';
-    const gatewayProbe = lovableKey
-      ? await probeLovableGateway(lovableKey)
-      : { ok: false, latencyMs: 0, error: 'LOVABLE_API_KEY missing' };
 
     const s = settings || ({} as any);
     const providers = {
