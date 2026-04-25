@@ -533,13 +533,16 @@ app.get('/api/build-info', (req, res) => {
     const revCount = run('git rev-list --count HEAD');
     const lastCommitTs = run('git log -1 --format=%ct');
     const lastCommitMsg = run('git log -1 --format=%s');
+    const serverPkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
     res.json({
       version,
+      serverVersion: String(serverPkg.version || ''),
       commit,
       branch,
       buildNumber: revCount,
       lastCommitAt: lastCommitTs ? new Date(Number(lastCommitTs) * 1000).toISOString() : '',
       lastCommitMessage: lastCommitMsg,
+      startedAt: serverStartedAt,
       source: 'local-git',
     });
   } catch (err) {
