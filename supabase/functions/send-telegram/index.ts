@@ -1,6 +1,27 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const GATEWAY_URL = 'https://connector-gateway.lovable.dev/telegram';
+
+async function mirrorBotMessage(chatId: number, text: string, source: string) {
+  try {
+    const url = Deno.env.get('SUPABASE_URL');
+    const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    if (!url || !key || !chatId) return;
+    const supabase = createClient(url, key);
+    // Synthesize a unique negative update_id so it never collides with real Telegram updates.
+    const updateId = -Math.floor(Date.now() * 1000 + Math.random() * 1000);
+    await supabase.from('telegram_messages').insert({
+      update_id: updateId,
+      chat_id: chatId,
+      text: (text || '').slice(0, 4000),
+      is_bot: true,
+      raw_update: { source, synthetic: true },
+    });
+  } catch (e) {
+    console.error('[send-telegram] mirror failed:', e);
+  }
+}
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
