@@ -263,6 +263,27 @@ function truncatePrompt(s: string, n = 80): string {
   return t.length > n ? t.slice(0, n - 1) + '…' : t;
 }
 
+function sanitizeTelegramReply(reply: string): string {
+  let text = String(reply || '').replace(/__AGENT_RUN__:[0-9a-f-]+\n?/gi, '').trim();
+  const leakedReasoning = [
+    /(?:^|\n)\s*(?:here'?s\s+(?:a\s+)?)?thinking process\s*:/i,
+    /(?:^|\n)\s*\d+\.\s*\*\*(?:analy[sz]e user input|check context|formulate response|self-correction|verification)\b/i,
+    /(?:^|\n)\s*(?:draft|self-correction\/verification)\s*:/i,
+  ].some((pattern) => pattern.test(text));
+  if (leakedReasoning) {
+    const next = text.match(/Next action\s*:\s*([^\n]+)/i)?.[1]?.trim();
+    text = next ? `Done. Next action: ${next}` : 'Done. Send the next task.';
+  }
+  return text
+    .replace(/\*\*/g, '')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').replace(/```/g, ''))
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .slice(0, 3900)
+    .trim() || 'Done.';
+}
+
 function buildMessageForModel(message: any) {
   const formatFileSize = (value: unknown) => {
     const size = typeof value === 'number' ? value : Number(value || 0);
@@ -864,14 +885,14 @@ serve(async (req) => {
           supabase, fullMessages, tgChatConfig.url, tgChatConfig.key, tgChatConfig.model, LOVABLE_API_KEY, supabaseUrl, serviceKey,
           { telegramChatId: telegram_chat_id },
         );
-        const visibleReply = reply.replace(/__AGENT_RUN__:[0-9a-f-]+\n?/gi, '').trim() || '✅ Done.';
+        const visibleReply = sanitizeTelegramReply(reply);
         await sendTelegram(telegram_chat_id, visibleReply, LOVABLE_API_KEY, TELEGRAM_API_KEY);
 
         // Mirror bot reply to telegram_messages so UI sees it
         await supabase.from('telegram_messages').insert({
           update_id: -Math.floor(Date.now()),
           chat_id: telegram_chat_id,
-          text: reply.slice(0, 3000),
+          text: visibleReply.slice(0, 3000),
           is_bot: true,
           raw_update: { source: 'ai-chat-edge' },
         });
