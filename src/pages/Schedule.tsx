@@ -273,14 +273,45 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
               )}
             </div>
 
+            {/* Max iterations */}
+            <div className="space-y-2">
+              <Label className="text-xs flex items-center gap-1.5"><Hash className="w-3.5 h-3.5" /> Iteration Limit</Label>
+              <div className="flex items-center gap-3">
+                <Switch checked={useMaxRuns} onCheckedChange={(v) => { setUseMaxRuns(v); if (v && !maxRuns) setMaxRuns(10); }} />
+                <span className="text-xs">{useMaxRuns ? 'Stop after N runs' : 'No limit'}</span>
+              </div>
+              {useMaxRuns && (
+                <Input
+                  type="number"
+                  min={1}
+                  value={maxRuns ?? 10}
+                  onChange={e => setMaxRuns(Math.max(1, parseInt(e.target.value) || 1))}
+                  placeholder="Number of runs"
+                />
+              )}
+              <p className="text-xs text-muted-foreground">Auto-disable schedule after this many cron triggers (current: {config.runCount || 0}).</p>
+            </div>
+
             {/* Platforms */}
-            <div>
+            <div className="space-y-2">
               <Label className="text-xs mb-2 block">Platforms</Label>
               <div className="flex flex-wrap gap-2">
                 {['youtube', 'tiktok', 'instagram'].map(p => (
                   <Button key={p} variant={platforms.includes(p) ? 'default' : 'outline'} size="sm" onClick={() => togglePlatform(p)} className="capitalize">{p}</Button>
                 ))}
               </div>
+              {needsPicker && platforms.length > 0 && (
+                <div className="flex flex-wrap gap-3 pt-2">
+                  {platforms.map((p) => (
+                    <AccountPicker
+                      key={p}
+                      platform={p}
+                      selectedAccountId={selectedAccounts[p]}
+                      onSelect={(id) => setSelectedAccounts((prev) => ({ ...prev, [p]: id }))}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Summary + actions */}
