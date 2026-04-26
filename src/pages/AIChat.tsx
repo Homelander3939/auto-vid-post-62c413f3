@@ -96,9 +96,30 @@ function isStoredMessage(value: unknown): value is Msg {
     && typeof record.content === 'string';
 }
 
-/* ── Stream helper — routes to cloud ai-chat edge function (Lovable AI Gateway) ── */
+/* ── Stream helper — local-worker-first, cloud fallback only if local is unavailable ── */
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`;
+const LOCAL_WORKER_URL = 'http://localhost:3001';
+
+async function isLocalWorkerAlive(): Promise<boolean> {
+  try {
+    const resp = await fetch(`${LOCAL_WORKER_URL}/api/health`, { signal: AbortSignal.timeout(1500) });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function sendLocalTelegram(body: Record<string, unknown>): Promise<boolean> {
+  if (!(await isLocalWorkerAlive())) return false;
+  const resp = await fetch(`${LOCAL_WORKER_URL}/api/telegram/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+  return resp.ok;
+}
 
 async function streamChat({
   messages,
@@ -111,19 +132,19 @@ async function streamChat({
   onDone: () => void;
   onError: (err: string) => void;
 }) {
-  const resp = await fetch(CHAT_URL, {
+  const useLocal = await isLocalWorkerAlive();
+  const resp = await fetch(useLocal ? `${LOCAL_WORKER_URL}/api/ai-chat` : CHAT_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-    },
+    headers: useLocal
+      ? { 'Content-Type': 'application/json' }
+      : { 'Content-Type': 'application/json', Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}` },
     body: JSON.stringify({ messages }),
   });
 
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({ error: 'Request failed' }));
     if (resp.status === 429) onError('Rate limit exceeded. Please wait a moment.');
-    else if (resp.status === 402) onError('AI credits exhausted. Add credits in workspace settings.');
+    else if (resp.status === 402) onError('Cloud fallback hit a credits error because the local worker was not reachable. Start the local server and retry.');
     else onError(data.error || `Error ${resp.status}`);
     return;
   }
