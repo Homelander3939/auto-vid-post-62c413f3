@@ -1041,28 +1041,67 @@ app.post('/api/generate-social-post', async (req, res) => {
 
     const sources = [];
     const seen = new Set();
+    // Use saved research config (Brave first if provider+key set, then DDG, then local browser)
+    const settingsRow = await supabase.from('app_settings').select('research_provider,research_api_key').eq('id', 1).single();
+    const researchProvider = settingsRow.data?.research_provider || 'auto';
+    const researchKey = settingsRow.data?.research_api_key || '';
     for (let i = 0; i < queries.length; i += 1) {
       const q = queries[i];
-      await emit('step', { id: `search-${i}`, emoji: '🔎', label: `Searching locally: "${q}"`, status: 'active' });
-      const r = await fetch(`http://localhost:${PORT}/api/research/search`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: q, count: 5 }),
-      });
-      const data = await r.json().catch(() => ({}));
-      await emit('tool', { kind: 'research', name: data.provider || 'local-browser', detail: q });
-      const fresh = (data.results || []).filter((s) => s?.url && !seen.has(s.url)).slice(0, 5);
-      fresh.forEach((s) => { seen.add(s.url); sources.push({ ...s, favicon: s.url ? `https://www.google.com/s2/favicons?sz=32&domain=${hostnameOf(s.url)}` : '' }); });
-      await emit('step', { id: `search-${i}`, emoji: '🔎', label: `Found ${fresh.length} sources via ${data.provider || 'local browser'}`, status: 'done' });
+      await emit('step', { id: `search-${i}`, emoji: '🔎', label: `Searching: "${q}"`, status: 'active' });
+      const fresh = [];
+      // 1) Brave API if configured
+      if ((researchProvider === 'brave' || researchProvider === 'auto') && researchKey) {
+        try {
+          const br = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=5`, {
+            headers: { 'X-Subscription-Token': researchKey, Accept: 'application/json' },
+          });
+          if (br.ok) {
+            const bj = await br.json();
+            const items = (bj?.web?.results || []).slice(0, 5).map((x) => ({ title: x.title, url: x.url, snippet: x.description || '' }));
+            items.filter((s) => s?.url && !seen.has(s.url)).forEach((s) => { seen.add(s.url); fresh.push(s); });
+            if (items.length) await emit('tool', { kind: 'research', name: 'brave', detail: q });
+          }
+        } catch (e) { console.warn('[Research] Brave API failed:', e.message); }
+      }
+      // 2) DuckDuckGo / local browser fallback
+      if (fresh.length < 3) {
+        const r = await fetch(`http://localhost:${PORT}/api/research/search`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: q, count: 5 }),
+        });
+        const data = await r.json().catch(() => ({}));
+        await emit('tool', { kind: 'research', name: data.provider || 'duckduckgo', detail: q });
+        (data.results || []).filter((s) => s?.url && !seen.has(s.url)).slice(0, 5).forEach((s) => { seen.add(s.url); fresh.push(s); });
+      }
+      fresh.forEach((s) => sources.push({ ...s, favicon: s.url ? `https://www.google.com/s2/favicons?sz=32&domain=${hostnameOf(s.url)}` : '' }));
+      await emit('step', { id: `search-${i}`, emoji: '🔎', label: `Found ${fresh.length} sources`, status: 'done' });
       for (const source of fresh) await emit('source', source);
     }
 
     await emit('step', { id: 'write', emoji: '✍️', label: `Writing ${platforms.length} tailored variants with local LLM…`, status: 'active' });
-    const write = await localJsonLLM(
-      'You are a senior social media manager. Write platform-specific posts from researched sources. Hashtags must be arrays without # symbols.',
-      `Return JSON exactly like {"variants":{"platform":{"description":"...","hashtags":["..."]}}}. Platforms: ${platforms.join(', ')}. User goal: ${prompt}. Angle: ${plan.angle || prompt}. Sources: ${sources.slice(0, 8).map((s, i) => `[${i + 1}] ${s.title} - ${s.snippet || ''} (${s.url})`).join('\n')}`,
-      { variants: {} },
-      aiSettings,
-    );
-    const variants = write.variants || {};
+    const sourcesBlock = sources.slice(0, 8).map((s, i) => `[${i + 1}] ${s.title} — ${s.snippet || ''} (${s.url})`).join('\n');
+    const platformLimits = { x: 280, twitter: 280, linkedin: 1200, facebook: 800, instagram: 1500, tiktok: 800 };
+    const platformGuide = platforms.map((p) => `- ${p} (~${platformLimits[p.toLowerCase()] || 800} chars)`).join('\n');
+    let variants = {};
+    // Try up to 2 attempts to coax valid JSON out of the local LLM
+    for (let attempt = 0; attempt < 2 && Object.keys(variants).length === 0; attempt += 1) {
+      const write = await localJsonLLM(
+        'You are a senior social media manager. Output ONLY a JSON object — no prose, no markdown fences. Hashtags are arrays of plain words WITHOUT the # symbol.',
+        `Write engaging, platform-tailored social posts based on the research below.\n\nUser goal: ${prompt}\nAngle: ${plan.angle || prompt}\n\nPlatforms to write for:\n${platformGuide}\n\nResearch sources:\n${sourcesBlock || '(no sources — write from your own knowledge of the topic)'}\n\nReturn this exact shape:\n{"variants":{${platforms.map((p) => `"${p}":{"description":"...","hashtags":["tag1","tag2"]}`).join(',')}}}`,
+        { variants: {} },
+        aiSettings,
+      );
+      variants = write.variants || {};
+    }
+    // Last-resort fallback: synthesize a draft from research sources so user always gets something
+    if (Object.keys(variants).length === 0) {
+      const summary = sources.slice(0, 3).map((s) => `• ${s.title}${s.snippet ? ` — ${s.snippet}` : ''}`).join('\n')
+        || `Latest update on: ${prompt}`;
+      const baseTags = (plan.angle || prompt).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3).slice(0, 5);
+      platforms.forEach((p) => {
+        variants[p] = { description: `${prompt}\n\n${summary}`.slice(0, platformLimits[p.toLowerCase()] || 800), hashtags: baseTags };
+      });
+      await emit('step', { id: 'write-fallback', emoji: '🛟', label: 'LLM returned no JSON — built draft from research sources', status: 'done' });
+    }
     await emit('step', { id: 'write', emoji: '✨', label: `Wrote ${Object.keys(variants).length} platform variants`, status: 'done' });
     for (const platform of platforms) {
       const v = variants[platform];
@@ -1111,11 +1150,17 @@ app.post('/api/generate-social-post', async (req, res) => {
     if (settings?.telegram?.enabled) {
       const originalChat = settings.telegram.chatId;
       if (telegram_chat_id) settings.telegram.chatId = String(telegram_chat_id);
-      const firstPlatform = platforms.find((p) => variants[p]) || Object.keys(variants)[0];
-      const first = firstPlatform ? variants[firstPlatform] : null;
-      const tags = Array.isArray(first?.hashtags) && first.hashtags.length ? `\n#${first.hashtags.slice(0, 8).join(' #')}` : '';
-      const sourceText = sources.length ? `\n\nSources:\n${sources.slice(0, 5).map((src, i) => `${i + 1}. ${src.title || src.url}\n${src.url || ''}`).join('\n')}` : '';
-      await notifyTelegram(settings, `✅ AI post generated locally (${platforms.join(', ')})\n\n${first?.description || 'Draft saved.'}${tags}${sourceText}`);
+      // Comprehensive multi-platform summary so user sees ALL drafts + direct link in Telegram
+      const variantBlocks = platforms.map((p) => {
+        const v = variants[p];
+        if (!v) return '';
+        const tags = Array.isArray(v.hashtags) && v.hashtags.length ? `\n#${v.hashtags.slice(0, 8).join(' #')}` : '';
+        return `━━━ ${p.toUpperCase()} ━━━\n${v.description || ''}${tags}`;
+      }).filter(Boolean).join('\n\n');
+      const sourceText = sources.length ? `\n\n📚 Sources:\n${sources.slice(0, 5).map((src, i) => `${i + 1}. ${src.title || src.url}\n${src.url || ''}`).join('\n')}` : '';
+      const draftLink = savedPostId ? `\n\n🔗 Open draft: ${process.env.PUBLIC_APP_URL || 'http://localhost:8081'}/social?post=${savedPostId}` : '';
+      const imgLine = imageUrl ? `\n\n🖼 Image: ${imageUrl}` : '';
+      await notifyTelegram(settings, `✅ AI post generated (${platforms.join(', ')})\n\n${variantBlocks}${imgLine}${sourceText}${draftLink}`);
       settings.telegram.chatId = originalChat;
     }
     if (stream) res.end(); else res.json(result);

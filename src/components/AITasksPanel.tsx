@@ -327,7 +327,7 @@ function GenerationJobRow({ job, onCancel, onDelete }: { job: GenerationJob; onC
               {tools.length > 0 && <span>🔧 {tools.length} tool{tools.length === 1 ? '' : 's'}</span>}
               {sources.length > 0 && <span>🔗 {sources.length} source{sources.length === 1 ? '' : 's'}</span>}
               {variants.length > 0 && <span>📝 {variants.length} variant{variants.length === 1 ? '' : 's'}</span>}
-              {job.saved_post_id && <Link to="/social" className="text-primary hover:underline">→ View draft</Link>}
+              {job.saved_post_id && <Link to={`/social?post=${job.saved_post_id}`} className="text-primary hover:underline">→ View draft</Link>}
             </div>
           </div>
           <div className="flex flex-col gap-1 items-end">

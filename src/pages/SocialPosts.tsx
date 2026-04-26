@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -442,6 +443,14 @@ function QueueTab({ posts, accounts, onChange }: { posts: SocialPost[]; accounts
     }
   };
 
+  const [searchParams] = useSearchParams();
+  const highlightId = searchParams.get('post');
+  useEffect(() => {
+    if (!highlightId) return;
+    const el = document.getElementById(`post-${highlightId}`);
+    if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  }, [highlightId, posts.length]);
+
   if (posts.length === 0) {
     return <div className="text-center text-muted-foreground py-12">No posts yet. Compose one above.</div>;
   }
@@ -450,8 +459,9 @@ function QueueTab({ posts, accounts, onChange }: { posts: SocialPost[]; accounts
     <div className="space-y-3">
       {posts.map((post) => {
         const imageUrl = getSocialImageUrl(post.image_path);
+        const isHighlighted = post.id === highlightId;
         return (
-          <Card key={post.id}>
+          <Card key={post.id} id={`post-${post.id}`} className={isHighlighted ? 'ring-2 ring-primary' : ''}>
             <CardContent className="p-4 flex gap-4">
               {imageUrl && (
                 <img src={imageUrl} alt="" className="w-20 h-20 object-cover rounded-md border shrink-0" />
