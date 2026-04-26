@@ -1379,13 +1379,17 @@ export default function SettingsPage() {
               disabled={!settings.telegram.chatId}
               onClick={async () => {
                 try {
-                  const { data, error } = await supabase.functions.invoke('send-telegram', {
-                    body: {
+                  const response = await fetch('http://localhost:3001/api/telegram/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
                       chat_id: Number(settings.telegram.chatId),
-                      text: '✅ <b>Video Uploader</b> — Telegram notifications are working!',
-                    },
+                      text: '✅ <b>Video Uploader</b> — Telegram notifications are working locally!',
+                    }),
+                    signal: AbortSignal.timeout(10000),
                   });
-                  if (error) throw error;
+                  const data = await response.json().catch(() => ({}));
+                  if (!response.ok) throw new Error(data?.error || 'Local Telegram send failed');
                   if (data?.success) {
                     toast({ title: 'Test message sent to Telegram!' });
                   } else {

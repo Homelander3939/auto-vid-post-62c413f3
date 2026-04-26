@@ -93,7 +93,11 @@ export default function AgentRunPanel({ runId }: { runId: string }) {
   const completedToolCount = events.slice(planEventIdx + 1).filter((e) => e.type === 'tool_result' && e.name !== 'plan' && e.name !== 'finish').length;
 
   const cancel = async () => {
-    await supabase.functions.invoke('agent-run', { body: { action: 'cancel', runId } });
+    await fetch('http://localhost:3001/api/agent-run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'cancel', runId }),
+    });
   };
 
   return (

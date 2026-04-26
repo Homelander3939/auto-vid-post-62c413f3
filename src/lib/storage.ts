@@ -536,14 +536,17 @@ export async function deleteScheduledUpload(id: string): Promise<void> {
   await supabase.from('scheduled_uploads').delete().eq('id', id);
 }
 
-// --- Cloud Telegram notifications ---
+// --- Local Telegram notifications ---
 export async function sendTelegramNotification(chatId: string, text: string): Promise<boolean> {
   try {
-    const { data, error } = await supabase.functions.invoke('send-telegram', {
-      body: { chat_id: chatId, text },
+    const response = await fetch('http://localhost:3001/api/telegram/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text }),
+      signal: AbortSignal.timeout(10_000),
     });
-    if (error) throw error;
-    return data?.success || false;
+    const data = await response.json().catch(() => ({}));
+    return response.ok && data?.success !== false;
   } catch {
     return false;
   }
