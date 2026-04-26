@@ -11,9 +11,11 @@ import { Calendar } from '@/components/ui/calendar';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
 import { useState, useEffect, useMemo } from 'react';
-import { Clock, CalendarDays, Repeat, Save, FolderOpen, Timer, Plus, Trash2, ChevronDown, ChevronUp, CalendarClock } from 'lucide-react';
+import { Clock, CalendarDays, Repeat, Save, FolderOpen, Timer, Plus, Trash2, ChevronDown, ChevronUp, CalendarClock, History, Hash } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import CampaignScheduler from '@/components/CampaignScheduler';
+import AccountPicker, { useAccountsForPlatforms } from '@/components/AccountPicker';
+import { format } from 'date-fns';
 
 type FrequencyMode = 'hourly' | 'daily' | 'weekly';
 type DurationUnit = 'hours' | 'days' | 'weeks';
@@ -72,6 +74,29 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   const [uploadIntervalMinutes, setUploadIntervalMinutes] = useState(config.uploadIntervalMinutes || 60);
   const [platforms, setPlatforms] = useState(config.platforms);
   const [endAt, setEndAt] = useState(config.endAt);
+  const [maxRuns, setMaxRuns] = useState<number | null>(config.maxRuns ?? null);
+  const [useMaxRuns, setUseMaxRuns] = useState<boolean>(config.maxRuns != null);
+  const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>(config.accountSelections || {});
+
+  const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);
+
+  // Initialize defaults for any platform without a saved selection
+  useEffect(() => {
+    setSelectedAccounts((prev) => {
+      const next = { ...prev };
+      for (const p of platforms) {
+        if (!next[p]) {
+          const defId = getDefaultAccountId(p);
+          if (defId) next[p] = defId;
+        }
+      }
+      // Drop selections for unselected platforms
+      for (const k of Object.keys(next)) {
+        if (!platforms.includes(k)) delete next[k];
+      }
+      return next;
+    });
+  }, [platforms.join(',')]);
 
   const parsed = cronToState(config.cronExpression);
   const [mode, setMode] = useState<FrequencyMode>(parsed.mode);
@@ -93,7 +118,12 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   }, [useDuration, durationAmount, durationUnit]);
 
   const handleSave = () => {
-    onSave({ ...config, name, enabled, cronExpression, platforms, folderPath, endAt, uploadIntervalMinutes });
+    onSave({
+      ...config,
+      name, enabled, cronExpression, platforms, folderPath, endAt, uploadIntervalMinutes,
+      accountSelections: selectedAccounts,
+      maxRuns: useMaxRuns ? maxRuns : null,
+    });
   };
 
   const togglePlatform = (p: string) => setPlatforms(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
@@ -108,7 +138,14 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
             <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${enabled ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground/30'}`} />
             <div className="min-w-0">
               <p className="text-sm font-medium truncate">{name || 'Untitled Schedule'}</p>
-              <p className="text-xs text-muted-foreground">{summary} · {platforms.join(', ')}</p>
+              <p className="text-xs text-muted-foreground truncate">{summary} · {platforms.join(', ')}</p>
+              {(config.runCount != null || config.lastRunAt) && (
+                <p className="text-[10px] text-muted-foreground/80 flex items-center gap-1 mt-0.5">
+                  <History className="w-3 h-3" />
+                  Ran {config.runCount || 0}{config.maxRuns ? `/${config.maxRuns}` : ''}×
+                  {config.lastRunAt && ` · last ${format(new Date(config.lastRunAt), 'MMM d, HH:mm')}`}
+                </p>
+              )}
             </div>
             {expanded ? <ChevronUp className="w-4 h-4 shrink-0 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 shrink-0 text-muted-foreground" />}
           </button>
@@ -236,14 +273,45 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
               )}
             </div>
 
+            {/* Max iterations */}
+            <div className="space-y-2">
+              <Label className="text-xs flex items-center gap-1.5"><Hash className="w-3.5 h-3.5" /> Iteration Limit</Label>
+              <div className="flex items-center gap-3">
+                <Switch checked={useMaxRuns} onCheckedChange={(v) => { setUseMaxRuns(v); if (v && !maxRuns) setMaxRuns(10); }} />
+                <span className="text-xs">{useMaxRuns ? 'Stop after N runs' : 'No limit'}</span>
+              </div>
+              {useMaxRuns && (
+                <Input
+                  type="number"
+                  min={1}
+                  value={maxRuns ?? 10}
+                  onChange={e => setMaxRuns(Math.max(1, parseInt(e.target.value) || 1))}
+                  placeholder="Number of runs"
+                />
+              )}
+              <p className="text-xs text-muted-foreground">Auto-disable schedule after this many cron triggers (current: {config.runCount || 0}).</p>
+            </div>
+
             {/* Platforms */}
-            <div>
+            <div className="space-y-2">
               <Label className="text-xs mb-2 block">Platforms</Label>
               <div className="flex flex-wrap gap-2">
                 {['youtube', 'tiktok', 'instagram'].map(p => (
                   <Button key={p} variant={platforms.includes(p) ? 'default' : 'outline'} size="sm" onClick={() => togglePlatform(p)} className="capitalize">{p}</Button>
                 ))}
               </div>
+              {needsPicker && platforms.length > 0 && (
+                <div className="flex flex-wrap gap-3 pt-2">
+                  {platforms.map((p) => (
+                    <AccountPicker
+                      key={p}
+                      platform={p}
+                      selectedAccountId={selectedAccounts[p]}
+                      onSelect={(id) => setSelectedAccounts((prev) => ({ ...prev, [p]: id }))}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Summary + actions */}
@@ -331,6 +399,10 @@ export default function Schedule() {
       folderPath: '',
       endAt: null,
       uploadIntervalMinutes: 60,
+      accountSelections: {},
+      runCount: 0,
+      maxRuns: null,
+      lastRunAt: null,
     }]);
   };
 

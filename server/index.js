@@ -2038,6 +2038,14 @@ async function processRecurringSchedule() {
           continue;
         }
 
+        // Check max_runs cap
+        if (config.max_runs && (config.run_count || 0) >= config.max_runs) {
+          console.log(`[Recurring] Schedule ${config.id} reached max_runs (${config.max_runs}), disabling`);
+          await supabase.from('schedule_config').update({ enabled: false }).eq('id', config.id);
+          await notifyTelegram(settings, `🏁 Schedule "${config.name}" finished after ${config.run_count} runs (limit reached).`);
+          continue;
+        }
+
         const folderPath = normalizeFolderPath(config.folder_path);
         if (!folderPath) continue;
 
@@ -2059,10 +2067,14 @@ async function processRecurringSchedule() {
           if (nowMinuteStart.getTime() - lastRun.getTime() < 60_000) continue;
         }
 
-        // Persist last_run_at immediately to prevent duplicate runs on restart
-        await supabase.from('schedule_config').update({ last_run_at: now.toISOString() }).eq('id', config.id);
+        // Persist last_run_at + increment run_count immediately to prevent duplicate runs on restart
+        const newRunCount = (config.run_count || 0) + 1;
+        await supabase.from('schedule_config').update({
+          last_run_at: now.toISOString(),
+          run_count: newRunCount,
+        }).eq('id', config.id);
 
-        console.log(`[Recurring] Schedule ${config.id} (${config.name}) matched at ${now.toISOString()}, scanning: ${folderPath}`);
+        console.log(`[Recurring] Schedule ${config.id} (${config.name}) matched at ${now.toISOString()}, run #${newRunCount}, scanning: ${folderPath}`);
 
         // Scan ALL files in folder, matched by name
         const allPairs = scanAllFiles(folderPath);
@@ -2075,7 +2087,11 @@ async function processRecurringSchedule() {
         const requestedPlatforms = Array.isArray(config.platforms) && config.platforms.length
           ? config.platforms
           : ['youtube', 'tiktok', 'instagram'];
-        const platforms = getReadyPlatforms(settings, requestedPlatforms);
+        const accountSelections = (config.account_selections && typeof config.account_selections === 'object')
+          ? config.account_selections
+          : {};
+        const platforms = await getReadyPlatformsForSelections(settings, requestedPlatforms, accountSelections);
+        const primaryAccountId = platforms.map((p) => accountSelections[p]).find(Boolean) || null;
 
         if (platforms.length === 0) {
           console.log(`[Recurring] Schedule "${config.name}": no enabled platforms with credentials`);
@@ -2117,6 +2133,7 @@ async function processRecurringSchedule() {
                 video_storage_path: null,
                 title, description, tags,
                 target_platforms: platforms,
+                account_id: primaryAccountId,
                 status: 'pending',
                 platform_results: platformResults,
               })
@@ -2128,31 +2145,37 @@ async function processRecurringSchedule() {
               continue;
             }
 
+            try { saveJobAccountSelections(job.id, accountSelections); } catch {}
             console.log(`[Recurring] Created immediate job ${job.id} for ${pair.videoFile}`);
             await processJob(job.id, { folderPath });
           } else {
             // Subsequent videos: create scheduled uploads with spacing
             const scheduledAt = new Date(now.getTime() + i * intervalMinutes * 60_000).toISOString();
-            const { error } = await supabase
+            const { data: schedRow, error } = await supabase
               .from('scheduled_uploads')
               .insert({
                 video_file_name: pair.videoFile,
                 video_storage_path: null,
                 title, description, tags,
                 target_platforms: platforms,
+                account_id: primaryAccountId,
                 scheduled_at: scheduledAt,
                 status: 'scheduled',
-              });
+              })
+              .select()
+              .single();
 
             if (error) {
               console.error(`[Recurring] Failed to schedule ${pair.videoFile}:`, error);
             } else {
+              try { saveScheduledAccountSelections(schedRow.id, accountSelections); } catch {}
               console.log(`[Recurring] Scheduled ${pair.videoFile} for ${scheduledAt}`);
             }
           }
         }
 
-        await notifyTelegram(settings, `📋 Schedule "${config.name}": ${allPairs.length} video(s) queued (1 now, ${allPairs.length - 1} scheduled every ${intervalMinutes}min)`);
+        const tail = config.max_runs ? ` (run ${newRunCount}/${config.max_runs})` : '';
+        await notifyTelegram(settings, `📋 Schedule "${config.name}"${tail}: ${allPairs.length} video(s) queued (1 now, ${allPairs.length - 1} scheduled every ${intervalMinutes}min)`);
       } catch (e) {
         console.error(`[Recurring] Error processing schedule ${config.id}:`, e.message);
       }

@@ -67,6 +67,10 @@ export interface ScheduleConfig {
   folderPath: string;
   endAt: string | null;
   uploadIntervalMinutes: number;
+  accountSelections?: Record<string, string>;
+  runCount?: number;
+  maxRuns?: number | null;
+  lastRunAt?: string | null;
 }
 
 export interface ScheduledUpload {
@@ -454,6 +458,10 @@ export async function getSchedules(): Promise<ScheduleConfig[]> {
     folderPath: row.folder_path || '',
     endAt: row.end_at || null,
     uploadIntervalMinutes: row.upload_interval_minutes || 60,
+    accountSelections: row.account_selections || {},
+    runCount: row.run_count || 0,
+    maxRuns: row.max_runs ?? null,
+    lastRunAt: row.last_run_at || null,
   }));
 }
 
@@ -472,6 +480,8 @@ export async function saveSchedule(config: ScheduleConfig): Promise<ScheduleConf
     folder_path: config.folderPath,
     end_at: config.endAt,
     upload_interval_minutes: config.uploadIntervalMinutes || 60,
+    account_selections: config.accountSelections || {},
+    max_runs: config.maxRuns ?? null,
   } as any;
 
   if (config.id) {

@@ -418,38 +418,47 @@ export type Database = {
       }
       schedule_config: {
         Row: {
+          account_selections: Json
           cron_expression: string
           enabled: boolean
           end_at: string | null
           folder_path: string
           id: number
           last_run_at: string | null
+          max_runs: number | null
           name: string
           platforms: string[]
+          run_count: number
           updated_at: string
           upload_interval_minutes: number
         }
         Insert: {
+          account_selections?: Json
           cron_expression?: string
           enabled?: boolean
           end_at?: string | null
           folder_path?: string
           id?: number
           last_run_at?: string | null
+          max_runs?: number | null
           name?: string
           platforms?: string[]
+          run_count?: number
           updated_at?: string
           upload_interval_minutes?: number
         }
         Update: {
+          account_selections?: Json
           cron_expression?: string
           enabled?: boolean
           end_at?: string | null
           folder_path?: string
           id?: number
           last_run_at?: string | null
+          max_runs?: number | null
           name?: string
           platforms?: string[]
+          run_count?: number
           updated_at?: string
           upload_interval_minutes?: number
         }
