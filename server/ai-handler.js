@@ -475,7 +475,7 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
     await supabase.from('agent_runs').update({
       status: 'failed', completed_at: new Date().toISOString(), error: err.message,
     }).eq('id', runId);
-    return `❌ Research failed: ${err.message}\n\nMake sure smart-launcher.bat is running and your AI provider (LM Studio or selected provider) is reachable.`;
+    return { report: `❌ Research failed: ${err.message}\n\nMake sure smart-launcher.bat is running and your AI provider (LM Studio or selected provider) is reachable.`, telegramSent: false, runId, error: true };
   }
 }
 
