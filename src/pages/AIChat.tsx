@@ -6,8 +6,9 @@ import { Badge } from '@/components/ui/badge';
 import {
   Send, Bot, User, Loader2, MessageCircle, Paperclip,
   Mic, MicOff, File as FileIcon, X, Download, Video,
-  Sparkles, Cpu, Workflow, AlertTriangle,
+  Sparkles, Cpu, Activity, ListChecks, ExternalLink,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import ReactMarkdown from 'react-markdown';
