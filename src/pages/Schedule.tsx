@@ -11,9 +11,11 @@ import { Calendar } from '@/components/ui/calendar';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
 import { useState, useEffect, useMemo } from 'react';
-import { Clock, CalendarDays, Repeat, Save, FolderOpen, Timer, Plus, Trash2, ChevronDown, ChevronUp, CalendarClock } from 'lucide-react';
+import { Clock, CalendarDays, Repeat, Save, FolderOpen, Timer, Plus, Trash2, ChevronDown, ChevronUp, CalendarClock, History, Hash } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import CampaignScheduler from '@/components/CampaignScheduler';
+import AccountPicker, { useAccountsForPlatforms } from '@/components/AccountPicker';
+import { format } from 'date-fns';
 
 type FrequencyMode = 'hourly' | 'daily' | 'weekly';
 type DurationUnit = 'hours' | 'days' | 'weeks';
@@ -72,6 +74,29 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   const [uploadIntervalMinutes, setUploadIntervalMinutes] = useState(config.uploadIntervalMinutes || 60);
   const [platforms, setPlatforms] = useState(config.platforms);
   const [endAt, setEndAt] = useState(config.endAt);
+  const [maxRuns, setMaxRuns] = useState<number | null>(config.maxRuns ?? null);
+  const [useMaxRuns, setUseMaxRuns] = useState<boolean>(config.maxRuns != null);
+  const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>(config.accountSelections || {});
+
+  const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);
+
+  // Initialize defaults for any platform without a saved selection
+  useEffect(() => {
+    setSelectedAccounts((prev) => {
+      const next = { ...prev };
+      for (const p of platforms) {
+        if (!next[p]) {
+          const defId = getDefaultAccountId(p);
+          if (defId) next[p] = defId;
+        }
+      }
+      // Drop selections for unselected platforms
+      for (const k of Object.keys(next)) {
+        if (!platforms.includes(k)) delete next[k];
+      }
+      return next;
+    });
+  }, [platforms.join(',')]);
 
   const parsed = cronToState(config.cronExpression);
   const [mode, setMode] = useState<FrequencyMode>(parsed.mode);
@@ -93,7 +118,12 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   }, [useDuration, durationAmount, durationUnit]);
 
   const handleSave = () => {
-    onSave({ ...config, name, enabled, cronExpression, platforms, folderPath, endAt, uploadIntervalMinutes });
+    onSave({
+      ...config,
+      name, enabled, cronExpression, platforms, folderPath, endAt, uploadIntervalMinutes,
+      accountSelections: selectedAccounts,
+      maxRuns: useMaxRuns ? maxRuns : null,
+    });
   };
 
   const togglePlatform = (p: string) => setPlatforms(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
