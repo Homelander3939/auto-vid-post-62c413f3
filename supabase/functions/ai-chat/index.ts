@@ -807,16 +807,8 @@ async function runAgentNonStreaming(
   for (let step = 0; step < maxSteps; step++) {
     let r = await makeReq(chatUrl, chatKey, model);
     if (!r.ok) {
-      // Fall back to Lovable Gateway with default model on any failure.
-      if (chatUrl !== AI_GATEWAY || model !== DEFAULT_LOVABLE_MODEL) {
-        const errText = await r.text();
-        console.warn(`runAgentNonStreaming: ${chatUrl}/${model} failed (${r.status}): ${errText.slice(0, 200)}, retrying with Lovable default`);
-        r = await makeReq(AI_GATEWAY, lovableKey, DEFAULT_LOVABLE_MODEL);
-      }
-      if (!r.ok) {
-        const t = await r.text();
-        throw new Error(`AI gateway ${r.status}: ${t.slice(0, 300)}`);
-      }
+      const t = await r.text();
+      throw new Error(`Configured local AI failed ${r.status}: ${t.slice(0, 300)}`);
     }
     const data = await r.json();
     const choice = data.choices?.[0];
