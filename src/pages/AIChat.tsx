@@ -786,7 +786,7 @@ Open the activity panel on the right if you want to follow the process flow whil
                         })}
 
                         {msg.content && (
-                          <div className={`rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
+                          <div className={`max-w-full overflow-hidden rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
                             msg.role === 'user'
                               ? msg.source === 'telegram'
                                 ? 'bg-sky-100 text-sky-900 dark:bg-sky-900/30 dark:text-sky-100'
@@ -794,7 +794,7 @@ Open the activity panel on the right if you want to follow the process flow whil
                               : 'border bg-card text-card-foreground'
                           }`}>
                             {msg.role === 'assistant' ? (
-                              <div className="prose prose-sm max-w-none prose-neutral dark:prose-invert [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_code]:text-xs [&_pre]:rounded-lg [&_pre]:bg-muted">
+                              <div className="prose prose-sm max-w-none break-words prose-neutral dark:prose-invert [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:break-all [&_code]:text-xs [&_img]:my-3 [&_img]:max-h-80 [&_img]:w-full [&_img]:rounded-lg [&_img]:object-cover [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-muted">
                                 <ReactMarkdown>{msg.content.replace(AGENT_RUN_MARKER_LINE_RE, '')}</ReactMarkdown>
                               </div>
                             ) : (
