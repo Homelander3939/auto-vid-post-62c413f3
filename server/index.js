@@ -994,7 +994,7 @@ app.post('/api/image/models', async (req, res) => {
 });
 
 app.post('/api/generate-social-post', async (req, res) => {
-  const { prompt, platforms = [], includeImage = true, stream = true, telegram_chat_id = null } = req.body || {};
+  const { prompt, platforms = [], includeImage = true, stream = true, telegram_chat_id = null, aiSettings = null } = req.body || {};
   if (!prompt || !Array.isArray(platforms) || platforms.length === 0) {
     return res.status(400).json({ error: 'prompt and platforms are required' });
   }
@@ -1020,16 +1020,17 @@ app.post('/api/generate-social-post', async (req, res) => {
     jobId = jobRow.id;
 
     await emit('job', { id: jobId });
-    const config = await refreshLMStudioConfigFromSettings(supabase);
-    await emit('step', { id: 'init', emoji: '🚀', label: `Connecting to local LM Studio…`, status: 'active' });
-    await emit('step', { id: 'init', emoji: '✅', label: `Connected · ${config.model}`, status: 'done' });
-    await emit('tool', { kind: 'llm', name: 'lmstudio', detail: config.model });
+    const config = await resolveSelectedAIConfig(aiSettings);
+    await emit('step', { id: 'init', emoji: '🚀', label: `Connecting to ${config.provider} through local worker…`, status: 'active' });
+    await emit('step', { id: 'init', emoji: '✅', label: `Connected · ${config.label}`, status: 'done' });
+    await emit('tool', { kind: 'llm', name: config.provider, detail: config.model });
 
     await emit('step', { id: 'plan', emoji: '🧠', label: 'Planning research strategy…', status: 'active' });
     const plan = await localJsonLLM(
       'You plan a real-time social post research workflow.',
       `Create JSON with keys: queries (array of 2-4 web search queries), imageQuery (string), imageStrategy (real_photo or none), angle (string), needsResearch (boolean). User request: ${prompt}. Platforms: ${platforms.join(', ')}.`,
       { queries: [prompt], imageQuery: prompt, imageStrategy: includeImage ? 'real_photo' : 'none', angle: prompt, needsResearch: true },
+      aiSettings,
     );
     const queries = (Array.isArray(plan.queries) && plan.queries.length ? plan.queries : [prompt]).slice(0, 4);
     const imageStrategy = includeImage ? (plan.imageStrategy || 'real_photo') : 'none';
@@ -1057,6 +1058,7 @@ app.post('/api/generate-social-post', async (req, res) => {
       'You are a senior social media manager. Write platform-specific posts from researched sources. Hashtags must be arrays without # symbols.',
       `Return JSON exactly like {"variants":{"platform":{"description":"...","hashtags":["..."]}}}. Platforms: ${platforms.join(', ')}. User goal: ${prompt}. Angle: ${plan.angle || prompt}. Sources: ${sources.slice(0, 8).map((s, i) => `[${i + 1}] ${s.title} - ${s.snippet || ''} (${s.url})`).join('\n')}`,
       { variants: {} },
+      aiSettings,
     );
     const variants = write.variants || {};
     await emit('step', { id: 'write', emoji: '✨', label: `Wrote ${Object.keys(variants).length} platform variants`, status: 'done' });
@@ -1099,8 +1101,8 @@ app.post('/api/generate-social-post', async (req, res) => {
       if (savedPostId) await emit('saved', { id: savedPostId, status: 'draft' });
     }
 
-    const result = { variants, sources: sources.slice(0, 8), imageUrl, imagePath, provider: 'lmstudio', model: config.model };
-    await emit('step', { id: 'done', emoji: '🎉', label: 'All done — generated locally and saved as draft!', status: 'done' });
+    const result = { variants, sources: sources.slice(0, 8), imageUrl, imagePath, provider: config.provider, model: config.model };
+    await emit('step', { id: 'done', emoji: '🎉', label: 'All done — generated through local worker and saved as draft!', status: 'done' });
     await emit('done', result);
     await supabase.from('generation_jobs').update({ status: 'completed', result, saved_post_id: savedPostId, completed_at: new Date().toISOString() }).eq('id', jobId);
     const settings = await getSettings().catch(() => null);
