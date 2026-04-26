@@ -399,6 +399,10 @@ export default function Schedule() {
       folderPath: '',
       endAt: null,
       uploadIntervalMinutes: 60,
+      accountSelections: {},
+      runCount: 0,
+      maxRuns: null,
+      lastRunAt: null,
     }]);
   };
 
