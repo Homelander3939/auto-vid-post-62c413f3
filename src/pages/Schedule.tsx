@@ -138,7 +138,14 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
             <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${enabled ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground/30'}`} />
             <div className="min-w-0">
               <p className="text-sm font-medium truncate">{name || 'Untitled Schedule'}</p>
-              <p className="text-xs text-muted-foreground">{summary} · {platforms.join(', ')}</p>
+              <p className="text-xs text-muted-foreground truncate">{summary} · {platforms.join(', ')}</p>
+              {(config.runCount != null || config.lastRunAt) && (
+                <p className="text-[10px] text-muted-foreground/80 flex items-center gap-1 mt-0.5">
+                  <History className="w-3 h-3" />
+                  Ran {config.runCount || 0}{config.maxRuns ? `/${config.maxRuns}` : ''}×
+                  {config.lastRunAt && ` · last ${format(new Date(config.lastRunAt), 'MMM d, HH:mm')}`}
+                </p>
+              )}
             </div>
             {expanded ? <ChevronUp className="w-4 h-4 shrink-0 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 shrink-0 text-muted-foreground" />}
           </button>
