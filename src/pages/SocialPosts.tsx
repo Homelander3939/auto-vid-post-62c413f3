@@ -533,6 +533,14 @@ export default function SocialPostsPage() {
   const queryClient = useQueryClient();
   const { data: accounts = [] } = useQuery({ queryKey: ['social_accounts'], queryFn: getSocialAccounts });
   const { data: posts = [] } = useQuery({ queryKey: ['social_posts'], queryFn: listSocialPosts, refetchInterval: 5000 });
+  const [searchParams] = useSearchParams();
+  // When arriving via "View draft" link (?post=<id>), jump straight to the Queue tab
+  // where the draft is highlighted and the one-click "Post Now" button is visible.
+  const initialTab = searchParams.get('post') ? 'queue' : 'compose';
+  const [tab, setTab] = useState(initialTab);
+  useEffect(() => {
+    if (searchParams.get('post')) setTab('queue');
+  }, [searchParams]);
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['social_posts'] });
@@ -548,7 +556,7 @@ export default function SocialPostsPage() {
         </p>
       </div>
 
-      <Tabs defaultValue="compose">
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="compose">Compose</TabsTrigger>
           <TabsTrigger value="queue">Queue ({posts.length})</TabsTrigger>
