@@ -4,6 +4,7 @@ const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 const { smartClick, smartFill, waitForStateChange, analyzePage } = require('./smart-agent');
 const { getSharedBrowserProfileDir } = require('../browserProfiles');
+const { dismissOverlayBlockingFlow } = require('./overlay-dismiss');
 
 const DEFAULT_USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube');
 const YT_STUDIO_URL = 'https://studio.youtube.com';
@@ -1373,6 +1374,13 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
         );
         stuckRounds = 0;
         continue;
+      }
+
+      if (stuckRounds >= 2) {
+        // Try dismissing any tip / coachmark / "what's new" overlay that may be
+        // blocking the wizard before escalating further.
+        console.log('[YouTube] Wizard stuck — attempting to dismiss any tip overlay');
+        await dismissOverlayBlockingFlow(page, { logPrefix: '[YouTube]' });
       }
 
       if (stuckRounds >= 4) {
