@@ -249,14 +249,14 @@ function summarizeGeneratedPost(data, platforms) {
   return `✅ Post generation complete (${platforms.join(', ')})\n\n${first?.description || 'Draft saved.'}${tags}${sourceText}`.slice(0, 3900);
 }
 
-async function routeDeterministicTelegramTask(text, chatId, backend) {
+async function routeDeterministicTelegramTask(text, chatId, backend, supabase) {
   const clean = String(text || '').trim();
   if (!clean) return null;
 
   // Real research first — runs the deterministic deep-research pipeline,
   // saves an agent_run for the Job Queue, and posts the full report to Telegram.
   if (looksLikeResearchRequest(clean)) {
-    return await runDeepResearchForTelegram(clean, chatId);
+    return await runDeepResearchForTelegram(clean, chatId, supabase);
   }
 
   if (looksLikeSocialPostRequest(clean)) {
