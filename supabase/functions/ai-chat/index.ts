@@ -857,89 +857,27 @@ serve(async (req) => {
     const body = await req.json();
     const { messages, telegram_chat_id, telegram_user_text } = body;
 
-    /* ── TELEGRAM MODE: single user text → reply directly to chat ── */
+    /* ── TELEGRAM MODE: queue to local worker only ── */
     if (telegram_chat_id && typeof telegram_user_text === 'string') {
-      const TELEGRAM_API_KEY = Deno.env.get('TELEGRAM_API_KEY');
-      if (!TELEGRAM_API_KEY) {
-        return new Response(JSON.stringify({ error: 'TELEGRAM_API_KEY not configured' }), {
-          status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-
-      // Pull recent telegram chat history for context
-      const { data: history } = await supabase
-        .from('telegram_messages')
-        .select('text,is_bot,created_at,raw_update')
-        .eq('chat_id', telegram_chat_id)
-        .order('created_at', { ascending: false })
-        .limit(10);
-
-      const ctx = await getAppContextFast(supabase, String(telegram_user_text || ''));
-      const sys = buildSystemPrompt(ctx, true);
-      const historyMsgs = ((history || []) as any[])
-        .reverse()
-        .filter((m) => m.text || m.raw_update?.media)
-        .map((m) => buildMessageForModel({
-          role: m.is_bot ? 'assistant' : 'user',
-          content: m.text || '',
-          images: m.raw_update?.media?.images || [],
-          files: m.raw_update?.media?.files || [],
-        }));
-      const newestTelegramMessage = ((history || []) as any[]).find((m) => !m.is_bot);
-      const fallbackTelegramMessage = {
-        text: telegram_user_text,
-        raw_update: { media: { images: [], files: [] } },
-      };
-      const currentTelegramMessage = newestTelegramMessage || fallbackTelegramMessage;
-      const currentUserMessage = buildMessageForModel({
-        role: 'user',
-        content: currentTelegramMessage.text || telegram_user_text,
-        images: currentTelegramMessage.raw_update?.media?.images || [],
-        files: currentTelegramMessage.raw_update?.media?.files || [],
-      });
-
-      const fullMessages = [
-        { role: 'system', content: sys },
-        ...historyMsgs,
-        currentUserMessage,
-      ];
-
-      // Resolve AI config for Telegram mode the same way as web mode.
-      const { data: tgSettings } = await supabase.from('app_settings').select('ai_provider,ai_api_key,ai_model,ai_base_url').eq('id', 1).single();
-      const tgChatConfig = resolveChatProviderConfig({
-        provider: (tgSettings as any)?.ai_provider,
-        apiKey: (tgSettings as any)?.ai_api_key,
-        model: (tgSettings as any)?.ai_model,
-        baseUrl: (tgSettings as any)?.ai_base_url,
-      }, LOVABLE_API_KEY);
-
-      try {
-        const reply = await runAgentNonStreaming(
-          supabase, fullMessages, tgChatConfig.url, tgChatConfig.key, tgChatConfig.model, LOVABLE_API_KEY, supabaseUrl, serviceKey,
-          { telegramChatId: telegram_chat_id },
-        );
-        const visibleReply = sanitizeTelegramReply(reply);
-        await sendTelegram(telegram_chat_id, visibleReply, LOVABLE_API_KEY, TELEGRAM_API_KEY);
-
-        // Mirror bot reply to telegram_messages so UI sees it
-        await supabase.from('telegram_messages').insert({
-          update_id: -Math.floor(Date.now()),
+      const { error: queueErr } = await supabase.from('pending_commands').insert({
+        command: 'ai_response',
+        args: {
           chat_id: telegram_chat_id,
-          text: visibleReply.slice(0, 3000),
-          is_bot: true,
-          raw_update: { source: 'ai-chat-edge' },
-        });
-
-        return new Response(JSON.stringify({ ok: true, reply: visibleReply }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      } catch (e) {
-        const msg = `⚠️ AI processing failed: ${e instanceof Error ? e.message : 'unknown error'}`;
-        await sendTelegram(telegram_chat_id, msg, LOVABLE_API_KEY, TELEGRAM_API_KEY);
-        return new Response(JSON.stringify({ error: msg }), {
+          user_text: telegram_user_text,
+          images: [],
+          files: [],
+          source: 'ai-chat-edge-local-queue',
+        },
+        status: 'pending',
+      });
+      if (queueErr) {
+        return new Response(JSON.stringify({ error: queueErr.message }), {
           status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
+      return new Response(JSON.stringify({ ok: true, queued: true, local: true }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     /* ── WEB MODE: streaming with tool support ── */
