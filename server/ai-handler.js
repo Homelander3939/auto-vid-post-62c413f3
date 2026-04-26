@@ -58,6 +58,28 @@ async function refreshLMStudioConfigFromSettings(supabase) {
   return { url: LM_STUDIO_URL, model: LM_STUDIO_MODEL, apiKey: LM_STUDIO_API_KEY };
 }
 
+function openAICompatEndpoint(provider, baseUrl) {
+  if (provider === 'lmstudio') return `${normalizeLMStudioUrl(baseUrl || LM_STUDIO_URL)}/v1/chat/completions`;
+  if (provider === 'openai') return 'https://api.openai.com/v1/chat/completions';
+  if (provider === 'openrouter') return 'https://openrouter.ai/api/v1/chat/completions';
+  if (provider === 'xai') return 'https://api.x.ai/v1/chat/completions';
+  if (provider === 'nvidia') return 'https://integrate.api.nvidia.com/v1/chat/completions';
+  throw new Error(`Provider ${provider} is not supported for local Telegram chat. Select LM Studio or an OpenAI-compatible provider.`);
+}
+
+async function getSelectedChatConfig(supabase) {
+  const { data } = await supabase.from('app_settings').select('ai_provider,ai_base_url,ai_api_key,ai_model').eq('id', 1).single();
+  const provider = data?.ai_provider || 'lmstudio';
+  if (provider === 'lovable') throw new Error('Lovable AI is disabled for Telegram local mode. Select LM Studio or your own API key provider in Settings.');
+  if (provider === 'lmstudio') {
+    const config = await refreshLMStudioConfigFromSettings(supabase);
+    return { provider, endpoint: openAICompatEndpoint(provider, config.url), model: config.model, apiKey: config.apiKey || 'lm-studio' };
+  }
+  if (!data?.ai_model) throw new Error(`No model selected for ${provider}`);
+  if (!data?.ai_api_key) throw new Error(`API key is required for ${provider}`);
+  return { provider, endpoint: openAICompatEndpoint(provider, data.ai_base_url), model: data.ai_model, apiKey: data.ai_api_key };
+}
+
 async function testLMStudioConnection({ baseUrl, apiKey, model } = {}) {
   const url = normalizeLMStudioUrl(baseUrl || LM_STUDIO_URL);
   const key = apiKey || LM_STUDIO_API_KEY || 'lm-studio';
