@@ -668,6 +668,36 @@ function openAICompatEndpoint(provider, baseUrl) {
   throw new Error(`Provider ${provider} is not supported by the local worker chat path`);
 }
 
+function normalizeProviderName(value) {
+  return String(value || 'lmstudio').trim().toLowerCase() || 'lmstudio';
+}
+
+function normalizeLMStudioBaseUrl(value) {
+  return String(value || 'http://localhost:1234').trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
+}
+
+async function resolveSelectedAIConfig(override = null) {
+  const { data: saved } = await supabase.from('app_settings').select('ai_provider,ai_base_url,ai_api_key,ai_model').eq('id', 1).single();
+  const provider = normalizeProviderName(override?.provider || saved?.ai_provider || 'lmstudio');
+  if (provider === 'lovable') throw new Error('Lovable AI is disabled for local-worker mode. Select LM Studio or your own API key provider in Settings.');
+
+  if (provider === 'lmstudio') {
+    const savedLm = override ? null : await refreshLMStudioConfigFromSettings(supabase);
+    const baseUrl = normalizeLMStudioBaseUrl(override?.baseUrl || saved?.ai_base_url || savedLm?.url || process.env.LM_STUDIO_URL || 'http://localhost:1234');
+    const model = String(override?.model || saved?.ai_model || savedLm?.model || process.env.LM_STUDIO_MODEL || '').trim();
+    const apiKey = String(override?.apiKey || saved?.ai_api_key || savedLm?.apiKey || process.env.LM_STUDIO_API_KEY || 'lm-studio').trim();
+    if (!model) throw new Error('No LM Studio model selected. Load a model in LM Studio or choose one in Settings.');
+    return { provider, baseUrl, model, apiKey, label: `lmstudio · ${model}` };
+  }
+
+  const model = String(override?.model || saved?.ai_model || '').trim();
+  const apiKey = String(override?.apiKey || saved?.ai_api_key || '').trim();
+  const baseUrl = String(override?.baseUrl || saved?.ai_base_url || '').trim();
+  if (!model) throw new Error(`No model selected for ${provider}`);
+  if (!apiKey) throw new Error(`API key is required for ${provider}`);
+  return { provider, baseUrl, model, apiKey, label: `${provider} · ${model}` };
+}
+
 function createSseController(res) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -687,15 +717,8 @@ async function appendGenerationEvent(jobId, event, data) {
   }
 }
 
-async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 2048, temperature = 0.4 } = {}) {
-  const { data: saved } = await supabase.from('app_settings').select('ai_provider,ai_base_url,ai_api_key,ai_model').eq('id', 1).single();
-  const provider = saved?.ai_provider || 'lmstudio';
-  if (provider === 'lovable') throw new Error('Lovable AI is disabled for local mode. Select LM Studio or your own API key provider in Settings.');
-  const config = provider === 'lmstudio'
-    ? await refreshLMStudioConfigFromSettings(supabase)
-    : { url: saved?.ai_base_url || '', model: saved?.ai_model, apiKey: saved?.ai_api_key };
-  if (!config.model) throw new Error(`No model selected for ${provider}`);
-  if (provider !== 'lmstudio' && !config.apiKey) throw new Error(`API key is required for ${provider}`);
+async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 2048, temperature = 0.4, aiSettings = null } = {}) {
+  const config = await resolveSelectedAIConfig(aiSettings);
   const buildBody = (model) => ({
     model,
     messages,
@@ -704,29 +727,33 @@ async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 
     temperature,
     max_tokens,
   });
-  const endpoint = openAICompatEndpoint(provider, config.url);
-  const call = async (model) => fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey || 'lm-studio'}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(buildBody(model)),
-  });
-  let response = await call(config.model);
-  let text = await response.text();
-  if (provider === 'lmstudio' && !response.ok && /model|not found|unloaded|cannot find/i.test(text)) {
-    const base = String(config.url).replace(/\/+$/, '').replace(/\/v1$/i, '');
-    const loaded = await discoverLMStudioModels(base, config.apiKey || 'lm-studio').catch(() => []);
-    const fallbackModel = loaded[0]?.id;
-    if (fallbackModel && fallbackModel !== config.model) {
-      console.warn(`[AI] Saved LM Studio model unavailable (${config.model}); retrying loaded model ${fallbackModel}`);
-      response = await call(fallbackModel);
-      text = await response.text();
+  const bases = config.provider === 'lmstudio'
+    ? [...new Set([config.baseUrl, process.env.LM_STUDIO_URL, 'http://localhost:1234', 'http://127.0.0.1:1234'].filter(Boolean).map(normalizeLMStudioBaseUrl))]
+    : [config.baseUrl];
+  let lastError = '';
+  for (const base of bases) {
+    const endpoint = openAICompatEndpoint(config.provider, base);
+    const call = async (model) => fetch(endpoint, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.apiKey || 'lm-studio'}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildBody(model)),
+    });
+    let response;
+    try { response = await call(config.model); } catch (err) { lastError = `${config.provider} network error at ${base || endpoint}: ${err.message}`; continue; }
+    let text = await response.text();
+    if (config.provider === 'lmstudio' && !response.ok && /model|not found|unloaded|cannot find/i.test(text)) {
+      const loaded = await discoverLMStudioModels(base, config.apiKey || 'lm-studio').catch(() => []);
+      const fallbackModel = loaded[0]?.id;
+      if (fallbackModel && fallbackModel !== config.model) {
+        console.warn(`[AI] Saved LM Studio model unavailable (${config.model}); retrying loaded model ${fallbackModel}`);
+        response = await call(fallbackModel);
+        text = await response.text();
+      }
     }
+    if (response.ok) return JSON.parse(text || '{}');
+    lastError = `${config.provider} returned ${response.status}: ${text.slice(0, 300)}`;
   }
-  if (!response.ok) throw new Error(`${provider} returned ${response.status}: ${text.slice(0, 300)}`);
-  return JSON.parse(text || '{}');
+  throw new Error(lastError || `${config.provider} request failed`);
 }
 
 function slugifyAgentRun(s) {
