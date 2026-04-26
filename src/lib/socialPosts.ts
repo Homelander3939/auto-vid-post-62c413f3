@@ -487,13 +487,14 @@ export async function generatePostStream(
   signal?: AbortSignal,
 ): Promise<void> {
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-social-post`;
+  const aiSettings = await getAISettings().catch(() => null);
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
     },
-    body: JSON.stringify({ ...input, stream: true }),
+    body: JSON.stringify({ ...input, stream: true, aiSettings }),
     signal,
   });
   if (!resp.ok || !resp.body) {

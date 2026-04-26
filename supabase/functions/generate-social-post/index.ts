@@ -15,6 +15,7 @@ interface Body {
   platforms: string[];
   includeImage?: boolean;
   stream?: boolean;
+  aiSettings?: { provider?: string; apiKey?: string; model?: string; baseUrl?: string } | null;
 }
 
 const PLATFORM_RULES: Record<string, string> = {
@@ -935,11 +936,12 @@ Deno.serve(async (req) => {
   const { data: settings } = await supabase.from('app_settings').select('*').eq('id', 1).single();
   const s: any = settings || {};
 
+  const requestAI = body.aiSettings || null;
   const config = resolveChatProviderConfig({
-    provider: s.ai_provider,
-    apiKey: s.ai_api_key,
-    model: s.ai_model,
-    baseUrl: s.ai_base_url,
+    provider: requestAI?.provider || s.ai_provider,
+    apiKey: requestAI?.apiKey || s.ai_api_key,
+    model: requestAI?.model || s.ai_model,
+    baseUrl: requestAI?.baseUrl || s.ai_base_url,
   }, Deno.env.get('LOVABLE_API_KEY') || '');
   if (config.fallbackReason) {
     console.warn('generate-social-post provider fallback:', config.fallbackReason);
