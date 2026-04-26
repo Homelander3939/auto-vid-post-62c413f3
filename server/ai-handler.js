@@ -336,7 +336,7 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
 
     // 2) Deep-read up to 6 top pages
     await appendEvent({ type: 'phase', name: 'read-sources' });
-    await Promise.all(sources.slice(0, 6).map(async (s) => {
+    await Promise.all(sources.slice(0, 10).map(async (s) => {
       try {
         const r = await fetch(s.url, {
           headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LovableAgent/1.0)' },
@@ -351,7 +351,7 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
         if (text.length > 200) s.content = text;
       } catch {}
     }));
-    const readCount = sources.slice(0, 6).filter((s) => s.content).length;
+    const readCount = sources.slice(0, 10).filter((s) => s.content).length;
     await appendEvent({ type: 'tool_result', name: 'deep_read', ok: readCount > 0, summary: `Extracted readable text from ${readCount} pages` });
 
     // 3) Hero image
