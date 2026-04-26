@@ -601,6 +601,83 @@ async function listProviderModels(provider, apiKey, baseUrl) {
   throw new Error(`Unknown provider: ${provider}`);
 }
 
+function createSseController(res) {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  return (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+async function appendGenerationEvent(jobId, event, data) {
+  if (!jobId) return;
+  const payload = { type: event, ...data, _ts: Date.now() };
+  try {
+    const { data: current } = await supabase.from('generation_jobs').select('events').eq('id', jobId).maybeSingle();
+    await supabase.from('generation_jobs').update({ events: [...(current?.events || []), payload] }).eq('id', jobId);
+  } catch (err) {
+    console.warn('[AI Post] Could not persist event:', err.message);
+  }
+}
+
+async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 2048, temperature = 0.4 } = {}) {
+  const config = await refreshLMStudioConfigFromSettings(supabase);
+  const response = await fetch(`${String(config.url).replace(/\/+$/, '').replace(/\/v1$/i, '')}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.apiKey || 'lm-studio'}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages,
+      ...(tools ? { tools } : {}),
+      ...(tool_choice ? { tool_choice } : {}),
+      temperature,
+      max_tokens,
+    }),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`LM Studio returned ${response.status}: ${text.slice(0, 300)}`);
+  return JSON.parse(text || '{}');
+}
+
+function parseJsonFromText(text, fallback = {}) {
+  const raw = String(text || '').trim();
+  if (!raw) return fallback;
+  try { return JSON.parse(raw); } catch {}
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+  if (fenced) { try { return JSON.parse(fenced); } catch {} }
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    try { return JSON.parse(raw.slice(start, end + 1)); } catch {}
+  }
+  return fallback;
+}
+
+async function localJsonLLM(systemPrompt, userPrompt, fallback = {}) {
+  const data = await localChatCompletion([
+    { role: 'system', content: `${systemPrompt}\nReturn valid JSON only. No markdown.` },
+    { role: 'user', content: userPrompt },
+  ], { temperature: 0.35, max_tokens: 2200 });
+  return parseJsonFromText(data?.choices?.[0]?.message?.content || '', fallback);
+}
+
+async function storeImageFromUrl(imageUrl) {
+  if (!imageUrl || String(imageUrl).startsWith('data:')) return { url: imageUrl || null, path: null };
+  const resp = await fetch(imageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  if (!resp.ok) return { url: imageUrl, path: null };
+  const contentType = resp.headers.get('content-type') || 'image/jpeg';
+  const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
+  const buffer = Buffer.from(await resp.arrayBuffer());
+  const storagePath = `local-${Date.now()}-${randomUUID()}.${ext}`;
+  const { error } = await supabase.storage.from('social-media').upload(storagePath, buffer, { contentType, upsert: true });
+  if (error) return { url: imageUrl, path: null };
+  const { data } = supabase.storage.from('social-media').getPublicUrl(storagePath);
+  return { url: data?.publicUrl || imageUrl, path: storagePath };
+}
+
 app.post('/api/ai/models', async (req, res) => {
   try {
     const { provider = 'lmstudio', baseUrl, apiKey } = req.body || {};
