@@ -65,11 +65,30 @@ function useAgentDiagnostics() {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    try {
-      const { data: resp, error } = await supabase.functions.invoke('agent-diagnostics', { body: {} });
-      if (!error && resp) setData(resp as DiagnosticsSnapshot);
-    } catch { /* silent */ }
-    finally { setLoading(false); }
+    // Use direct fetch (not supabase.functions.invoke) so transient 503 cold-starts
+    // do not surface as RUNTIME_ERROR to the global error reporter.
+    const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/agent-diagnostics`;
+    const anon = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    const attempt = async (): Promise<DiagnosticsSnapshot | null> => {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: anon, Authorization: `Bearer ${anon}` },
+          body: '{}',
+        });
+        if (!res.ok) return null;
+        return (await res.json()) as DiagnosticsSnapshot;
+      } catch {
+        return null;
+      }
+    };
+    let resp = await attempt();
+    if (!resp) {
+      await new Promise((r) => setTimeout(r, 1500));
+      resp = await attempt();
+    }
+    if (resp) setData(resp);
+    setLoading(false);
   }, []);
 
   useEffect(() => {
