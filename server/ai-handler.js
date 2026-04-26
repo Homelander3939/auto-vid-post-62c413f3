@@ -808,6 +808,18 @@ async function executeTool(supabase, name, args) {
       return `Stats check queued for ${platform === 'all' ? 'all platforms' : platform}! Results will arrive via Telegram within 60 seconds.`;
     }
     case 'open_browser': {
+      // If the task is research-style ("look up X", "find latest", etc.), run the
+      // real deep-research pipeline synchronously and return the report inline so
+      // the chat reply contains the actual answer instead of a "queued" placeholder.
+      const taskText = String(args.task || '').trim();
+      if (taskText && looksLikeResearchRequest(taskText)) {
+        try {
+          const report = await runDeepResearchForTelegram(taskText, null, supabase);
+          return report || 'Research finished but produced no output.';
+        } catch (e) {
+          return `Research failed: ${e.message}`;
+        }
+      }
       const { error } = await supabase.from('pending_commands').insert({
         command: 'open_browser',
         args: { task: args.task, url: args.url || null },
