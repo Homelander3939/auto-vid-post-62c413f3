@@ -486,15 +486,129 @@ app.get('/', (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
 
+const LOCAL_DB_TABLES = new Set([
+  'app_settings', 'platform_accounts', 'upload_jobs', 'scheduled_uploads', 'schedule_config',
+  'social_post_accounts', 'social_posts', 'social_post_schedules', 'generation_jobs',
+  'pending_commands', 'agent_skills', 'agent_memories', 'agent_runs', 'telegram_messages',
+]);
+
+function assertAllowedTable(table) {
+  if (!LOCAL_DB_TABLES.has(String(table || ''))) throw new Error(`Local proxy table not allowed: ${table}`);
+}
+
+function applyLocalQueryFilters(query, filters = []) {
+  for (const f of Array.isArray(filters) ? filters : []) {
+    if (!f?.column) continue;
+    if (f.op === 'eq') query = query.eq(f.column, f.value);
+    else if (f.op === 'neq') query = query.neq(f.column, f.value);
+    else if (f.op === 'in') query = query.in(f.column, Array.isArray(f.value) ? f.value : []);
+    else if (f.op === 'is') query = query.is(f.column, f.value);
+    else if (f.op === 'not') query = query.not(f.column, f.operator || 'is', f.value);
+  }
+  return query;
+}
+
+app.post('/api/db/select', async (req, res) => {
+  try {
+    const { table, columns = '*', filters = [], order = [], limit, single, maybeSingle } = req.body || {};
+    assertAllowedTable(table);
+    let query = supabase.from(table).select(columns);
+    query = applyLocalQueryFilters(query, filters);
+    const orders = Array.isArray(order) ? order : order ? [order] : [];
+    for (const o of orders) if (o?.column) query = query.order(o.column, { ascending: o.ascending !== false });
+    if (limit) query = query.limit(Number(limit));
+    if (single) query = query.single();
+    else if (maybeSingle) query = query.maybeSingle();
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json({ data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/db/update', async (req, res) => {
+  try {
+    const { table, payload, filters = [], select } = req.body || {};
+    assertAllowedTable(table);
+    let query = supabase.from(table).update(payload || {});
+    query = applyLocalQueryFilters(query, filters);
+    if (select) query = query.select(select === true ? '*' : select);
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json({ data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/db/insert', async (req, res) => {
+  try {
+    const { table, payload, select = '*' } = req.body || {};
+    assertAllowedTable(table);
+    let query = supabase.from(table).insert(payload || {});
+    if (select) query = query.select(select === true ? '*' : select);
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json({ data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/db/delete', async (req, res) => {
+  try {
+    const { table, filters = [] } = req.body || {};
+    assertAllowedTable(table);
+    let query = supabase.from(table).delete();
+    query = applyLocalQueryFilters(query, filters);
+    const { error } = await query;
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+async function fetchOpenAICompatModels(endpoint, apiKey) {
+  const resp = await fetch(endpoint, { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' } });
+  if (!resp.ok) throw new Error(`Provider returned ${resp.status}: ${await resp.text()}`);
+  const data = await resp.json();
+  const rows = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
+  return rows.map((m) => ({ id: m.id || m.name, label: m.id || m.name })).filter((m) => m.id);
+}
+
+async function listProviderModels(provider, apiKey, baseUrl) {
+  if (provider === 'lmstudio') return discoverLMStudioModels(baseUrl, apiKey || 'lm-studio');
+  if (!apiKey) throw new Error('API key is required for this provider');
+  if (provider === 'openai') return (await fetchOpenAICompatModels('https://api.openai.com/v1/models', apiKey)).filter((m) => /gpt|o\d|chat/i.test(m.id));
+  if (provider === 'openrouter') return fetchOpenAICompatModels('https://openrouter.ai/api/v1/models', apiKey);
+  if (provider === 'nvidia') return fetchOpenAICompatModels('https://integrate.api.nvidia.com/v1/models', apiKey);
+  if (provider === 'xai') return fetchOpenAICompatModels('https://api.x.ai/v1/models', apiKey);
+  if (provider === 'google') {
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
+    if (!resp.ok) throw new Error(`Google returned ${resp.status}: ${await resp.text()}`);
+    const data = await resp.json();
+    return (data?.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => ({ id: String(m.name || '').replace(/^models\//, ''), label: m.displayName || m.name })).filter((m) => m.id);
+  }
+  if (provider === 'anthropic') {
+    const resp = await fetch('https://api.anthropic.com/v1/models', { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' } });
+    if (!resp.ok) throw new Error(`Anthropic returned ${resp.status}: ${await resp.text()}`);
+    const data = await resp.json();
+    return (data?.data || []).map((m) => ({ id: m.id, label: m.display_name || m.id }));
+  }
+  throw new Error(`Unknown provider: ${provider}`);
+}
+
 app.post('/api/ai/models', async (req, res) => {
   try {
-    const { baseUrl, apiKey } = req.body || {};
-    const config = await refreshLMStudioConfigFromSettings(supabase);
-    const models = await discoverLMStudioModels(baseUrl || config.url, apiKey || config.apiKey);
-    res.json({ models, provider: 'lmstudio', baseUrl: baseUrl || config.url });
+    const { provider = 'lmstudio', baseUrl, apiKey } = req.body || {};
+    const config = provider === 'lmstudio' ? await refreshLMStudioConfigFromSettings(supabase) : null;
+    const models = await listProviderModels(provider, apiKey || config?.apiKey, baseUrl || config?.url);
+    res.json({ models, provider, baseUrl: baseUrl || config?.url });
   } catch (err) {
-    console.error('[AI] LM Studio model discovery failed:', err.message);
-    res.status(502).json({ error: err.message || 'Could not load LM Studio models' });
+    console.error('[AI] Model discovery failed:', err.message);
+    res.status(502).json({ error: err.message || 'Could not load models' });
   }
 });
 
