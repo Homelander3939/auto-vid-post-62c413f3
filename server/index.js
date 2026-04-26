@@ -32,6 +32,7 @@ const { processTelegramAIResponse, streamLMStudio, LM_STUDIO_URL, discoverLMStud
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
+const { randomUUID } = require('crypto');
 const {
   copyScheduledSelectionsToJob,
   getBrowserProfileForAccount,
