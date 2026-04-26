@@ -813,7 +813,7 @@ async function processTelegramAIResponse(supabase, args, sendTelegramFn, backend
   const files = args.files || [];
 
   try {
-    const routedReply = await routeDeterministicTelegramTask(userText, chatId, backend);
+    const routedReply = await routeDeterministicTelegramTask(userText, chatId, backend, supabase);
     if (routedReply) {
       await sendTelegramFn(null, chatId, routedReply, backend);
       await supabase.from('telegram_messages').insert({
