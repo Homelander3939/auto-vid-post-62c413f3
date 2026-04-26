@@ -1102,15 +1102,23 @@ async function processTelegramAIResponse(supabase, args, sendTelegramFn, backend
   try {
     const routedReply = await routeDeterministicTelegramTask(userText, chatId, backend, supabase);
     if (routedReply) {
-      await sendTelegramFn(null, chatId, routedReply, backend);
+      // Some routes (deep-research) deliver a rich Telegram message themselves
+      // (hero photo + caption + body) and return { report, telegramSent: true }.
+      // In that case skip resending plain text — just record the bot reply.
+      const isStructured = typeof routedReply === 'object' && routedReply !== null;
+      const replyText = isStructured ? (routedReply.report || '') : String(routedReply);
+      const alreadySent = isStructured && routedReply.telegramSent === true;
+      if (!alreadySent && replyText) {
+        await sendTelegramFn(null, chatId, replyText, backend);
+      }
       await supabase.from('telegram_messages').insert({
         update_id: (args.update_id || Date.now()) + 1_000_000_000,
         chat_id: chatId,
-        text: routedReply,
+        text: replyText.slice(0, 8000),
         is_bot: true,
-        raw_update: { bot_reply: true, routed: true },
+        raw_update: { bot_reply: true, routed: true, structured: isStructured },
       });
-      return routedReply;
+      return replyText;
     }
   } catch (routeErr) {
     console.warn('[AI] Deterministic Telegram routing failed, falling back to LM Studio:', routeErr.message);
