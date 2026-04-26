@@ -849,8 +849,9 @@ async function executeTool(supabase, name, args) {
       const taskText = String(args.task || '').trim();
       if (taskText && looksLikeResearchRequest(taskText)) {
         try {
-          const report = await runDeepResearchForTelegram(taskText, null, supabase);
-          return report || 'Research finished but produced no output.';
+          const res = await runDeepResearchForTelegram(taskText, null, supabase);
+          const md = typeof res === 'object' && res !== null ? (res.report || '') : String(res || '');
+          return md || 'Research finished but produced no output.';
         } catch (e) {
           return `Research failed: ${e.message}`;
         }
