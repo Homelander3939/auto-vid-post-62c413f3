@@ -856,7 +856,7 @@ async function localJsonLLM(systemPrompt, userPrompt, fallback = {}, aiSettings 
   const data = await localChatCompletion([
     { role: 'system', content: `${systemPrompt}\nReturn valid JSON only. No markdown.` },
     { role: 'user', content: userPrompt },
-  ], { temperature: 0.35, max_tokens: 2200, aiSettings });
+  ], { temperature: 0.55, max_tokens: 4096, aiSettings });
   return parseJsonFromText(data?.choices?.[0]?.message?.content || '', fallback);
 }
 
