@@ -71,7 +71,7 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   const [name, setName] = useState(config.name);
   const [enabled, setEnabled] = useState(config.enabled);
   const [folderPath, setFolderPath] = useState(config.folderPath);
-  const [uploadIntervalMinutes, setUploadIntervalMinutes] = useState(config.uploadIntervalMinutes || 60);
+  const [uploadIntervalMinutes, setUploadIntervalMinutes] = useState(config.uploadIntervalMinutes || 10);
   const [platforms, setPlatforms] = useState(config.platforms);
   const [endAt, setEndAt] = useState(config.endAt);
   const [maxRuns, setMaxRuns] = useState<number | null>(config.maxRuns ?? null);
@@ -398,7 +398,7 @@ export default function Schedule() {
       platforms: ['youtube'],
       folderPath: '',
       endAt: null,
-      uploadIntervalMinutes: 60,
+      uploadIntervalMinutes: 10,
       accountSelections: {},
       runCount: 0,
       maxRuns: null,
