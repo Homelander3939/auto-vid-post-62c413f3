@@ -6,6 +6,7 @@ const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } =
 const { sendTelegramPhoto } = require('../telegram');
 const { getTikTokPageDescription, isTikTokPublishedUrl, isTikTokVideoUrl } = require('./tiktok-state');
 const { getSharedBrowserProfileDir } = require('../browserProfiles');
+const { dismissOverlayBlockingFlow } = require('./overlay-dismiss');
 
 const DEFAULT_USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok');
 
@@ -1096,6 +1097,11 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
       publishTriggered = await hasPublishStarted();
       if (!publishTriggered) {
         console.warn(`[TikTok] Post click attempt ${clickAttempt + 1} did not trigger publish flow; retrying`);
+        // After a failed attempt, a TikTok tip / "what's new" / promo overlay
+        // may be intercepting clicks. Try to dismiss it before the next retry.
+        if (clickAttempt >= 1) {
+          await dismissOverlayBlockingFlow(page, { logPrefix: '[TikTok]' });
+        }
       }
     }
 
