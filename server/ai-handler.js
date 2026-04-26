@@ -3,7 +3,7 @@
 
 const fetch = require('node-fetch');
 
-let LM_STUDIO_URL = normalizeLMStudioUrl(process.env.LM_STUDIO_URL || 'http://192.168.50.33:1234');
+let LM_STUDIO_URL = normalizeLMStudioUrl(process.env.LM_STUDIO_URL || 'http://localhost:1234');
 let LM_STUDIO_MODEL = process.env.LM_STUDIO_MODEL || 'google/gemma-3-27b';
 let LM_STUDIO_API_KEY = process.env.LM_STUDIO_API_KEY || 'lm-studio';
 
@@ -211,6 +211,7 @@ async function routeDeterministicTelegramTask(text, chatId, backend) {
       platforms,
       includeImage: true,
       stream: false,
+      telegram_chat_id: chatId,
     });
     return summarizeGeneratedPost(data, platforms);
   }
@@ -219,6 +220,7 @@ async function routeDeterministicTelegramTask(text, chatId, backend) {
     const data = await invokeLocalWorker('/api/agent-run', {
       prompt: clean,
       source: 'telegram-local-router',
+      telegram_chat_id: chatId,
     }, 15_000);
     return `Started local agent task: ${truncateText(clean)}\nRun ID: ${data.runId || 'created'}\nI will report progress and results here.`;
   }
