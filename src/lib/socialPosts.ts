@@ -1,6 +1,8 @@
 // Social Posts storage layer — multi-account, AI-powered post manager.
 import { supabase } from '@/integrations/supabase/client';
 
+const LOCAL_WORKER_URL = 'http://localhost:3001';
+
 export type SocialPlatform = 'x' | 'linkedin' | 'facebook';
 export const SOCIAL_PLATFORMS: SocialPlatform[] = ['x', 'linkedin', 'facebook'];
 
@@ -463,10 +465,7 @@ export async function listAgentRuns(): Promise<AgentRun[]> {
 }
 
 export async function cancelAgentRun(id: string): Promise<void> {
-  const { data, error } = await supabase.functions.invoke('agent-run', {
-    body: { action: 'cancel', runId: id },
-  });
-  if (error || data?.error) throw new Error(data?.error || error?.message || 'Failed to cancel agent run');
+  await callLocalWorker<{ ok?: boolean; error?: string }>('/api/agent-run', { action: 'cancel', runId: id }, 10_000);
 }
 
 export async function deleteAgentRun(id: string): Promise<void> {
@@ -487,15 +486,12 @@ export async function generatePostStream(
   signal?: AbortSignal,
 ): Promise<void> {
   const aiSettings = await getAISettings().catch(() => null);
-  const shouldUseLocal = aiSettings?.provider === 'lmstudio' || await isLocalWorkerAlive();
-  const url = shouldUseLocal
-    ? 'http://localhost:3001/api/generate-social-post'
-    : `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-social-post`;
-  const resp = await fetch(url, {
+  if (!(await isLocalWorkerAlive())) {
+    throw new Error('Local worker is not reachable on port 3001. Start smart-launcher.bat and retry. Cloud AI fallback is disabled.');
+  }
+  const resp = await fetch(`${LOCAL_WORKER_URL}/api/generate-social-post`, {
     method: 'POST',
-    headers: shouldUseLocal
-      ? { 'Content-Type': 'application/json' }
-      : { 'Content-Type': 'application/json', Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}` },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...input, stream: true, aiSettings }),
     signal,
   });
@@ -532,21 +528,14 @@ export async function generatePostStream(
 
 // Non-streaming fallback (kept for backward compat).
 export async function generatePostWithAI(input: AIGenerateInput): Promise<AIGenerateOutput> {
-  const aiSettings = await getAISettings().catch(() => null);
-  if (aiSettings?.provider === 'lmstudio' || await isLocalWorkerAlive()) {
-    const data = await callLocalWorker<AIGenerateOutput>('/api/generate-social-post', { ...input, stream: false }, 120_000);
-    if ((data as any)?.error) throw new Error((data as any).error);
-    return data as AIGenerateOutput;
-  }
-  const { data, error } = await supabase.functions.invoke('generate-social-post', { body: { ...input, stream: false } });
-  if (error) throw new Error(error.message || 'AI generation failed');
-  if (!data || data.error) throw new Error(data?.error || 'AI generation failed');
+  const data = await callLocalWorker<AIGenerateOutput>('/api/generate-social-post', { ...input, stream: false }, 120_000);
+  if ((data as any)?.error) throw new Error((data as any).error);
   return data as AIGenerateOutput;
 }
 
 export interface AIModel { id: string; label?: string }
 async function callLocalWorker<T>(path: string, body: unknown, timeoutMs = 15_000): Promise<T> {
-  const response = await fetch(`http://localhost:3001${path}`, {
+  const response = await fetch(`${LOCAL_WORKER_URL}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -564,7 +553,7 @@ async function isLocalWorkerAlive(): Promise<boolean> {
   const now = Date.now();
   if (localWorkerCheck && now - localWorkerCheck.at < 5_000) return localWorkerCheck.alive;
   try {
-    const r = await fetch('http://localhost:3001/api/health', { signal: AbortSignal.timeout(1500) });
+    const r = await fetch(`${LOCAL_WORKER_URL}/api/health`, { signal: AbortSignal.timeout(1500) });
     const alive = r.ok;
     localWorkerCheck = { at: now, alive };
     return alive;
@@ -578,39 +567,13 @@ async function isLocalWorkerAlive(): Promise<boolean> {
 // AND calls cloud providers directly with the user's own keys (zero Lovable cloud
 // dependency). Falls back to the edge function only if the local worker is offline.
 export async function listAIModels(provider: string, apiKey: string, baseUrl?: string): Promise<AIModel[]> {
-  if (provider === 'lmstudio') {
-    const data = await callLocalWorker<{ models: AIModel[] }>('/api/ai/models', { provider, apiKey, baseUrl });
-    return data.models || [];
-  }
-  if (await isLocalWorkerAlive()) {
-    try {
-      const data = await callLocalWorker<{ models: AIModel[] }>('/api/ai/models', { provider, apiKey, baseUrl });
-      return data.models || [];
-    } catch (e) {
-      console.warn('[listAIModels] local worker failed, falling back to edge function:', (e as Error).message);
-    }
-  }
-  const { data, error } = await supabase.functions.invoke('list-ai-models', { body: { provider, apiKey, baseUrl } });
-  if (error) throw new Error(error.message || 'Failed to list models');
-  if (!data || data.error) throw new Error(data?.error || 'Failed to list models');
-  return (data.models || []) as AIModel[];
+  const data = await callLocalWorker<{ models: AIModel[] }>('/api/ai/models', { provider, apiKey, baseUrl });
+  return data.models || [];
 }
 
 export interface ConnectionTestResult { ok: boolean; error?: string; latency?: number; provider?: string; model?: string; sample?: string }
 export async function testAIConnection(provider: string, apiKey: string, model: string, baseUrl?: string): Promise<ConnectionTestResult> {
-  if (provider === 'lmstudio') {
-    return callLocalWorker<ConnectionTestResult>('/api/ai/test', { provider, apiKey, model, baseUrl });
-  }
-  if (await isLocalWorkerAlive()) {
-    try {
-      return await callLocalWorker<ConnectionTestResult>('/api/ai/test', { provider, apiKey, model, baseUrl });
-    } catch (e) {
-      console.warn('[testAIConnection] local worker failed, falling back to edge function:', (e as Error).message);
-    }
-  }
-  const { data, error } = await supabase.functions.invoke('test-ai-connection', { body: { provider, apiKey, model, baseUrl } });
-  if (error) return { ok: false, error: error.message };
-  return data as ConnectionTestResult;
+  return callLocalWorker<ConnectionTestResult>('/api/ai/test', { provider, apiKey, model, baseUrl });
 }
 
 export async function testAgentConnection(
@@ -620,18 +583,12 @@ export async function testAgentConnection(
   localUrl?: string,
   model?: string,
 ): Promise<ConnectionTestResult> {
-  const { data, error } = await supabase.functions.invoke('test-agent-connection', {
-    body: { kind, provider, apiKey, localUrl, model },
-  });
-  if (error) return { ok: false, error: error.message };
-  return data as ConnectionTestResult;
+  return callLocalWorker<ConnectionTestResult>('/api/agent/test', { kind, provider, apiKey, localUrl, model }, 30_000);
 }
 
 export interface ImageModelOption { id: string; label: string; recommended?: boolean }
 export async function listImageModels(provider: string, apiKey: string): Promise<{ models: ImageModelOption[]; error?: string }> {
-  const { data, error } = await supabase.functions.invoke('list-image-models', { body: { provider, apiKey } });
-  if (error) return { models: [], error: error.message };
-  return data as { models: ImageModelOption[]; error?: string };
+  return callLocalWorker<{ models: ImageModelOption[]; error?: string }>('/api/image/models', { provider, apiKey }, 15_000);
 }
 
 // ────────────────────────────────────────────────────────────
@@ -704,6 +661,5 @@ export async function deleteGenerationSchedule(id: number): Promise<void> {
 
 // Manually trigger a single schedule run (mostly for "Run now" testing).
 export async function runGenerationScheduleNow(id: number): Promise<void> {
-  const { error } = await supabase.functions.invoke('run-due-generations', { body: { scheduleId: id, force: true } });
-  if (error) throw new Error(error.message);
+  await callLocalWorker('/api/generation-schedules/run-now', { scheduleId: id, force: true }, 120_000);
 }
