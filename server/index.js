@@ -1727,8 +1727,79 @@ app.post('/api/ai-chat', async (req, res) => {
 
     await refreshLMStudioConfigFromSettings(supabase);
 
-    // Stream response from LM Studio
-    const streamResp = await streamLMStudio(messages, supabase);
+    // Detect research / deep-dive intent on the latest user message and pre-fetch sources
+    // so the LLM has real material to write a long-form, well-cited answer from.
+    const lastUser = [...messages].reverse().find((m) => m?.role === 'user');
+    const lastText = String(lastUser?.content || '');
+    const wantsResearch = /\b(research|deep[- ]?dive|investigate|latest|news|find out|summari[sz]e|sources?|cite|report on|look up|what'?s happening|latest on)\b/i.test(lastText);
+
+    let augmentedMessages = messages;
+    if (wantsResearch && lastText.trim().length > 5) {
+      try {
+        const settingsRow = await supabase.from('app_settings').select('research_provider,research_api_key').eq('id', 1).single();
+        const researchProvider = settingsRow.data?.research_provider || 'auto';
+        const researchKey = settingsRow.data?.research_api_key || '';
+        const sources = [];
+        const seen = new Set();
+        // 1) Brave first if configured
+        if ((researchProvider === 'brave' || researchProvider === 'auto') && researchKey) {
+          try {
+            const br = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(lastText)}&count=6`, {
+              headers: { 'X-Subscription-Token': researchKey, Accept: 'application/json' },
+            });
+            if (br.ok) {
+              const bj = await br.json();
+              (bj?.web?.results || []).slice(0, 6).forEach((x) => {
+                if (x?.url && !seen.has(x.url)) { seen.add(x.url); sources.push({ title: x.title, url: x.url, snippet: x.description || '' }); }
+              });
+            }
+          } catch {}
+        }
+        // 2) DuckDuckGo / browser fallback
+        if (sources.length < 4) {
+          const r = await fetch(`http://localhost:${PORT}/api/research/search`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: lastText, count: 6 }),
+          });
+          const data = await r.json().catch(() => ({}));
+          (data.results || []).forEach((s) => { if (s?.url && !seen.has(s.url)) { seen.add(s.url); sources.push(s); } });
+        }
+        // 3) Deep-read top sources
+        await Promise.all(sources.slice(0, 4).map(async (s) => {
+          try {
+            const r = await fetch(s.url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LovableAgent/1.0)' }, signal: AbortSignal.timeout(8000) });
+            if (!r.ok) return;
+            const html = await r.text();
+            const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ');
+            const article = cleaned.match(/<article[\s\S]*?<\/article>/i)?.[0] || cleaned.match(/<main[\s\S]*?<\/main>/i)?.[0] || cleaned;
+            const text = article.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
+            if (text.length > 200) s.content = text;
+          } catch {}
+        }));
+        // 4) Try to grab a representative image
+        let imageUrl = null;
+        try {
+          const ir = await fetch(`http://localhost:${PORT}/api/research/image-search`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: lastText, urls: sources.slice(0, 3).map((s) => s.url), count: 3 }),
+          });
+          const id = await ir.json().catch(() => ({}));
+          const first = (id.images || [])[0];
+          imageUrl = typeof first === 'string' ? first : first?.url || null;
+        } catch {}
+
+        const sourcesBlock = sources.slice(0, 8).map((s, i) =>
+          `[${i + 1}] ${s.title}\n${s.content || s.snippet || ''}\nURL: ${s.url}`).join('\n\n');
+        const researchSystem = `You are an expert research assistant. The user asked for a deep dive. Real-time research was just performed on their behalf. Write a thorough, human-written report in MARKDOWN:\n\n- Open with a 1-2 sentence TL;DR.\n- Then 3-6 sections with ## headings covering the most important angles.\n- Use flowing prose (NOT a list of headlines). Pull concrete facts, names, numbers from the sources.\n- Cite sources inline as [1], [2], etc. matching the numbered list.\n- End with a "## Sources" section listing each numbered source as a markdown link.\n${imageUrl ? `- Include this hero image near the top: ![cover](${imageUrl})` : ''}\n\nRESEARCH MATERIAL:\n${sourcesBlock || '(no sources retrieved — answer from general knowledge and say so)'}\n`;
+        augmentedMessages = [
+          { role: 'system', content: researchSystem },
+          ...messages,
+        ];
+      } catch (e) {
+        console.warn('[AI-Chat] Research augmentation failed:', e.message);
+      }
+    }
+
+    // Stream response from LM Studio (or selected provider via streamLMStudio helper)
+    const streamResp = await streamLMStudio(augmentedMessages, supabase);
     if (!streamResp.ok) {
       const errText = await streamResp.text().catch(() => '');
       console.error('[AI-Chat] LM Studio error:', streamResp.status, errText);
@@ -1741,11 +1812,9 @@ app.post('/api/ai-chat', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Access-Control-Allow-Origin', '*');
 
-    const { Readable } = require('stream');
     if (streamResp.body && typeof streamResp.body.pipe === 'function') {
       streamResp.body.pipe(res);
     } else if (streamResp.body) {
-      // node-fetch v2 returns a Node.js Readable
       streamResp.body.pipe(res);
     } else {
       const text = await streamResp.text();
