@@ -271,7 +271,11 @@ export default function AIChat() {
   const { data: settings } = useQuery({
     queryKey: ['settings-telegram'],
     queryFn: async () => {
-      const { data } = await supabase.from('app_settings').select('telegram_enabled, telegram_chat_id').eq('id', 1).single();
+      const { data } = await supabase
+        .from('app_settings')
+        .select('telegram_enabled, telegram_chat_id, ai_provider, ai_api_key, ai_model, ai_base_url')
+        .eq('id', 1)
+        .single();
       return data;
     },
   });
@@ -577,7 +581,17 @@ export default function AIChat() {
         const localResp = await fetch(`${LOCAL_WORKER_URL}/api/agent-run`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: agentPrompt, source: 'ai-chat', telegram_chat_id: resolvedChatId || null }),
+          body: JSON.stringify({
+            prompt: agentPrompt,
+            source: 'ai-chat',
+            telegram_chat_id: resolvedChatId || null,
+            chat_settings: settings ? {
+              provider: (settings as any).ai_provider,
+              apiKey: (settings as any).ai_api_key,
+              model: (settings as any).ai_model,
+              baseUrl: (settings as any).ai_base_url,
+            } : null,
+          }),
           signal: AbortSignal.timeout(5000),
         });
         const data = await localResp.json().catch(() => ({}));

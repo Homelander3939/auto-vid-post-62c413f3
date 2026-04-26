@@ -521,21 +521,23 @@ app.post('/api/telegram/send', async (req, res) => {
 
 app.post('/api/agent-run', async (req, res) => {
   try {
-    const { action, runId, prompt, source = 'local-web', telegram_chat_id = null } = req.body || {};
+    const { action, runId, prompt, source = 'local-web', telegram_chat_id = null, chat_settings = null, aiSettings = null } = req.body || {};
     if (action === 'cancel' && runId) {
       await supabase.from('agent_runs').update({ status: 'cancelled', completed_at: new Date().toISOString(), error: 'Cancelled by user' }).eq('id', runId);
       return res.json({ ok: true });
     }
     if (!prompt) return res.status(400).json({ error: 'prompt is required' });
+    const selectedAI = await resolveSelectedAIConfig(chat_settings || aiSettings || null);
     const { data, error } = await supabase.from('agent_runs').insert({
       prompt,
       source,
       telegram_chat_id,
+      chat_settings: chat_settings || aiSettings || null,
       status: 'running',
       events: [],
       result: null,
       error: null,
-      model: 'local-lmstudio',
+      model: `${selectedAI.provider}:${selectedAI.model}`,
     }).select('id').single();
     if (error) throw error;
     setImmediate(() => runLocalAgent(data.id).catch((err) => console.error('[LocalAgent] run failed:', err.message)));
@@ -668,6 +670,36 @@ function openAICompatEndpoint(provider, baseUrl) {
   throw new Error(`Provider ${provider} is not supported by the local worker chat path`);
 }
 
+function normalizeProviderName(value) {
+  return String(value || 'lmstudio').trim().toLowerCase() || 'lmstudio';
+}
+
+function normalizeLMStudioBaseUrl(value) {
+  return String(value || 'http://localhost:1234').trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
+}
+
+async function resolveSelectedAIConfig(override = null) {
+  const { data: saved } = await supabase.from('app_settings').select('ai_provider,ai_base_url,ai_api_key,ai_model').eq('id', 1).single();
+  const provider = normalizeProviderName(override?.provider || saved?.ai_provider || 'lmstudio');
+  if (provider === 'lovable') throw new Error('Lovable AI is disabled for local-worker mode. Select LM Studio or your own API key provider in Settings.');
+
+  if (provider === 'lmstudio') {
+    const savedLm = override ? null : await refreshLMStudioConfigFromSettings(supabase);
+    const baseUrl = normalizeLMStudioBaseUrl(override?.baseUrl || saved?.ai_base_url || savedLm?.url || process.env.LM_STUDIO_URL || 'http://localhost:1234');
+    const model = String(override?.model || saved?.ai_model || savedLm?.model || process.env.LM_STUDIO_MODEL || '').trim();
+    const apiKey = String(override?.apiKey || saved?.ai_api_key || savedLm?.apiKey || process.env.LM_STUDIO_API_KEY || 'lm-studio').trim();
+    if (!model) throw new Error('No LM Studio model selected. Load a model in LM Studio or choose one in Settings.');
+    return { provider, baseUrl, model, apiKey, label: `lmstudio · ${model}` };
+  }
+
+  const model = String(override?.model || saved?.ai_model || '').trim();
+  const apiKey = String(override?.apiKey || saved?.ai_api_key || '').trim();
+  const baseUrl = String(override?.baseUrl || saved?.ai_base_url || '').trim();
+  if (!model) throw new Error(`No model selected for ${provider}`);
+  if (!apiKey) throw new Error(`API key is required for ${provider}`);
+  return { provider, baseUrl, model, apiKey, label: `${provider} · ${model}` };
+}
+
 function createSseController(res) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -687,15 +719,8 @@ async function appendGenerationEvent(jobId, event, data) {
   }
 }
 
-async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 2048, temperature = 0.4 } = {}) {
-  const { data: saved } = await supabase.from('app_settings').select('ai_provider,ai_base_url,ai_api_key,ai_model').eq('id', 1).single();
-  const provider = saved?.ai_provider || 'lmstudio';
-  if (provider === 'lovable') throw new Error('Lovable AI is disabled for local mode. Select LM Studio or your own API key provider in Settings.');
-  const config = provider === 'lmstudio'
-    ? await refreshLMStudioConfigFromSettings(supabase)
-    : { url: saved?.ai_base_url || '', model: saved?.ai_model, apiKey: saved?.ai_api_key };
-  if (!config.model) throw new Error(`No model selected for ${provider}`);
-  if (provider !== 'lmstudio' && !config.apiKey) throw new Error(`API key is required for ${provider}`);
+async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 2048, temperature = 0.4, aiSettings = null } = {}) {
+  const config = await resolveSelectedAIConfig(aiSettings);
   const buildBody = (model) => ({
     model,
     messages,
@@ -704,29 +729,33 @@ async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 
     temperature,
     max_tokens,
   });
-  const endpoint = openAICompatEndpoint(provider, config.url);
-  const call = async (model) => fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey || 'lm-studio'}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(buildBody(model)),
-  });
-  let response = await call(config.model);
-  let text = await response.text();
-  if (provider === 'lmstudio' && !response.ok && /model|not found|unloaded|cannot find/i.test(text)) {
-    const base = String(config.url).replace(/\/+$/, '').replace(/\/v1$/i, '');
-    const loaded = await discoverLMStudioModels(base, config.apiKey || 'lm-studio').catch(() => []);
-    const fallbackModel = loaded[0]?.id;
-    if (fallbackModel && fallbackModel !== config.model) {
-      console.warn(`[AI] Saved LM Studio model unavailable (${config.model}); retrying loaded model ${fallbackModel}`);
-      response = await call(fallbackModel);
-      text = await response.text();
+  const bases = config.provider === 'lmstudio'
+    ? [...new Set([config.baseUrl, process.env.LM_STUDIO_URL, 'http://localhost:1234', 'http://127.0.0.1:1234'].filter(Boolean).map(normalizeLMStudioBaseUrl))]
+    : [config.baseUrl];
+  let lastError = '';
+  for (const base of bases) {
+    const endpoint = openAICompatEndpoint(config.provider, base);
+    const call = async (model) => fetch(endpoint, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.apiKey || 'lm-studio'}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildBody(model)),
+    });
+    let response;
+    try { response = await call(config.model); } catch (err) { lastError = `${config.provider} network error at ${base || endpoint}: ${err.message}`; continue; }
+    let text = await response.text();
+    if (config.provider === 'lmstudio' && !response.ok && /model|not found|unloaded|cannot find/i.test(text)) {
+      const loaded = await discoverLMStudioModels(base, config.apiKey || 'lm-studio').catch(() => []);
+      const fallbackModel = loaded[0]?.id;
+      if (fallbackModel && fallbackModel !== config.model) {
+        console.warn(`[AI] Saved LM Studio model unavailable (${config.model}); retrying loaded model ${fallbackModel}`);
+        response = await call(fallbackModel);
+        text = await response.text();
+      }
     }
+    if (response.ok) return JSON.parse(text || '{}');
+    lastError = `${config.provider} returned ${response.status}: ${text.slice(0, 300)}`;
   }
-  if (!response.ok) throw new Error(`${provider} returned ${response.status}: ${text.slice(0, 300)}`);
-  return JSON.parse(text || '{}');
+  throw new Error(lastError || `${config.provider} request failed`);
 }
 
 function slugifyAgentRun(s) {
@@ -768,12 +797,12 @@ async function runLocalAgent(runId) {
   const { data: run } = await supabase.from('agent_runs').select('*').eq('id', runId).single();
   if (!run) return;
   const settings = await getSettings().catch(() => null);
-  const config = await refreshLMStudioConfigFromSettings(supabase);
+  const config = await resolveSelectedAIConfig(run.chat_settings || null);
   const workspaceSlug = slugifyAgentRun(run.prompt);
   try {
-    await appendAgentEvent(runId, { type: 'preflight_ok', component: 'local_worker', alive: true, message: `Local worker connected · ${config.model}` });
-    await appendAgentEvent(runId, { type: 'tool_call', name: 'plan', label: 'local plan' });
-    await appendAgentEvent(runId, { type: 'plan', steps: ['Use local LM Studio', 'Use local browser/tools when needed', 'Return final result without cloud AI credits'] });
+    await appendAgentEvent(runId, { type: 'preflight_ok', component: 'local_worker', alive: true, message: `Local worker connected · ${config.label}` });
+    await appendAgentEvent(runId, { type: 'tool_call', name: 'plan', label: `${config.provider} plan` });
+    await appendAgentEvent(runId, { type: 'plan', steps: [`Use selected LLM provider: ${config.label}`, 'Use local browser/tools when needed', 'Return final result without Lovable AI credits'] });
     await appendAgentEvent(runId, { type: 'tool_result', name: 'plan', ok: true, summary: 'Local plan recorded.' });
 
     let researchContext = '';
@@ -789,9 +818,9 @@ async function runLocalAgent(runId) {
     }
 
     const reply = await localChatCompletion([
-      { role: 'system', content: 'You are a local autonomous agent running only on the user PC through LM Studio. Do not mention cloud credits. Be concise and include useful sources when provided.' },
+      { role: 'system', content: `You are a local-worker autonomous agent using the selected LLM provider (${config.label}). Do not mention cloud credits. Be concise and include useful sources when provided.` },
       { role: 'user', content: `${run.prompt}${researchContext ? `\n\nLocal research sources:\n${researchContext}` : ''}` },
-    ], { max_tokens: 1800, temperature: 0.4 });
+    ], { max_tokens: 1800, temperature: 0.4, aiSettings: run.chat_settings || null });
     const summary = reply?.choices?.[0]?.message?.content || 'Done.';
     await appendAgentEvent(runId, { type: 'finish', summary });
     await setAgentRunStatus(runId, { status: 'completed', completed_at: new Date().toISOString(), result: { summary } });
@@ -823,11 +852,11 @@ function parseJsonFromText(text, fallback = {}) {
   return fallback;
 }
 
-async function localJsonLLM(systemPrompt, userPrompt, fallback = {}) {
+async function localJsonLLM(systemPrompt, userPrompt, fallback = {}, aiSettings = null) {
   const data = await localChatCompletion([
     { role: 'system', content: `${systemPrompt}\nReturn valid JSON only. No markdown.` },
     { role: 'user', content: userPrompt },
-  ], { temperature: 0.35, max_tokens: 2200 });
+  ], { temperature: 0.35, max_tokens: 2200, aiSettings });
   return parseJsonFromText(data?.choices?.[0]?.message?.content || '', fallback);
 }
 
@@ -967,7 +996,7 @@ app.post('/api/image/models', async (req, res) => {
 });
 
 app.post('/api/generate-social-post', async (req, res) => {
-  const { prompt, platforms = [], includeImage = true, stream = true, telegram_chat_id = null } = req.body || {};
+  const { prompt, platforms = [], includeImage = true, stream = true, telegram_chat_id = null, aiSettings = null } = req.body || {};
   if (!prompt || !Array.isArray(platforms) || platforms.length === 0) {
     return res.status(400).json({ error: 'prompt and platforms are required' });
   }
@@ -993,16 +1022,17 @@ app.post('/api/generate-social-post', async (req, res) => {
     jobId = jobRow.id;
 
     await emit('job', { id: jobId });
-    const config = await refreshLMStudioConfigFromSettings(supabase);
-    await emit('step', { id: 'init', emoji: '🚀', label: `Connecting to local LM Studio…`, status: 'active' });
-    await emit('step', { id: 'init', emoji: '✅', label: `Connected · ${config.model}`, status: 'done' });
-    await emit('tool', { kind: 'llm', name: 'lmstudio', detail: config.model });
+    const config = await resolveSelectedAIConfig(aiSettings);
+    await emit('step', { id: 'init', emoji: '🚀', label: `Connecting to ${config.provider} through local worker…`, status: 'active' });
+    await emit('step', { id: 'init', emoji: '✅', label: `Connected · ${config.label}`, status: 'done' });
+    await emit('tool', { kind: 'llm', name: config.provider, detail: config.model });
 
     await emit('step', { id: 'plan', emoji: '🧠', label: 'Planning research strategy…', status: 'active' });
     const plan = await localJsonLLM(
       'You plan a real-time social post research workflow.',
       `Create JSON with keys: queries (array of 2-4 web search queries), imageQuery (string), imageStrategy (real_photo or none), angle (string), needsResearch (boolean). User request: ${prompt}. Platforms: ${platforms.join(', ')}.`,
       { queries: [prompt], imageQuery: prompt, imageStrategy: includeImage ? 'real_photo' : 'none', angle: prompt, needsResearch: true },
+      aiSettings,
     );
     const queries = (Array.isArray(plan.queries) && plan.queries.length ? plan.queries : [prompt]).slice(0, 4);
     const imageStrategy = includeImage ? (plan.imageStrategy || 'real_photo') : 'none';
@@ -1030,6 +1060,7 @@ app.post('/api/generate-social-post', async (req, res) => {
       'You are a senior social media manager. Write platform-specific posts from researched sources. Hashtags must be arrays without # symbols.',
       `Return JSON exactly like {"variants":{"platform":{"description":"...","hashtags":["..."]}}}. Platforms: ${platforms.join(', ')}. User goal: ${prompt}. Angle: ${plan.angle || prompt}. Sources: ${sources.slice(0, 8).map((s, i) => `[${i + 1}] ${s.title} - ${s.snippet || ''} (${s.url})`).join('\n')}`,
       { variants: {} },
+      aiSettings,
     );
     const variants = write.variants || {};
     await emit('step', { id: 'write', emoji: '✨', label: `Wrote ${Object.keys(variants).length} platform variants`, status: 'done' });
@@ -1072,8 +1103,8 @@ app.post('/api/generate-social-post', async (req, res) => {
       if (savedPostId) await emit('saved', { id: savedPostId, status: 'draft' });
     }
 
-    const result = { variants, sources: sources.slice(0, 8), imageUrl, imagePath, provider: 'lmstudio', model: config.model };
-    await emit('step', { id: 'done', emoji: '🎉', label: 'All done — generated locally and saved as draft!', status: 'done' });
+    const result = { variants, sources: sources.slice(0, 8), imageUrl, imagePath, provider: config.provider, model: config.model };
+    await emit('step', { id: 'done', emoji: '🎉', label: 'All done — generated through local worker and saved as draft!', status: 'done' });
     await emit('done', result);
     await supabase.from('generation_jobs').update({ status: 'completed', result, saved_post_id: savedPostId, completed_at: new Date().toISOString() }).eq('id', jobId);
     const settings = await getSettings().catch(() => null);
