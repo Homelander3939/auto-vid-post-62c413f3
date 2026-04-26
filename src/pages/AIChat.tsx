@@ -913,7 +913,7 @@ Open the activity panel on the right if you want to follow the process flow whil
                 <Activity className={`h-4 w-4 ${hasRunning ? 'animate-pulse text-primary' : 'text-muted-foreground'}`} />
                 <h2 className="text-sm font-semibold">Live Process Flow</h2>
               </div>
-              <Link to="/upload-queue">
+              <Link to="/queue">
                 <Button variant="ghost" size="sm" className="h-7 gap-1 text-[11px] text-muted-foreground hover:text-foreground">
                   <ListChecks className="h-3 w-3" />
                   Job Queue
@@ -941,7 +941,7 @@ Open the activity panel on the right if you want to follow the process flow whil
                   Ask for research, an app build, content generation, or any workflow — the agent will spin up here with live tool steps.
                 </p>
                 {(recentAgentRuns?.length ?? 0) > 0 && (
-                  <Link to="/upload-queue" className="mt-4">
+                  <Link to="/queue" className="mt-4">
                     <Button variant="outline" size="sm" className="gap-1.5 text-xs">
                       <ListChecks className="h-3 w-3" />
                       View {recentAgentRuns?.length} past run{(recentAgentRuns?.length ?? 0) > 1 ? 's' : ''}
@@ -960,7 +960,7 @@ Open the activity panel on the right if you want to follow the process flow whil
           <div className="flex items-center gap-2">
             <Activity className="h-4 w-4 animate-pulse text-primary" />
             <span className="text-xs font-medium">{runningRuns.length} agent run{runningRuns.length > 1 ? 's' : ''} active</span>
-            <Link to="/upload-queue" className="ml-auto">
+            <Link to="/queue" className="ml-auto">
               <Button variant="outline" size="sm" className="h-7 text-[11px]">View</Button>
             </Link>
           </div>
