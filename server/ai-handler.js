@@ -309,7 +309,7 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
     // 1a) Brave first
     if ((researchProvider === 'brave' || researchProvider === 'auto') && researchKey) {
       try {
-        const br = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(prompt)}&count=8`, {
+        const br = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(prompt)}&count=12`, {
           headers: { 'X-Subscription-Token': researchKey, Accept: 'application/json' },
         });
         if (br.ok) {
@@ -320,12 +320,12 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
         }
       } catch {}
     }
-    // 1b) DuckDuckGo / browser fallback
-    if (sources.length < 5) {
+    // 1b) DuckDuckGo / browser fallback — always run so we combine with Brave for ≥10 sources.
+    {
       try {
         const r = await fetch(`http://localhost:${port}/api/research/search`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: prompt, count: 8 }),
+          body: JSON.stringify({ query: prompt, count: 12 }),
         });
         const data = await r.json().catch(() => ({}));
         (data.results || []).forEach((s) => { if (s?.url && !seen.has(s.url)) { seen.add(s.url); sources.push(s); } });
@@ -336,7 +336,7 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
 
     // 2) Deep-read up to 6 top pages
     await appendEvent({ type: 'phase', name: 'read-sources' });
-    await Promise.all(sources.slice(0, 6).map(async (s) => {
+    await Promise.all(sources.slice(0, 10).map(async (s) => {
       try {
         const r = await fetch(s.url, {
           headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LovableAgent/1.0)' },
@@ -351,7 +351,7 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
         if (text.length > 200) s.content = text;
       } catch {}
     }));
-    const readCount = sources.slice(0, 6).filter((s) => s.content).length;
+    const readCount = sources.slice(0, 10).filter((s) => s.content).length;
     await appendEvent({ type: 'tool_result', name: 'deep_read', ok: readCount > 0, summary: `Extracted readable text from ${readCount} pages` });
 
     // 3) Hero image
@@ -808,6 +808,18 @@ async function executeTool(supabase, name, args) {
       return `Stats check queued for ${platform === 'all' ? 'all platforms' : platform}! Results will arrive via Telegram within 60 seconds.`;
     }
     case 'open_browser': {
+      // If the task is research-style ("look up X", "find latest", etc.), run the
+      // real deep-research pipeline synchronously and return the report inline so
+      // the chat reply contains the actual answer instead of a "queued" placeholder.
+      const taskText = String(args.task || '').trim();
+      if (taskText && looksLikeResearchRequest(taskText)) {
+        try {
+          const report = await runDeepResearchForTelegram(taskText, null, supabase);
+          return report || 'Research finished but produced no output.';
+        } catch (e) {
+          return `Research failed: ${e.message}`;
+        }
+      }
       const { error } = await supabase.from('pending_commands').insert({
         command: 'open_browser',
         args: { task: args.task, url: args.url || null },
@@ -944,11 +956,53 @@ async function callLMStudioWithTools(messages, supabase, maxRounds = 3) {
   return 'Actions executed.';
 }
 
+/* ── Build a Response that streams a static text body via SSE chunks. ─── */
+function makeSseStreamFromText(text) {
+  const encoder = new TextEncoder();
+  const id = `local-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+  const stream = new ReadableStream({
+    start(controller) {
+      // Stream in ~600-char chunks so the UI feels live.
+      const chunks = String(text || '').match(/[\s\S]{1,600}/g) || [''];
+      for (const chunk of chunks) {
+        const payload = {
+          id, object: 'chat.completion.chunk', created,
+          model: LM_STUDIO_MODEL || 'local',
+          choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
+        };
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+      }
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+      controller.close();
+    },
+  });
+  return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+}
+
 /* ── Streaming call to LM Studio (for web UI) ─── */
 async function streamLMStudio(messages, supabase) {
   await refreshLMStudioConfigFromSettings(supabase);
   const appContext = await getAppContext(supabase);
   const systemPrompt = buildSystemPrompt(appContext, false);
+
+  // If the latest user message is a research/deep-dive request, run the real
+  // deterministic deep-research pipeline (search → fetch sources → LLM report,
+  // saved as an agent_run for the Job Queue) and stream back the markdown report
+  // as a single SSE message so the chat shows the actual answer instead of
+  // letting the LLM hallucinate a "queued" placeholder.
+  const lastUser = [...messages].reverse().find((m) => m?.role === 'user');
+  const lastUserText = typeof lastUser?.content === 'string' ? lastUser.content : '';
+  if (lastUserText && looksLikeResearchRequest(lastUserText)) {
+    let chatId = null;
+    try {
+      const { data: s } = await supabase.from('app_settings')
+        .select('telegram_enabled,telegram_chat_id').eq('id', 1).single();
+      if (s?.telegram_enabled && s?.telegram_chat_id) chatId = String(s.telegram_chat_id);
+    } catch {}
+    const report = await runDeepResearchForTelegram(lastUserText, chatId, supabase);
+    return makeSseStreamFromText(report || 'Research returned no output.');
+  }
 
   const fullMessages = [
     { role: 'system', content: systemPrompt },

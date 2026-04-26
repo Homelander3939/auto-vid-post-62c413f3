@@ -1814,8 +1814,21 @@ app.post('/api/ai-chat', async (req, res) => {
 
     if (streamResp.body && typeof streamResp.body.pipe === 'function') {
       streamResp.body.pipe(res);
-    } else if (streamResp.body) {
-      streamResp.body.pipe(res);
+    } else if (streamResp.body && typeof streamResp.body.getReader === 'function') {
+      // Web ReadableStream (e.g. from our local SSE wrapper) — pump to the Node response.
+      const reader = streamResp.body.getReader();
+      const pump = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            res.write(Buffer.from(value));
+          }
+        } finally {
+          res.end();
+        }
+      };
+      pump();
     } else {
       const text = await streamResp.text();
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
