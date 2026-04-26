@@ -5,6 +5,7 @@ const { execSync } = require('child_process');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } = require('./smart-agent');
 const { getSharedBrowserProfileDir } = require('../browserProfiles');
+const { dismissOverlayBlockingFlow } = require('./overlay-dismiss');
 
 /**
  * Pre-process video to 9:16 (1080x1920) with black padding using ffmpeg.
@@ -1738,6 +1739,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       return false;
     };
 
+    let stuckIterations = 0;
     for (let i = 0; i < 5; i++) {
       await page.waitForTimeout(2000);
 
@@ -1944,7 +1946,20 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
 
       // Don't break early on a failed click when we know which step we're on and it needs retries.
       // Only break if Next wasn't found AND we're on an unknown/filter step (no special retry needed).
-      if (!clicked && !onEditScreen && !onCropScreen) break;
+      if (!clicked) {
+        stuckIterations += 1;
+        // After 2 consecutive stuck iterations, an Instagram tip/announcement overlay
+        // (e.g. "Video posts are now shared as reels") may be blocking interaction.
+        // Try to dismiss it before continuing.
+        if (stuckIterations >= 2) {
+          console.log('[Instagram] Stuck for 2+ iterations — attempting to dismiss tip overlay');
+          await dismissOverlayBlockingFlow(page, { logPrefix: '[Instagram]' });
+          stuckIterations = 0;
+        }
+        if (!onEditScreen && !onCropScreen) break;
+      } else {
+        stuckIterations = 0;
+      }
       await page.waitForTimeout(2000);
     }
 
