@@ -497,6 +497,25 @@ function AgentRunRow({ run, onCancel, onDelete }: { run: AgentRun; onCancel: (id
               </div>
             )}
             {run.error && <div className="text-destructive">{run.error}</div>}
+            {(run as any).result?.kind === 'deep-research' && (
+              <div className="border-t pt-2 mt-2 space-y-2">
+                <div className="font-medium text-muted-foreground">Research report</div>
+                {(run as any).result?.image_url && (
+                  <img src={(run as any).result.image_url} alt="" className="w-full max-h-48 rounded-md object-cover border" />
+                )}
+                <pre className="whitespace-pre-wrap text-[11px] leading-relaxed max-h-72 overflow-y-auto bg-muted/40 p-2 rounded-md font-sans">{(run as any).result.report}</pre>
+                {Array.isArray((run as any).result?.sources) && (run as any).result.sources.length > 0 && (
+                  <div className="space-y-0.5">
+                    <div className="font-medium text-muted-foreground">Sources</div>
+                    {(run as any).result.sources.map((s: any) => (
+                      <a key={s.index} href={s.url} target="_blank" rel="noreferrer" className="block text-primary hover:underline truncate">
+                        [{s.index}] {s.title || s.url}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </CardContent>
