@@ -649,6 +649,7 @@ ${formatting}`;
 
 /* ── Call LM Studio with tool support ─── */
 async function callLMStudioWithTools(messages, supabase, maxRounds = 3) {
+  await refreshLMStudioConfigFromSettings(supabase);
   const fullMessages = [...messages];
 
   for (let round = 0; round < maxRounds; round++) {
@@ -693,6 +694,7 @@ async function callLMStudioWithTools(messages, supabase, maxRounds = 3) {
 
 /* ── Streaming call to LM Studio (for web UI) ─── */
 async function streamLMStudio(messages, supabase) {
+  await refreshLMStudioConfigFromSettings(supabase);
   const appContext = await getAppContext(supabase);
   const systemPrompt = buildSystemPrompt(appContext, false);
 
