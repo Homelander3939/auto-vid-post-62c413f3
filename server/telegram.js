@@ -43,12 +43,15 @@ async function sendChatActionViaBotToken(botToken, chatId, action = 'typing') {
 
 async function sendPhotoViaBotToken(botToken, chatId, photoBuffer, caption = '') {
   if (!botToken) throw new Error('Telegram bot token is required');
+  if (typeof globalThis.fetch !== 'function' || typeof FormData === 'undefined' || typeof Blob === 'undefined') {
+    throw new Error('Direct photo upload requires Node 18+ fetch/FormData support');
+  }
   const form = new FormData();
   form.append('chat_id', String(chatId));
   if (caption) form.append('caption', caption);
   form.append('parse_mode', 'HTML');
   form.append('photo', new Blob([photoBuffer], { type: 'image/png' }), 'photo.png');
-  const res = await fetch(`https://api.telegram.org/bot${botToken}/sendPhoto`, { method: 'POST', body: form });
+  const res = await globalThis.fetch(`https://api.telegram.org/bot${botToken}/sendPhoto`, { method: 'POST', body: form });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data?.ok === false) {
     throw new Error(`Telegram photo error [${res.status}]: ${JSON.stringify(data)}`);
