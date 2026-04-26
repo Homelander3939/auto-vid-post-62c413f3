@@ -309,7 +309,7 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
     // 1a) Brave first
     if ((researchProvider === 'brave' || researchProvider === 'auto') && researchKey) {
       try {
-        const br = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(prompt)}&count=8`, {
+        const br = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(prompt)}&count=12`, {
           headers: { 'X-Subscription-Token': researchKey, Accept: 'application/json' },
         });
         if (br.ok) {
@@ -320,12 +320,12 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
         }
       } catch {}
     }
-    // 1b) DuckDuckGo / browser fallback
-    if (sources.length < 5) {
+    // 1b) DuckDuckGo / browser fallback — always run so we combine with Brave for ≥10 sources.
+    {
       try {
         const r = await fetch(`http://localhost:${port}/api/research/search`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: prompt, count: 8 }),
+          body: JSON.stringify({ query: prompt, count: 12 }),
         });
         const data = await r.json().catch(() => ({}));
         (data.results || []).forEach((s) => { if (s?.url && !seen.has(s.url)) { seen.add(s.url); sources.push(s); } });
