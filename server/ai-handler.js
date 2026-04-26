@@ -195,8 +195,19 @@ function looksLikeSocialPostRequest(text) {
 
 function looksLikeAgenticRequest(text) {
   return /\b(open|use|run)\b[\s\S]{0,40}\bbrowser\b/i.test(text)
-    || /\b(research|find out|latest|news|scrape|analy[sz]e|investigate)\b/i.test(text)
-    || /\b(send me|telegram|report back|summari[sz]e)\b[\s\S]{0,80}\b(top|latest|research|news|results?)\b/i.test(text);
+    || /\b(send me|telegram|report back)\b[\s\S]{0,80}\b(top|latest|news|results?)\b/i.test(text);
+}
+
+// Match real "do research / deep dive / latest news on X / summarise X" prompts
+// so we run a deterministic deep-research pipeline (search → fetch top pages →
+// extract text → LLM-write a markdown report → save as agent_run → send to Telegram)
+// instead of letting the LLM hallucinate a "task queued" placeholder reply.
+function looksLikeResearchRequest(text) {
+  const t = String(text || '');
+  if (!t.trim()) return false;
+  return /\b(research|deep[- ]?dive|investigate|summari[sz]e|find out|look up|report on|compare|analy[sz]e)\b/i.test(t)
+    || /\b(latest|recent|news)\b[\s\S]{0,80}\b(about|on|of|for|in)\b/i.test(t)
+    || /\b(what'?s\s+(?:happening|new))\b/i.test(t);
 }
 
 function extractSocialPlatforms(text) {
