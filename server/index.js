@@ -1150,11 +1150,17 @@ app.post('/api/generate-social-post', async (req, res) => {
     if (settings?.telegram?.enabled) {
       const originalChat = settings.telegram.chatId;
       if (telegram_chat_id) settings.telegram.chatId = String(telegram_chat_id);
-      const firstPlatform = platforms.find((p) => variants[p]) || Object.keys(variants)[0];
-      const first = firstPlatform ? variants[firstPlatform] : null;
-      const tags = Array.isArray(first?.hashtags) && first.hashtags.length ? `\n#${first.hashtags.slice(0, 8).join(' #')}` : '';
-      const sourceText = sources.length ? `\n\nSources:\n${sources.slice(0, 5).map((src, i) => `${i + 1}. ${src.title || src.url}\n${src.url || ''}`).join('\n')}` : '';
-      await notifyTelegram(settings, `✅ AI post generated locally (${platforms.join(', ')})\n\n${first?.description || 'Draft saved.'}${tags}${sourceText}`);
+      // Comprehensive multi-platform summary so user sees ALL drafts + direct link in Telegram
+      const variantBlocks = platforms.map((p) => {
+        const v = variants[p];
+        if (!v) return '';
+        const tags = Array.isArray(v.hashtags) && v.hashtags.length ? `\n#${v.hashtags.slice(0, 8).join(' #')}` : '';
+        return `━━━ ${p.toUpperCase()} ━━━\n${v.description || ''}${tags}`;
+      }).filter(Boolean).join('\n\n');
+      const sourceText = sources.length ? `\n\n📚 Sources:\n${sources.slice(0, 5).map((src, i) => `${i + 1}. ${src.title || src.url}\n${src.url || ''}`).join('\n')}` : '';
+      const draftLink = savedPostId ? `\n\n🔗 Open draft: ${process.env.PUBLIC_APP_URL || 'http://localhost:8081'}/social?post=${savedPostId}` : '';
+      const imgLine = imageUrl ? `\n\n🖼 Image: ${imageUrl}` : '';
+      await notifyTelegram(settings, `✅ AI post generated (${platforms.join(', ')})\n\n${variantBlocks}${imgLine}${sourceText}${draftLink}`);
       settings.telegram.chatId = originalChat;
     }
     if (stream) res.end(); else res.json(result);
