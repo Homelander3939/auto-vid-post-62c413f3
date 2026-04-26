@@ -29,6 +29,7 @@ const { sendTelegram } = require('./telegram');
 const { scanFolder, scanAllFiles } = require('./folderWatcher');
 const { parseTextFile } = require('./textParser');
 const { processTelegramAIResponse, streamLMStudio, LM_STUDIO_URL, discoverLMStudioModels, refreshLMStudioConfigFromSettings, testLMStudioConnection } = require('./ai-handler');
+const { handleAgentCommand } = require('./agentWorkspace');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
@@ -486,6 +487,30 @@ app.get('/', (req, res) => {
 });
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
+
+app.post('/api/telegram/send', async (req, res) => {
+  try {
+    const settings = await getSettings();
+    const chatId = req.body?.chat_id || settings.telegram?.chatId;
+    if (!settings.telegram?.enabled || !settings.telegram?.botToken) {
+      return res.status(400).json({ success: false, error: 'Telegram is not configured locally. Add your bot token in Settings.' });
+    }
+    if (req.body?.action) {
+      const { sendChatActionViaBotToken } = require('./telegram');
+      await sendChatActionViaBotToken(settings.telegram.botToken, chatId, req.body.action);
+      return res.json({ success: true });
+    }
+    if (req.body?.photo_base64) {
+      const { sendTelegramPhoto } = require('./telegram');
+      await sendTelegramPhoto(settings.telegram.botToken, chatId, Buffer.from(req.body.photo_base64, 'base64'), req.body?.text || '', null);
+      return res.json({ success: true });
+    }
+    await sendTelegram(settings.telegram.botToken, chatId, req.body?.text || '', null);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 const LOCAL_DB_TABLES = new Set([
   'app_settings', 'platform_accounts', 'upload_jobs', 'scheduled_uploads', 'schedule_config',
