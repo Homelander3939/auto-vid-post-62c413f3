@@ -86,7 +86,8 @@ async function getSettings() {
     tiktok: { email: data.tiktok_email, password: data.tiktok_password, enabled: data.tiktok_enabled },
     instagram: { email: data.instagram_email, password: data.instagram_password, enabled: data.instagram_enabled },
     telegram: { botToken: data.telegram_bot_token, chatId: resolvedChatId, enabled: data.telegram_enabled },
-    backend: { supabaseUrl: SUPABASE_URL, supabaseKey: SUPABASE_KEY },
+    local_agent_url: data.local_agent_url || 'http://localhost:3001',
+    backend: null,
   };
 }
 
@@ -900,8 +901,44 @@ app.post('/api/ai/test', async (req, res) => {
   }
 });
 
+app.post('/api/agent/test', async (req, res) => {
+  try {
+    const { kind = 'research', provider = 'local', apiKey = '', model = '' } = req.body || {};
+    if (kind === 'research') {
+      const r = await fetch(`http://localhost:${PORT}/api/research/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: 'test', count: 1 }),
+      });
+      const data = await r.json().catch(() => ({}));
+      return res.json({ ok: r.ok, provider: data.provider || provider || 'local', sample: data.results?.[0]?.title || 'local research ready' });
+    }
+    if (provider && provider !== 'auto' && provider !== 'local' && provider !== 'lovable') {
+      const result = await testProviderConnection({ provider, apiKey, model: model || 'test' });
+      return res.json(result);
+    }
+    res.json({ ok: true, provider: 'local', sample: 'local image/browser tools ready' });
+  } catch (err) {
+    res.status(200).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/image/models', async (req, res) => {
+  const { provider = 'local' } = req.body || {};
+  const map = {
+    xai: ['grok-2-image', 'grok-2-image-1212'],
+    openai: ['gpt-image-1', 'dall-e-3'],
+    google: ['imagen-4.0-generate-preview-06-06', 'gemini-2.5-flash-image'],
+    nvidia: ['stable-diffusion-3-medium'],
+    local: ['local-browser-image-search'],
+    auto: ['local-browser-image-search'],
+  };
+  const ids = map[provider] || map.local;
+  res.json({ models: ids.map((id) => ({ id, label: id, recommended: id.includes('local') })) });
+});
+
 app.post('/api/generate-social-post', async (req, res) => {
-  const { prompt, platforms = [], includeImage = true, stream = true } = req.body || {};
+  const { prompt, platforms = [], includeImage = true, stream = true, telegram_chat_id = null } = req.body || {};
   if (!prompt || !Array.isArray(platforms) || platforms.length === 0) {
     return res.status(400).json({ error: 'prompt and platforms are required' });
   }
@@ -1010,6 +1047,17 @@ app.post('/api/generate-social-post', async (req, res) => {
     await emit('step', { id: 'done', emoji: '🎉', label: 'All done — generated locally and saved as draft!', status: 'done' });
     await emit('done', result);
     await supabase.from('generation_jobs').update({ status: 'completed', result, saved_post_id: savedPostId, completed_at: new Date().toISOString() }).eq('id', jobId);
+    const settings = await getSettings().catch(() => null);
+    if (settings?.telegram?.enabled) {
+      const originalChat = settings.telegram.chatId;
+      if (telegram_chat_id) settings.telegram.chatId = String(telegram_chat_id);
+      const firstPlatform = platforms.find((p) => variants[p]) || Object.keys(variants)[0];
+      const first = firstPlatform ? variants[firstPlatform] : null;
+      const tags = Array.isArray(first?.hashtags) && first.hashtags.length ? `\n#${first.hashtags.slice(0, 8).join(' #')}` : '';
+      const sourceText = sources.length ? `\n\nSources:\n${sources.slice(0, 5).map((src, i) => `${i + 1}. ${src.title || src.url}\n${src.url || ''}`).join('\n')}` : '';
+      await notifyTelegram(settings, `✅ AI post generated locally (${platforms.join(', ')})\n\n${first?.description || 'Draft saved.'}${tags}${sourceText}`);
+      settings.telegram.chatId = originalChat;
+    }
     if (stream) res.end(); else res.json(result);
   } catch (err) {
     console.error('[AI Post] Local generation failed:', err.message);
@@ -1968,7 +2016,12 @@ async function processPendingCommands() {
             // Process Telegram AI response locally via LM Studio
             const settings = await getSettings();
             console.log(`[Commands] ai_response: processing Telegram message from chat ${cmd.args?.chat_id}`);
-            await processTelegramAIResponse(supabase, cmd.args, sendTelegram, settings.backend);
+            await processTelegramAIResponse(
+              supabase,
+              cmd.args,
+              (_botToken, chatId, message) => sendTelegram(settings.telegram.botToken, chatId, message, null),
+              null,
+            );
             await supabase.from('pending_commands').update({
               status: 'completed', result: 'ai_reply_sent', completed_at: new Date().toISOString(),
             }).eq('id', cmd.id);
@@ -2165,6 +2218,30 @@ function setupCron() {
 app.post('/api/refresh-cron', (req, res) => {
   setupCron();
   res.json({ ok: true });
+});
+
+app.post('/api/generation-schedules/run-now', async (req, res) => {
+  try {
+    const { scheduleId } = req.body || {};
+    const { data: schedule, error } = await supabase.from('social_post_schedules').select('*').eq('id', scheduleId).single();
+    if (error || !schedule) return res.status(404).json({ error: 'Schedule not found' });
+    const result = await fetch(`http://localhost:${PORT}/api/generate-social-post`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: schedule.ai_prompt,
+        platforms: schedule.target_platforms || ['x', 'linkedin', 'facebook'],
+        includeImage: schedule.include_image !== false,
+        stream: false,
+      }),
+    });
+    const data = await result.json().catch(() => ({}));
+    if (!result.ok || data?.error) return res.status(500).json({ error: data?.error || 'Local generation failed' });
+    await supabase.from('social_post_schedules').update({ last_run_at: new Date().toISOString(), run_count: (Number(schedule.run_count) || 0) + 1 }).eq('id', scheduleId);
+    res.json({ ok: true, result: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Start ---

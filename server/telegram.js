@@ -88,27 +88,11 @@ async function sendTelegram(botToken, chatId, message, backend) {
     return null;
   }
 
-  let botTokenError = null;
-  if (botToken) {
-    try {
-      return await sendViaBotToken(botToken, normalizedChatId, { text: message });
-    } catch (e) {
-      botTokenError = e;
-      console.warn('[Telegram] Bot token send failed, trying edge-function fallback...');
-    }
+  if (!botToken) {
+    console.log('[Telegram] Skipped — no local bot token configured');
+    return null;
   }
-
-  if (backend?.supabaseUrl && backend?.supabaseKey) {
-    return sendViaEdgeFunction({
-      chat_id: normalizedChatId,
-      text: message,
-      parse_mode: 'HTML',
-    }, backend);
-  }
-
-  if (botTokenError) throw botTokenError;
-  console.log('[Telegram] Skipped — no bot token and no edge-function fallback configured');
-  return null;
+  return sendViaBotToken(botToken, normalizedChatId, { text: message });
 }
 
 async function sendTelegramPhoto(botToken, chatId, photoBuffer, caption = '', backend) {

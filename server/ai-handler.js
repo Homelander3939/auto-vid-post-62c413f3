@@ -169,22 +169,35 @@ function extractSocialPlatforms(text) {
   return platforms.length ? [...new Set(platforms)] : ['x', 'linkedin', 'facebook'];
 }
 
-async function invokeCloudFunction(backend, functionName, body) {
-  if (!backend?.supabaseUrl || !backend?.supabaseKey) {
-    throw new Error('Cloud function call unavailable: missing backend credentials');
+async function invokeLocalWorker(path, body, timeoutMs = 180_000) {
+  const port = process.env.PORT || 3001;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`http://localhost:${port}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.error) throw new Error(data?.error || `${path} failed with ${response.status}`);
+    return data;
+  } finally {
+    clearTimeout(timer);
   }
-  const response = await fetch(`${backend.supabaseUrl}/functions/v1/${functionName}`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${backend.supabaseKey}`,
-      'apikey': backend.supabaseKey,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data?.error || `${functionName} failed with ${response.status}`);
-  return data;
+}
+
+function summarizeGeneratedPost(data, platforms) {
+  const variants = data?.variants || {};
+  const firstPlatform = platforms.find((p) => variants[p]) || Object.keys(variants)[0];
+  const first = firstPlatform ? variants[firstPlatform] : null;
+  const tags = Array.isArray(first?.hashtags) && first.hashtags.length ? `\n#${first.hashtags.slice(0, 8).join(' #')}` : '';
+  const sources = Array.isArray(data?.sources) ? data.sources.slice(0, 5) : [];
+  const sourceText = sources.length
+    ? `\n\nSources:\n${sources.map((src, i) => `${i + 1}. ${src.title || src.url}\n${src.url || ''}`).join('\n')}`
+    : '';
+  return `✅ Post generation complete (${platforms.join(', ')})\n\n${first?.description || 'Draft saved.'}${tags}${sourceText}`.slice(0, 3900);
 }
 
 async function routeDeterministicTelegramTask(text, chatId, backend) {
@@ -193,21 +206,20 @@ async function routeDeterministicTelegramTask(text, chatId, backend) {
 
   if (looksLikeSocialPostRequest(clean)) {
     const platforms = extractSocialPlatforms(clean);
-    await invokeCloudFunction(backend, 'generate-social-post', {
+    const data = await invokeLocalWorker('/api/generate-social-post', {
       prompt: clean,
       platforms,
       includeImage: true,
-      stream: true,
+      stream: false,
     });
-    return `Started post-generation agent for: ${truncateText(clean)}\nPlatforms: ${platforms.join(', ')}\nI will send the draft here for approval when it is ready.`;
+    return summarizeGeneratedPost(data, platforms);
   }
 
   if (looksLikeAgenticRequest(clean)) {
-    const data = await invokeCloudFunction(backend, 'agent-run', {
+    const data = await invokeLocalWorker('/api/agent-run', {
       prompt: clean,
       source: 'telegram-local-router',
-      telegram_chat_id: chatId,
-    });
+    }, 15_000);
     return `Started local agent task: ${truncateText(clean)}\nRun ID: ${data.runId || 'created'}\nI will report progress and results here.`;
   }
 

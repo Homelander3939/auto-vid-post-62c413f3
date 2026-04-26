@@ -98,7 +98,6 @@ function isStoredMessage(value: unknown): value is Msg {
 
 /* ── Stream helper — local-worker-first, cloud fallback only if local is unavailable ── */
 
-const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`;
 const LOCAL_WORKER_URL = 'http://localhost:3001';
 
 async function isLocalWorkerAlive(): Promise<boolean> {
@@ -132,20 +131,19 @@ async function streamChat({
   onDone: () => void;
   onError: (err: string) => void;
 }) {
-  const useLocal = await isLocalWorkerAlive();
-  const resp = await fetch(useLocal ? `${LOCAL_WORKER_URL}/api/ai-chat` : CHAT_URL, {
+  if (!(await isLocalWorkerAlive())) {
+    onError('Local worker is not reachable on port 3001. Start smart-launcher.bat and retry. Cloud AI fallback is disabled.');
+    return;
+  }
+  const resp = await fetch(`${LOCAL_WORKER_URL}/api/ai-chat`, {
     method: 'POST',
-    headers: useLocal
-      ? { 'Content-Type': 'application/json' }
-      : { 'Content-Type': 'application/json', Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}` },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages }),
   });
 
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({ error: 'Request failed' }));
-    if (resp.status === 429) onError('Rate limit exceeded. Please wait a moment.');
-    else if (resp.status === 402) onError('Cloud fallback hit a credits error because the local worker was not reachable. Start the local server and retry.');
-    else onError(data.error || `Error ${resp.status}`);
+    onError(data.error || `Local worker error ${resp.status}`);
     return;
   }
 
@@ -352,10 +350,7 @@ export default function AIChat() {
     if (!telegramEnabled || !resolvedChatId || !text.trim()) return;
     try {
       const sentLocal = await sendLocalTelegram({ chat_id: resolvedChatId, text: text.slice(0, 3900) });
-      if (sentLocal) return;
-      await supabase.functions.invoke('send-telegram', {
-        body: { chat_id: resolvedChatId, text: text.slice(0, 3900) },
-      });
+      if (!sentLocal) throw new Error('Local Telegram send failed');
     } catch (e) {
       console.error('Mirror to Telegram failed:', e);
     }
@@ -390,15 +385,7 @@ export default function AIChat() {
         photo_mime_type: file.type || blob.type || 'image/png',
       };
       const sentLocal = await sendLocalTelegram(body);
-      if (sentLocal) return;
-      await supabase.functions.invoke('send-telegram', {
-        body: {
-          chat_id: resolvedChatId,
-          text: caption?.slice(0, 1000),
-          photo_base64: base64,
-          photo_mime_type: file.type || blob.type || 'image/png',
-        },
-      });
+      if (!sentLocal) throw new Error('Local Telegram photo send failed');
     } catch (error) {
       console.error('Mirror image to Telegram failed:', error);
     }
@@ -555,13 +542,7 @@ export default function AIChat() {
     if (telegramEnabled && resolvedChatId) {
       void mirrorBrowserMessage('You', text, pendingFiles);
       // Show "typing..." in Telegram while AI thinks
-      void sendLocalTelegram({ chat_id: resolvedChatId, action: 'typing' }).then((sentLocal) => {
-        if (!sentLocal) {
-          void supabase.functions.invoke('send-telegram', {
-            body: { chat_id: resolvedChatId, action: 'typing' },
-          });
-        }
-      });
+      void sendLocalTelegram({ chat_id: resolvedChatId, action: 'typing' });
     }
 
     let assistantSoFar = '';
@@ -596,13 +577,11 @@ export default function AIChat() {
         const localResp = await fetch(`${LOCAL_WORKER_URL}/api/agent-run`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: agentPrompt, source: 'ai-chat' }),
+          body: JSON.stringify({ prompt: agentPrompt, source: 'ai-chat', telegram_chat_id: resolvedChatId || null }),
           signal: AbortSignal.timeout(5000),
-        }).catch(() => null);
-        const data = localResp?.ok
-          ? await localResp.json()
-          : (await supabase.functions.invoke('agent-run', { body: { prompt: agentPrompt, source: 'ai-chat' } })).data;
-        const error = !localResp?.ok && !data ? new Error('Agent run did not start') : null;
+        });
+        const data = await localResp.json().catch(() => ({}));
+        const error = !localResp.ok ? new Error(data?.error || 'Local agent run did not start') : null;
         if (error || data?.error || !data?.runId) {
           throw new Error(data?.error || error?.message || 'Agent run did not start');
         }
