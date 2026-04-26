@@ -807,16 +807,8 @@ async function runAgentNonStreaming(
   for (let step = 0; step < maxSteps; step++) {
     let r = await makeReq(chatUrl, chatKey, model);
     if (!r.ok) {
-      // Fall back to Lovable Gateway with default model on any failure.
-      if (chatUrl !== AI_GATEWAY || model !== DEFAULT_LOVABLE_MODEL) {
-        const errText = await r.text();
-        console.warn(`runAgentNonStreaming: ${chatUrl}/${model} failed (${r.status}): ${errText.slice(0, 200)}, retrying with Lovable default`);
-        r = await makeReq(AI_GATEWAY, lovableKey, DEFAULT_LOVABLE_MODEL);
-      }
-      if (!r.ok) {
-        const t = await r.text();
-        throw new Error(`AI gateway ${r.status}: ${t.slice(0, 300)}`);
-      }
+      const t = await r.text();
+      throw new Error(`Configured local AI failed ${r.status}: ${t.slice(0, 300)}`);
     }
     const data = await r.json();
     const choice = data.choices?.[0];
@@ -857,89 +849,27 @@ serve(async (req) => {
     const body = await req.json();
     const { messages, telegram_chat_id, telegram_user_text } = body;
 
-    /* ── TELEGRAM MODE: single user text → reply directly to chat ── */
+    /* ── TELEGRAM MODE: queue to local worker only ── */
     if (telegram_chat_id && typeof telegram_user_text === 'string') {
-      const TELEGRAM_API_KEY = Deno.env.get('TELEGRAM_API_KEY');
-      if (!TELEGRAM_API_KEY) {
-        return new Response(JSON.stringify({ error: 'TELEGRAM_API_KEY not configured' }), {
-          status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-
-      // Pull recent telegram chat history for context
-      const { data: history } = await supabase
-        .from('telegram_messages')
-        .select('text,is_bot,created_at,raw_update')
-        .eq('chat_id', telegram_chat_id)
-        .order('created_at', { ascending: false })
-        .limit(10);
-
-      const ctx = await getAppContextFast(supabase, String(telegram_user_text || ''));
-      const sys = buildSystemPrompt(ctx, true);
-      const historyMsgs = ((history || []) as any[])
-        .reverse()
-        .filter((m) => m.text || m.raw_update?.media)
-        .map((m) => buildMessageForModel({
-          role: m.is_bot ? 'assistant' : 'user',
-          content: m.text || '',
-          images: m.raw_update?.media?.images || [],
-          files: m.raw_update?.media?.files || [],
-        }));
-      const newestTelegramMessage = ((history || []) as any[]).find((m) => !m.is_bot);
-      const fallbackTelegramMessage = {
-        text: telegram_user_text,
-        raw_update: { media: { images: [], files: [] } },
-      };
-      const currentTelegramMessage = newestTelegramMessage || fallbackTelegramMessage;
-      const currentUserMessage = buildMessageForModel({
-        role: 'user',
-        content: currentTelegramMessage.text || telegram_user_text,
-        images: currentTelegramMessage.raw_update?.media?.images || [],
-        files: currentTelegramMessage.raw_update?.media?.files || [],
-      });
-
-      const fullMessages = [
-        { role: 'system', content: sys },
-        ...historyMsgs,
-        currentUserMessage,
-      ];
-
-      // Resolve AI config for Telegram mode the same way as web mode.
-      const { data: tgSettings } = await supabase.from('app_settings').select('ai_provider,ai_api_key,ai_model,ai_base_url').eq('id', 1).single();
-      const tgChatConfig = resolveChatProviderConfig({
-        provider: (tgSettings as any)?.ai_provider,
-        apiKey: (tgSettings as any)?.ai_api_key,
-        model: (tgSettings as any)?.ai_model,
-        baseUrl: (tgSettings as any)?.ai_base_url,
-      }, LOVABLE_API_KEY);
-
-      try {
-        const reply = await runAgentNonStreaming(
-          supabase, fullMessages, tgChatConfig.url, tgChatConfig.key, tgChatConfig.model, LOVABLE_API_KEY, supabaseUrl, serviceKey,
-          { telegramChatId: telegram_chat_id },
-        );
-        const visibleReply = sanitizeTelegramReply(reply);
-        await sendTelegram(telegram_chat_id, visibleReply, LOVABLE_API_KEY, TELEGRAM_API_KEY);
-
-        // Mirror bot reply to telegram_messages so UI sees it
-        await supabase.from('telegram_messages').insert({
-          update_id: -Math.floor(Date.now()),
+      const { error: queueErr } = await supabase.from('pending_commands').insert({
+        command: 'ai_response',
+        args: {
           chat_id: telegram_chat_id,
-          text: visibleReply.slice(0, 3000),
-          is_bot: true,
-          raw_update: { source: 'ai-chat-edge' },
-        });
-
-        return new Response(JSON.stringify({ ok: true, reply: visibleReply }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      } catch (e) {
-        const msg = `⚠️ AI processing failed: ${e instanceof Error ? e.message : 'unknown error'}`;
-        await sendTelegram(telegram_chat_id, msg, LOVABLE_API_KEY, TELEGRAM_API_KEY);
-        return new Response(JSON.stringify({ error: msg }), {
+          user_text: telegram_user_text,
+          images: [],
+          files: [],
+          source: 'ai-chat-edge-local-queue',
+        },
+        status: 'pending',
+      });
+      if (queueErr) {
+        return new Response(JSON.stringify({ error: queueErr.message }), {
           status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
+      return new Response(JSON.stringify({ ok: true, queued: true, local: true }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     /* ── WEB MODE: streaming with tool support ── */
@@ -961,8 +891,8 @@ serve(async (req) => {
     const systemPrompt = buildSystemPrompt(appContext, false);
     const hasImages = messages.some((m: any) => m.images && m.images.length > 0);
 
-    // Resolve the chat model from user settings; fall back to a Lovable-compatible vision model
-    // for image attachments (which requires gemini-2.5-flash or equivalent).
+    // Resolve the chat model from user settings. Never fall back to Lovable AI here:
+    // Telegram/web chat must be local-worker-first and must not burn workspace credits.
     const chatConfig = resolveChatProviderConfig({
       provider: (aiSettings as any)?.ai_provider,
       apiKey: (aiSettings as any)?.ai_api_key,
@@ -971,10 +901,9 @@ serve(async (req) => {
     }, LOVABLE_API_KEY);
     const chatUrl = chatConfig.url;
     const chatKey = chatConfig.key;
-    const model = hasImages ? 'google/gemini-2.5-flash' : chatConfig.model;
-    // For image messages, force Lovable Gateway (which provides the vision-capable model).
-    const effectiveChatUrl = hasImages ? AI_GATEWAY : chatUrl;
-    const effectiveChatKey = hasImages ? LOVABLE_API_KEY : chatKey;
+    const model = chatConfig.model;
+    const effectiveChatUrl = chatUrl;
+    const effectiveChatKey = chatKey;
 
     // Backend intent router: nudge the model toward run_agent for clearly agentic asks.
     const intentLooksAgentic = shouldLaunchAgentRun(lastUserHint, []);
@@ -995,28 +924,11 @@ serve(async (req) => {
 
     let aiResp = await makeChatRequest(effectiveChatUrl, effectiveChatKey, model);
 
-    // If the user's configured provider/model fails, fall back to Lovable Gateway with the default model.
-    if (!aiResp.ok && (chatConfig.provider !== 'lovable' || chatConfig.model !== DEFAULT_LOVABLE_MODEL)) {
-      const errText = await aiResp.text();
-      console.warn(`ai-chat: primary provider ${chatConfig.provider}/${model} failed (${aiResp.status}): ${errText.slice(0, 200)}, retrying with Lovable default`);
-      aiResp = await makeChatRequest(AI_GATEWAY, LOVABLE_API_KEY, DEFAULT_LOVABLE_MODEL);
-    }
-
     if (!aiResp.ok) {
-      if (aiResp.status === 429) {
-        return new Response(JSON.stringify({ error: 'Rate limit exceeded.' }), {
-          status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-      if (aiResp.status === 402) {
-        return new Response(JSON.stringify({ error: 'AI credits exhausted. Add funds in Workspace Settings → Usage.' }), {
-          status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
       const t = await aiResp.text();
       console.error('AI error:', aiResp.status, t);
-      return new Response(JSON.stringify({ error: 'AI service error' }), {
-        status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      return new Response(JSON.stringify({ error: `Configured AI provider failed (${aiResp.status}). Start the local worker and LM Studio, then retry.` }), {
+        status: aiResp.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 

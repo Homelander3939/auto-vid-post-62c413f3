@@ -284,7 +284,7 @@ serve(async (req) => {
 
       // Queue processing for the local worker. The local server polls pending_commands
       // and answers via the user's own Telegram bot token + LM Studio, avoiding cloud AI credits.
-      await supabase.from('pending_commands').insert({
+      const { error: queueErr } = await supabase.from('pending_commands').insert({
         command: 'ai_response',
         args: {
           chat_id: chatId,
@@ -292,9 +292,14 @@ serve(async (req) => {
           update_id: update.update_id,
           images,
           files,
+          source: 'telegram-ai-bot-local-queue',
         },
         status: 'pending',
       });
+      if (queueErr) {
+        console.error('Failed to queue Telegram AI response:', queueErr.message);
+        continue;
+      }
 
       totalProcessed++;
     }

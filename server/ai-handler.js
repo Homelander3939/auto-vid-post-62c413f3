@@ -3,7 +3,7 @@
 
 const fetch = require('node-fetch');
 
-let LM_STUDIO_URL = normalizeLMStudioUrl(process.env.LM_STUDIO_URL || 'http://192.168.50.33:1234');
+let LM_STUDIO_URL = normalizeLMStudioUrl(process.env.LM_STUDIO_URL || 'http://localhost:1234');
 let LM_STUDIO_MODEL = process.env.LM_STUDIO_MODEL || 'google/gemma-3-27b';
 let LM_STUDIO_API_KEY = process.env.LM_STUDIO_API_KEY || 'lm-studio';
 
@@ -56,6 +56,44 @@ async function refreshLMStudioConfigFromSettings(supabase) {
     console.warn('[AI] Could not refresh LM Studio settings:', e.message);
   }
   return { url: LM_STUDIO_URL, model: LM_STUDIO_MODEL, apiKey: LM_STUDIO_API_KEY };
+}
+
+function openAICompatEndpoint(provider, baseUrl) {
+  if (provider === 'lmstudio') return `${normalizeLMStudioUrl(baseUrl || LM_STUDIO_URL)}/v1/chat/completions`;
+  if (provider === 'openai') return 'https://api.openai.com/v1/chat/completions';
+  if (provider === 'openrouter') return 'https://openrouter.ai/api/v1/chat/completions';
+  if (provider === 'xai') return 'https://api.x.ai/v1/chat/completions';
+  if (provider === 'nvidia') return 'https://integrate.api.nvidia.com/v1/chat/completions';
+  throw new Error(`Provider ${provider} is not supported for local Telegram chat. Select LM Studio or an OpenAI-compatible provider.`);
+}
+
+async function getSelectedChatConfig(supabase) {
+  const { data } = await supabase.from('app_settings').select('ai_provider,ai_base_url,ai_api_key,ai_model').eq('id', 1).single();
+  const provider = data?.ai_provider || 'lmstudio';
+  if (provider === 'lovable') throw new Error('Lovable AI is disabled for Telegram local mode. Select LM Studio or your own API key provider in Settings.');
+  if (provider === 'lmstudio') {
+    const config = await refreshLMStudioConfigFromSettings(supabase);
+    return { provider, endpoint: openAICompatEndpoint(provider, config.url), model: config.model, apiKey: config.apiKey || 'lm-studio' };
+  }
+  if (!data?.ai_model) throw new Error(`No model selected for ${provider}`);
+  if (!data?.ai_api_key) throw new Error(`API key is required for ${provider}`);
+  return { provider, endpoint: openAICompatEndpoint(provider, data.ai_base_url), model: data.ai_model, apiKey: data.ai_api_key };
+}
+
+async function selectedChatFetch(supabase, bodyObj) {
+  const config = await getSelectedChatConfig(supabase);
+  const resp = await fetch(config.endpoint, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${config.apiKey || 'lm-studio'}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ...bodyObj, model: config.model }),
+  }).catch(err => ({ ok: false, status: 0, _networkError: err }));
+  if (!resp.ok && resp._networkError) {
+    throw new Error(`${config.provider} network error: ${resp._networkError.message}`);
+  }
+  return resp;
 }
 
 async function testLMStudioConnection({ baseUrl, apiKey, model } = {}) {
@@ -211,6 +249,7 @@ async function routeDeterministicTelegramTask(text, chatId, backend) {
       platforms,
       includeImage: true,
       stream: false,
+      telegram_chat_id: chatId,
     });
     return summarizeGeneratedPost(data, platforms);
   }
@@ -219,6 +258,7 @@ async function routeDeterministicTelegramTask(text, chatId, backend) {
     const data = await invokeLocalWorker('/api/agent-run', {
       prompt: clean,
       source: 'telegram-local-router',
+      telegram_chat_id: chatId,
     }, 15_000);
     return `Started local agent task: ${truncateText(clean)}\nRun ID: ${data.runId || 'created'}\nI will report progress and results here.`;
   }
@@ -647,11 +687,11 @@ ${formatting}`;
 
 /* ── Call LM Studio with tool support ─── */
 async function callLMStudioWithTools(messages, supabase, maxRounds = 3) {
+  await refreshLMStudioConfigFromSettings(supabase);
   const fullMessages = [...messages];
 
   for (let round = 0; round < maxRounds; round++) {
     const body = {
-      model: LM_STUDIO_MODEL,
       messages: fullMessages,
       tools,
       tool_choice: 'auto',
@@ -659,7 +699,7 @@ async function callLMStudioWithTools(messages, supabase, maxRounds = 3) {
       max_tokens: 2048,
     };
 
-    const resp = await lmFetch('/v1/chat/completions', body);
+    const resp = await selectedChatFetch(supabase, body);
 
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '');
@@ -691,6 +731,7 @@ async function callLMStudioWithTools(messages, supabase, maxRounds = 3) {
 
 /* ── Streaming call to LM Studio (for web UI) ─── */
 async function streamLMStudio(messages, supabase) {
+  await refreshLMStudioConfigFromSettings(supabase);
   const appContext = await getAppContext(supabase);
   const systemPrompt = buildSystemPrompt(appContext, false);
 
@@ -701,7 +742,6 @@ async function streamLMStudio(messages, supabase) {
 
   // First try non-streaming to detect tool calls
   const body = {
-    model: LM_STUDIO_MODEL,
     messages: fullMessages,
     tools,
     tool_choice: 'auto',
@@ -709,7 +749,7 @@ async function streamLMStudio(messages, supabase) {
     max_tokens: 2048,
   };
 
-  const resp = await lmFetch('/v1/chat/completions', body);
+  const resp = await selectedChatFetch(supabase, body);
 
   const data = await resp.json();
   const choice = data.choices?.[0];
@@ -727,8 +767,7 @@ async function streamLMStudio(messages, supabase) {
     }
 
     // Follow-up call (streaming)
-    const streamResp = await lmFetch('/v1/chat/completions', {
-      model: LM_STUDIO_MODEL,
+    const streamResp = await selectedChatFetch(supabase, {
       messages: fullMessages,
       stream: true,
       temperature: 0.7,
@@ -739,8 +778,7 @@ async function streamLMStudio(messages, supabase) {
   }
 
   // No tool calls — return streaming response
-  const streamResp = await lmFetch('/v1/chat/completions', {
-    model: LM_STUDIO_MODEL,
+  const streamResp = await selectedChatFetch(supabase, {
     messages: fullMessages,
     stream: true,
     temperature: 0.7,

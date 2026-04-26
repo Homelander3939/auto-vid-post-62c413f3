@@ -487,7 +487,10 @@ app.get('/', (req, res) => {
   });
 });
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
+app.get('/api/health', async (req, res) => {
+  const config = await refreshLMStudioConfigFromSettings(supabase).catch(() => ({ url: LM_STUDIO_URL, model: 'unknown' }));
+  res.json({ status: 'ok', mode: 'local', ai: { provider: 'lmstudio', url: config.url, model: config.model } });
+});
 
 app.post('/api/telegram/send', async (req, res) => {
   try {
@@ -495,6 +498,9 @@ app.post('/api/telegram/send', async (req, res) => {
     const chatId = req.body?.chat_id || settings.telegram?.chatId;
     if (!settings.telegram?.enabled || !settings.telegram?.botToken) {
       return res.status(400).json({ success: false, error: 'Telegram is not configured locally. Add your bot token in Settings.' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ success: false, error: 'Telegram chat ID is missing. Send a message to the bot, then use auto-detect in Settings.' });
     }
     if (req.body?.action) {
       const { sendChatActionViaBotToken } = require('./telegram');
@@ -653,6 +659,15 @@ async function listProviderModels(provider, apiKey, baseUrl) {
   throw new Error(`Unknown provider: ${provider}`);
 }
 
+function openAICompatEndpoint(provider, baseUrl) {
+  if (provider === 'lmstudio') return `${String(baseUrl || 'http://localhost:1234').replace(/\/+$/, '').replace(/\/v1$/i, '')}/v1/chat/completions`;
+  if (provider === 'openai') return 'https://api.openai.com/v1/chat/completions';
+  if (provider === 'openrouter') return 'https://openrouter.ai/api/v1/chat/completions';
+  if (provider === 'xai') return 'https://api.x.ai/v1/chat/completions';
+  if (provider === 'nvidia') return 'https://integrate.api.nvidia.com/v1/chat/completions';
+  throw new Error(`Provider ${provider} is not supported by the local worker chat path`);
+}
+
 function createSseController(res) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -673,7 +688,14 @@ async function appendGenerationEvent(jobId, event, data) {
 }
 
 async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 2048, temperature = 0.4 } = {}) {
-  const config = await refreshLMStudioConfigFromSettings(supabase);
+  const { data: saved } = await supabase.from('app_settings').select('ai_provider,ai_base_url,ai_api_key,ai_model').eq('id', 1).single();
+  const provider = saved?.ai_provider || 'lmstudio';
+  if (provider === 'lovable') throw new Error('Lovable AI is disabled for local mode. Select LM Studio or your own API key provider in Settings.');
+  const config = provider === 'lmstudio'
+    ? await refreshLMStudioConfigFromSettings(supabase)
+    : { url: saved?.ai_base_url || '', model: saved?.ai_model, apiKey: saved?.ai_api_key };
+  if (!config.model) throw new Error(`No model selected for ${provider}`);
+  if (provider !== 'lmstudio' && !config.apiKey) throw new Error(`API key is required for ${provider}`);
   const buildBody = (model) => ({
     model,
     messages,
@@ -682,8 +704,8 @@ async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 
     temperature,
     max_tokens,
   });
-  const base = String(config.url).replace(/\/+$/, '').replace(/\/v1$/i, '');
-  const call = async (model) => fetch(`${base}/v1/chat/completions`, {
+  const endpoint = openAICompatEndpoint(provider, config.url);
+  const call = async (model) => fetch(endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.apiKey || 'lm-studio'}`,
@@ -693,7 +715,8 @@ async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 
   });
   let response = await call(config.model);
   let text = await response.text();
-  if (!response.ok && /model|not found|unloaded|cannot find/i.test(text)) {
+  if (provider === 'lmstudio' && !response.ok && /model|not found|unloaded|cannot find/i.test(text)) {
+    const base = String(config.url).replace(/\/+$/, '').replace(/\/v1$/i, '');
     const loaded = await discoverLMStudioModels(base, config.apiKey || 'lm-studio').catch(() => []);
     const fallbackModel = loaded[0]?.id;
     if (fallbackModel && fallbackModel !== config.model) {
@@ -702,7 +725,7 @@ async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 
       text = await response.text();
     }
   }
-  if (!response.ok) throw new Error(`LM Studio returned ${response.status}: ${text.slice(0, 300)}`);
+  if (!response.ok) throw new Error(`${provider} returned ${response.status}: ${text.slice(0, 300)}`);
   return JSON.parse(text || '{}');
 }
 
@@ -772,11 +795,17 @@ async function runLocalAgent(runId) {
     const summary = reply?.choices?.[0]?.message?.content || 'Done.';
     await appendAgentEvent(runId, { type: 'finish', summary });
     await setAgentRunStatus(runId, { status: 'completed', completed_at: new Date().toISOString(), result: { summary } });
-    if (settings && run.telegram_chat_id) await notifyTelegram(settings, summary);
+    if (settings) {
+      if (run.telegram_chat_id) settings.telegram.chatId = String(run.telegram_chat_id);
+      await notifyTelegram(settings, `✅ Local agent completed\n\n${summary}`);
+    }
   } catch (err) {
     await appendAgentEvent(runId, { type: 'error', message: err.message });
     await setAgentRunStatus(runId, { status: 'failed', completed_at: new Date().toISOString(), error: err.message });
-    if (settings && run.telegram_chat_id) await notifyTelegram(settings, `❌ Local agent failed: ${err.message}`);
+    if (settings) {
+      if (run.telegram_chat_id) settings.telegram.chatId = String(run.telegram_chat_id);
+      await notifyTelegram(settings, `❌ Local agent failed: ${err.message}`);
+    }
   }
 }
 
@@ -2016,6 +2045,9 @@ async function processPendingCommands() {
             // Process Telegram AI response locally via LM Studio
             const settings = await getSettings();
             console.log(`[Commands] ai_response: processing Telegram message from chat ${cmd.args?.chat_id}`);
+            if (cmd.args?.chat_id) {
+              settings.telegram.chatId = String(cmd.args.chat_id);
+            }
             await processTelegramAIResponse(
               supabase,
               cmd.args,
