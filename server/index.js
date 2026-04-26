@@ -487,7 +487,10 @@ app.get('/', (req, res) => {
   });
 });
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
+app.get('/api/health', async (req, res) => {
+  const config = await refreshLMStudioConfigFromSettings(supabase).catch(() => ({ url: LM_STUDIO_URL, model: 'unknown' }));
+  res.json({ status: 'ok', mode: 'local', ai: { provider: 'lmstudio', url: config.url, model: config.model } });
+});
 
 app.post('/api/telegram/send', async (req, res) => {
   try {
@@ -495,6 +498,9 @@ app.post('/api/telegram/send', async (req, res) => {
     const chatId = req.body?.chat_id || settings.telegram?.chatId;
     if (!settings.telegram?.enabled || !settings.telegram?.botToken) {
       return res.status(400).json({ success: false, error: 'Telegram is not configured locally. Add your bot token in Settings.' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ success: false, error: 'Telegram chat ID is missing. Send a message to the bot, then use auto-detect in Settings.' });
     }
     if (req.body?.action) {
       const { sendChatActionViaBotToken } = require('./telegram');
