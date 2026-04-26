@@ -90,7 +90,7 @@ export default function Dashboard() {
 
   // Multi-file batch
   const [batchEntries, setBatchEntries] = useState<BatchEntry[]>([]);
-  const [intensityMinutes, setIntensityMinutes] = useState(60);
+  const [intensityMinutes, setIntensityMinutes] = useState(10);
 
   // Account selection per platform
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({});

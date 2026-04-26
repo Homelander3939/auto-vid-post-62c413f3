@@ -87,7 +87,7 @@ export default function CampaignScheduler() {
   const [textFileName, setTextFileName] = useState<string | null>(null);
   const [platforms, setPlatforms] = useState<string[]>(['youtube', 'tiktok', 'instagram']);
   const [scheduledAt, setScheduledAt] = useState('');
-  const [intensityMinutes, setIntensityMinutes] = useState(60);
+  const [intensityMinutes, setIntensityMinutes] = useState(10);
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({});
 
   const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);

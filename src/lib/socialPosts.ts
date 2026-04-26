@@ -632,7 +632,7 @@ export async function saveGenerationSchedule(s: Partial<GenerationSchedule>): Pr
     name: s.name || 'Generation Schedule',
     enabled: !!s.enabled,
     cron_expression: s.cron_expression || '0 9 * * *',
-    upload_interval_minutes: s.upload_interval_minutes ?? 60,
+    upload_interval_minutes: s.upload_interval_minutes ?? 10,
     target_platforms: s.target_platforms || ['x', 'linkedin', 'facebook'],
     ai_prompt: s.ai_prompt || '',
     include_image: s.include_image !== false,

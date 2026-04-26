@@ -433,7 +433,7 @@ export default function GenerationScheduler() {
     name: 'New Post Campaign',
     enabled: true,
     cron_expression: '0 9 * * *',
-    upload_interval_minutes: 60,
+    upload_interval_minutes: 10,
     target_platforms: ['x', 'linkedin', 'facebook'],
     ai_prompt: '',
     include_image: true,

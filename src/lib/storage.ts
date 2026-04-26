@@ -457,7 +457,7 @@ export async function getSchedules(): Promise<ScheduleConfig[]> {
     platforms: row.platforms,
     folderPath: row.folder_path || '',
     endAt: row.end_at || null,
-    uploadIntervalMinutes: row.upload_interval_minutes || 60,
+    uploadIntervalMinutes: row.upload_interval_minutes || 10,
     accountSelections: row.account_selections || {},
     runCount: row.run_count || 0,
     maxRuns: row.max_runs ?? null,
@@ -468,7 +468,7 @@ export async function getSchedules(): Promise<ScheduleConfig[]> {
 // Keep backward compat
 export async function getSchedule(): Promise<ScheduleConfig> {
   const all = await getSchedules();
-  return all[0] || { name: 'Schedule', enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'], folderPath: '', endAt: null, uploadIntervalMinutes: 60 };
+  return all[0] || { name: 'Schedule', enabled: false, cronExpression: '0 9 * * *', platforms: ['youtube', 'tiktok', 'instagram'], folderPath: '', endAt: null, uploadIntervalMinutes: 10 };
 }
 
 export async function saveSchedule(config: ScheduleConfig): Promise<ScheduleConfig> {
@@ -479,7 +479,7 @@ export async function saveSchedule(config: ScheduleConfig): Promise<ScheduleConf
     platforms: config.platforms,
     folder_path: config.folderPath,
     end_at: config.endAt,
-    upload_interval_minutes: config.uploadIntervalMinutes || 60,
+    upload_interval_minutes: config.uploadIntervalMinutes || 10,
     account_selections: config.accountSelections || {},
     max_runs: config.maxRuns ?? null,
   } as any;
