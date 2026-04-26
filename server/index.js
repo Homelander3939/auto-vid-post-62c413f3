@@ -647,24 +647,57 @@ async function appendGenerationEvent(jobId, event, data) {
 
 async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 2048, temperature = 0.4 } = {}) {
   const config = await refreshLMStudioConfigFromSettings(supabase);
-  const response = await fetch(`${String(config.url).replace(/\/+$/, '').replace(/\/v1$/i, '')}/v1/chat/completions`, {
+  const buildBody = (model) => ({
+    model,
+    messages,
+    ...(tools ? { tools } : {}),
+    ...(tool_choice ? { tool_choice } : {}),
+    temperature,
+    max_tokens,
+  });
+  const base = String(config.url).replace(/\/+$/, '').replace(/\/v1$/i, '');
+  const call = async (model) => fetch(`${base}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.apiKey || 'lm-studio'}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      ...(tools ? { tools } : {}),
-      ...(tool_choice ? { tool_choice } : {}),
-      temperature,
-      max_tokens,
-    }),
+    body: JSON.stringify(buildBody(model)),
   });
-  const text = await response.text();
+  let response = await call(config.model);
+  let text = await response.text();
+  if (!response.ok && /model|not found|unloaded|cannot find/i.test(text)) {
+    const loaded = await discoverLMStudioModels(base, config.apiKey || 'lm-studio').catch(() => []);
+    const fallbackModel = loaded[0]?.id;
+    if (fallbackModel && fallbackModel !== config.model) {
+      console.warn(`[AI] Saved LM Studio model unavailable (${config.model}); retrying loaded model ${fallbackModel}`);
+      response = await call(fallbackModel);
+      text = await response.text();
+    }
+  }
   if (!response.ok) throw new Error(`LM Studio returned ${response.status}: ${text.slice(0, 300)}`);
   return JSON.parse(text || '{}');
+}
+
+function slugifyAgentRun(s) {
+  return String(s || 'task').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task';
+}
+
+async function appendAgentEvent(runId, event) {
+  const { data: row } = await supabase.from('agent_runs').select('events').eq('id', runId).single();
+  const events = Array.isArray(row?.events) ? row.events : [];
+  events.push({ ...event, ts: Date.now() });
+  await supabase.from('agent_runs').update({ events, updated_at: new Date().toISOString() }).eq('id', runId);
+  return events;
+}
+
+async function setAgentRunStatus(runId, patch) {
+  await supabase.from('agent_runs').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', runId);
+}
+
+async function isAgentCancelled(runId) {
+  const { data } = await supabase.from('agent_runs').select('status').eq('id', runId).single();
+  return data?.status === 'cancelled';
 }
 
 function parseJsonFromText(text, fallback = {}) {
