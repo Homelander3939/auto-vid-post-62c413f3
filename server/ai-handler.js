@@ -962,6 +962,24 @@ async function streamLMStudio(messages, supabase) {
   const appContext = await getAppContext(supabase);
   const systemPrompt = buildSystemPrompt(appContext, false);
 
+  // If the latest user message is a research/deep-dive request, run the real
+  // deterministic deep-research pipeline (search → fetch sources → LLM report,
+  // saved as an agent_run for the Job Queue) and stream back the markdown report
+  // as a single SSE message so the chat shows the actual answer instead of
+  // letting the LLM hallucinate a "queued" placeholder.
+  const lastUser = [...messages].reverse().find((m) => m?.role === 'user');
+  const lastUserText = typeof lastUser?.content === 'string' ? lastUser.content : '';
+  if (lastUserText && looksLikeResearchRequest(lastUserText)) {
+    let chatId = null;
+    try {
+      const { data: s } = await supabase.from('app_settings')
+        .select('telegram_enabled,telegram_chat_id').eq('id', 1).single();
+      if (s?.telegram_enabled && s?.telegram_chat_id) chatId = String(s.telegram_chat_id);
+    } catch {}
+    const report = await runDeepResearchForTelegram(lastUserText, chatId, supabase);
+    return makeSseStreamFromText(report || 'Research returned no output.');
+  }
+
   const fullMessages = [
     { role: 'system', content: systemPrompt },
     ...messages,
