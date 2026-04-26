@@ -956,6 +956,30 @@ async function callLMStudioWithTools(messages, supabase, maxRounds = 3) {
   return 'Actions executed.';
 }
 
+/* ── Build a Response that streams a static text body via SSE chunks. ─── */
+function makeSseStreamFromText(text) {
+  const encoder = new TextEncoder();
+  const id = `local-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+  const stream = new ReadableStream({
+    start(controller) {
+      // Stream in ~600-char chunks so the UI feels live.
+      const chunks = String(text || '').match(/[\s\S]{1,600}/g) || [''];
+      for (const chunk of chunks) {
+        const payload = {
+          id, object: 'chat.completion.chunk', created,
+          model: LM_STUDIO_MODEL || 'local',
+          choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
+        };
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+      }
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+      controller.close();
+    },
+  });
+  return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+}
+
 /* ── Streaming call to LM Studio (for web UI) ─── */
 async function streamLMStudio(messages, supabase) {
   await refreshLMStudioConfigFromSettings(supabase);
