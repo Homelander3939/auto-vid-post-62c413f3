@@ -899,8 +899,8 @@ serve(async (req) => {
     const systemPrompt = buildSystemPrompt(appContext, false);
     const hasImages = messages.some((m: any) => m.images && m.images.length > 0);
 
-    // Resolve the chat model from user settings; fall back to a Lovable-compatible vision model
-    // for image attachments (which requires gemini-2.5-flash or equivalent).
+    // Resolve the chat model from user settings. Never fall back to Lovable AI here:
+    // Telegram/web chat must be local-worker-first and must not burn workspace credits.
     const chatConfig = resolveChatProviderConfig({
       provider: (aiSettings as any)?.ai_provider,
       apiKey: (aiSettings as any)?.ai_api_key,
@@ -909,10 +909,9 @@ serve(async (req) => {
     }, LOVABLE_API_KEY);
     const chatUrl = chatConfig.url;
     const chatKey = chatConfig.key;
-    const model = hasImages ? 'google/gemini-2.5-flash' : chatConfig.model;
-    // For image messages, force Lovable Gateway (which provides the vision-capable model).
-    const effectiveChatUrl = hasImages ? AI_GATEWAY : chatUrl;
-    const effectiveChatKey = hasImages ? LOVABLE_API_KEY : chatKey;
+    const model = chatConfig.model;
+    const effectiveChatUrl = chatUrl;
+    const effectiveChatKey = chatKey;
 
     // Backend intent router: nudge the model toward run_agent for clearly agentic asks.
     const intentLooksAgentic = shouldLaunchAgentRun(lastUserHint, []);
@@ -933,28 +932,11 @@ serve(async (req) => {
 
     let aiResp = await makeChatRequest(effectiveChatUrl, effectiveChatKey, model);
 
-    // If the user's configured provider/model fails, fall back to Lovable Gateway with the default model.
-    if (!aiResp.ok && (chatConfig.provider !== 'lovable' || chatConfig.model !== DEFAULT_LOVABLE_MODEL)) {
-      const errText = await aiResp.text();
-      console.warn(`ai-chat: primary provider ${chatConfig.provider}/${model} failed (${aiResp.status}): ${errText.slice(0, 200)}, retrying with Lovable default`);
-      aiResp = await makeChatRequest(AI_GATEWAY, LOVABLE_API_KEY, DEFAULT_LOVABLE_MODEL);
-    }
-
     if (!aiResp.ok) {
-      if (aiResp.status === 429) {
-        return new Response(JSON.stringify({ error: 'Rate limit exceeded.' }), {
-          status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-      if (aiResp.status === 402) {
-        return new Response(JSON.stringify({ error: 'AI credits exhausted. Add funds in Workspace Settings → Usage.' }), {
-          status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
       const t = await aiResp.text();
       console.error('AI error:', aiResp.status, t);
-      return new Response(JSON.stringify({ error: 'AI service error' }), {
-        status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      return new Response(JSON.stringify({ error: `Configured AI provider failed (${aiResp.status}). Start the local worker and LM Studio, then retry.` }), {
+        status: aiResp.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
