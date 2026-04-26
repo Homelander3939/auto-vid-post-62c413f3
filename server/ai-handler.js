@@ -692,7 +692,6 @@ async function callLMStudioWithTools(messages, supabase, maxRounds = 3) {
 
   for (let round = 0; round < maxRounds; round++) {
     const body = {
-      model: LM_STUDIO_MODEL,
       messages: fullMessages,
       tools,
       tool_choice: 'auto',
@@ -700,7 +699,7 @@ async function callLMStudioWithTools(messages, supabase, maxRounds = 3) {
       max_tokens: 2048,
     };
 
-    const resp = await lmFetch('/v1/chat/completions', body);
+    const resp = await selectedChatFetch(supabase, body);
 
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '');
@@ -743,7 +742,6 @@ async function streamLMStudio(messages, supabase) {
 
   // First try non-streaming to detect tool calls
   const body = {
-    model: LM_STUDIO_MODEL,
     messages: fullMessages,
     tools,
     tool_choice: 'auto',
@@ -751,7 +749,7 @@ async function streamLMStudio(messages, supabase) {
     max_tokens: 2048,
   };
 
-  const resp = await lmFetch('/v1/chat/completions', body);
+  const resp = await selectedChatFetch(supabase, body);
 
   const data = await resp.json();
   const choice = data.choices?.[0];
@@ -769,8 +767,7 @@ async function streamLMStudio(messages, supabase) {
     }
 
     // Follow-up call (streaming)
-    const streamResp = await lmFetch('/v1/chat/completions', {
-      model: LM_STUDIO_MODEL,
+    const streamResp = await selectedChatFetch(supabase, {
       messages: fullMessages,
       stream: true,
       temperature: 0.7,
@@ -781,8 +778,7 @@ async function streamLMStudio(messages, supabase) {
   }
 
   // No tool calls — return streaming response
-  const streamResp = await lmFetch('/v1/chat/completions', {
-    model: LM_STUDIO_MODEL,
+  const streamResp = await selectedChatFetch(supabase, {
     messages: fullMessages,
     stream: true,
     temperature: 0.7,
