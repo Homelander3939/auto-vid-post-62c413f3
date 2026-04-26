@@ -763,6 +763,124 @@ app.post('/api/ai/test', async (req, res) => {
   }
 });
 
+app.post('/api/generate-social-post', async (req, res) => {
+  const { prompt, platforms = [], includeImage = true, stream = true } = req.body || {};
+  if (!prompt || !Array.isArray(platforms) || platforms.length === 0) {
+    return res.status(400).json({ error: 'prompt and platforms are required' });
+  }
+
+  const send = stream ? createSseController(res) : () => {};
+  let jobId = null;
+  const persist = async (event, data) => appendGenerationEvent(jobId, event, data);
+  const emit = async (event, data) => { send(event, data); await persist(event, data); };
+
+  try {
+    const { data: liveJobs } = await supabase.from('generation_jobs')
+      .select('id, prompt').eq('status', 'running').order('created_at', { ascending: false }).limit(1);
+    if (liveJobs?.length) {
+      const error = 'Another generation is already running. Cancel it first or wait for it to finish.';
+      if (stream) { await emit('error', { error }); res.end(); return; }
+      return res.status(409).json({ error, busyJobId: liveJobs[0].id, busyPrompt: liveJobs[0].prompt });
+    }
+
+    const { data: jobRow, error: jobError } = await supabase.from('generation_jobs').insert({
+      prompt, platforms, include_image: !!includeImage, status: 'running', events: [],
+    }).select('id').single();
+    if (jobError) throw jobError;
+    jobId = jobRow.id;
+
+    await emit('job', { id: jobId });
+    const config = await refreshLMStudioConfigFromSettings(supabase);
+    await emit('step', { id: 'init', emoji: '🚀', label: `Connecting to local LM Studio…`, status: 'active' });
+    await emit('step', { id: 'init', emoji: '✅', label: `Connected · ${config.model}`, status: 'done' });
+    await emit('tool', { kind: 'llm', name: 'lmstudio', detail: config.model });
+
+    await emit('step', { id: 'plan', emoji: '🧠', label: 'Planning research strategy…', status: 'active' });
+    const plan = await localJsonLLM(
+      'You plan a real-time social post research workflow.',
+      `Create JSON with keys: queries (array of 2-4 web search queries), imageQuery (string), imageStrategy (real_photo or none), angle (string), needsResearch (boolean). User request: ${prompt}. Platforms: ${platforms.join(', ')}.`,
+      { queries: [prompt], imageQuery: prompt, imageStrategy: includeImage ? 'real_photo' : 'none', angle: prompt, needsResearch: true },
+    );
+    const queries = (Array.isArray(plan.queries) && plan.queries.length ? plan.queries : [prompt]).slice(0, 4);
+    const imageStrategy = includeImage ? (plan.imageStrategy || 'real_photo') : 'none';
+    await emit('step', { id: 'plan', emoji: '🧠', label: `Plan: ${plan.angle || prompt.slice(0, 80)}`, status: 'done' });
+    await emit('plan', { queries, imageStrategy, angle: plan.angle || prompt });
+
+    const sources = [];
+    const seen = new Set();
+    for (let i = 0; i < queries.length; i += 1) {
+      const q = queries[i];
+      await emit('step', { id: `search-${i}`, emoji: '🔎', label: `Searching locally: "${q}"`, status: 'active' });
+      const r = await fetch(`http://localhost:${PORT}/api/research/search`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: q, count: 5 }),
+      });
+      const data = await r.json().catch(() => ({}));
+      await emit('tool', { kind: 'research', name: data.provider || 'local-browser', detail: q });
+      const fresh = (data.results || []).filter((s) => s?.url && !seen.has(s.url)).slice(0, 5);
+      fresh.forEach((s) => { seen.add(s.url); sources.push({ ...s, favicon: s.url ? `https://www.google.com/s2/favicons?sz=32&domain=${hostnameOf(s.url)}` : '' }); });
+      await emit('step', { id: `search-${i}`, emoji: '🔎', label: `Found ${fresh.length} sources via ${data.provider || 'local browser'}`, status: 'done' });
+      for (const source of fresh) await emit('source', source);
+    }
+
+    await emit('step', { id: 'write', emoji: '✍️', label: `Writing ${platforms.length} tailored variants with local LLM…`, status: 'active' });
+    const write = await localJsonLLM(
+      'You are a senior social media manager. Write platform-specific posts from researched sources. Hashtags must be arrays without # symbols.',
+      `Return JSON exactly like {"variants":{"platform":{"description":"...","hashtags":["..."]}}}. Platforms: ${platforms.join(', ')}. User goal: ${prompt}. Angle: ${plan.angle || prompt}. Sources: ${sources.slice(0, 8).map((s, i) => `[${i + 1}] ${s.title} - ${s.snippet || ''} (${s.url})`).join('\n')}`,
+      { variants: {} },
+    );
+    const variants = write.variants || {};
+    await emit('step', { id: 'write', emoji: '✨', label: `Wrote ${Object.keys(variants).length} platform variants`, status: 'done' });
+    for (const platform of platforms) {
+      const v = variants[platform];
+      if (v) await emit('variant', { platform, description: v.description || '', hashtags: Array.isArray(v.hashtags) ? v.hashtags : [] });
+    }
+    await emit('sources', { sources: sources.slice(0, 8) });
+
+    let imageUrl = null;
+    let imagePath = null;
+    if (includeImage && imageStrategy !== 'none') {
+      await emit('step', { id: 'image-local', emoji: '🌐', label: 'Finding image with local browser…', status: 'active' });
+      const imgResp = await fetch(`http://localhost:${PORT}/api/research/image-search`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: plan.imageQuery || prompt, urls: sources.slice(0, 3).map((s) => s.url), count: 4 }),
+      });
+      const imgData = await imgResp.json().catch(() => ({}));
+      const first = (imgData.images || [])[0];
+      const rawUrl = typeof first === 'string' ? first : first?.url;
+      if (rawUrl) {
+        const stored = await storeImageFromUrl(rawUrl);
+        imageUrl = stored.url; imagePath = stored.path;
+        await emit('tool', { kind: 'image', name: imgData.provider || 'local-browser', detail: plan.imageQuery || prompt });
+        await emit('step', { id: 'image-local', emoji: '🌐', label: `Image found via ${imgData.provider || 'local browser'}`, status: 'done' });
+        await emit('image', { imageUrl, imagePath, credit: imgData.provider || 'Local browser scrape' });
+      } else {
+        await emit('step', { id: 'image-local', emoji: '⚠️', label: 'No usable image found locally', status: 'error' });
+      }
+    }
+
+    let savedPostId = null;
+    const primary = variants[platforms[0]] || Object.values(variants)[0];
+    if (primary) {
+      const { data: saved } = await supabase.from('social_posts').insert({
+        description: primary.description || '', image_path: imagePath, hashtags: primary.hashtags || [], target_platforms: platforms,
+        account_selections: {}, scheduled_at: null, ai_prompt: prompt, ai_sources: sources.slice(0, 8), status: 'draft',
+        platform_results: platforms.map((name) => ({ name, status: 'pending' })), platform_variants: variants,
+      }).select('id').single();
+      savedPostId = saved?.id || null;
+      if (savedPostId) await emit('saved', { id: savedPostId, status: 'draft' });
+    }
+
+    const result = { variants, sources: sources.slice(0, 8), imageUrl, imagePath, provider: 'lmstudio', model: config.model };
+    await emit('step', { id: 'done', emoji: '🎉', label: 'All done — generated locally and saved as draft!', status: 'done' });
+    await emit('done', result);
+    await supabase.from('generation_jobs').update({ status: 'completed', result, saved_post_id: savedPostId, completed_at: new Date().toISOString() }).eq('id', jobId);
+    if (stream) res.end(); else res.json(result);
+  } catch (err) {
+    console.error('[AI Post] Local generation failed:', err.message);
+    if (jobId) await supabase.from('generation_jobs').update({ status: 'failed', error: err.message, completed_at: new Date().toISOString() }).eq('id', jobId);
+    if (stream) { await emit('error', { error: err.message }); res.end(); } else res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Research search endpoint (DuckDuckGo HTML → Brave/Google scrape via persistent browser) ---
 // Used by the cloud AI agent when no research API key is configured.
 // Strategy:
