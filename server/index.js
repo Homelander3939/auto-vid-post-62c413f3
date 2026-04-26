@@ -612,19 +612,76 @@ app.post('/api/ai/models', async (req, res) => {
   }
 });
 
-app.post('/api/ai/test', async (req, res) => {
-  try {
-    const { baseUrl, apiKey, model } = req.body || {};
+// Provider-aware connection test. Runs from the LOCAL worker so it can reach
+// LM Studio on private LANs and uses the user's OWN API keys for cloud providers
+// — Lovable cloud is never involved.
+async function testProviderConnection({ provider, baseUrl, apiKey, model }) {
+  const t0 = Date.now();
+  const targetModel = String(model || '').trim();
+
+  if (provider === 'lmstudio') {
     const config = await refreshLMStudioConfigFromSettings(supabase);
-    const result = await testLMStudioConnection({
+    return testLMStudioConnection({
       baseUrl: baseUrl || config.url,
       apiKey: apiKey || config.apiKey,
-      model: model || config.model,
+      model: targetModel || config.model,
     });
+  }
+
+  if (!apiKey) throw new Error('API key is required for this provider');
+  if (!targetModel) throw new Error('Model is required');
+
+  // Google Gemini uses a different request shape
+  if (provider === 'google') {
+    const cleanModel = targetModel.replace(/^models\//, '');
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+        generationConfig: { maxOutputTokens: 5 },
+      }),
+    });
+    const text = await resp.text();
+    if (!resp.ok) throw new Error(`Google returned ${resp.status}: ${text.slice(0, 200)}`);
+    return { ok: true, provider, model: targetModel, latency: Date.now() - t0 };
+  }
+
+  // OpenAI-compatible providers
+  let endpoint;
+  let modelId = targetModel;
+  if (provider === 'openai') endpoint = 'https://api.openai.com/v1/chat/completions';
+  else if (provider === 'openrouter') endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+  else if (provider === 'xai') endpoint = 'https://api.x.ai/v1/chat/completions';
+  else if (provider === 'nvidia') endpoint = 'https://integrate.api.nvidia.com/v1/chat/completions';
+  else if (provider === 'anthropic') {
+    endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+    if (!modelId.startsWith('anthropic/')) modelId = `anthropic/${modelId}`;
+  } else throw new Error(`Unknown provider: ${provider}`);
+
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: modelId,
+      messages: [{ role: 'user', content: 'ping' }],
+      max_tokens: 5,
+    }),
+  });
+  const text = await resp.text();
+  if (!resp.ok) throw new Error(`${provider} returned ${resp.status}: ${text.slice(0, 200)}`);
+  return { ok: true, provider, model: targetModel, latency: Date.now() - t0 };
+}
+
+app.post('/api/ai/test', async (req, res) => {
+  try {
+    const { provider = 'lmstudio', baseUrl, apiKey, model } = req.body || {};
+    const result = await testProviderConnection({ provider, baseUrl, apiKey, model });
     res.json(result);
   } catch (err) {
-    console.error('[AI] LM Studio test failed:', err.message);
-    res.status(502).json({ ok: false, error: err.message || 'LM Studio test failed' });
+    console.error(`[AI] ${req.body?.provider || 'lmstudio'} test failed:`, err.message);
+    res.status(200).json({ ok: false, error: err.message || 'Connection test failed' });
   }
 });
 
