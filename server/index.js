@@ -700,6 +700,20 @@ async function isAgentCancelled(runId) {
   return data?.status === 'cancelled';
 }
 
+const LOCAL_AGENT_TOOLS = [
+  { type: 'function', function: { name: 'plan', description: 'Call first with 3-7 concise steps.', parameters: { type: 'object', properties: { steps: { type: 'array', items: { type: 'string' } } }, required: ['steps'] } } },
+  { type: 'function', function: { name: 'research_deep', description: 'Search the web locally and return sourced findings.', parameters: { type: 'object', properties: { query: { type: 'string' }, depth: { type: 'string' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'browser_task', description: 'Run a local browser research/automation task.', parameters: { type: 'object', properties: { task: { type: 'string' }, url: { type: 'string' } }, required: ['task'] } } },
+  { type: 'function', function: { name: 'write_file', description: 'Write a local workspace file.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
+  { type: 'function', function: { name: 'read_file', description: 'Read a local workspace file.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'list_files', description: 'List local workspace files.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'run_shell', description: 'Run an allowlisted local shell command.', parameters: { type: 'object', properties: { command: { type: 'string' }, timeout_seconds: { type: 'number' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'open_in_browser', description: 'Open a URL or workspace file locally.', parameters: { type: 'object', properties: { target: { type: 'string' } }, required: ['target'] } } },
+  { type: 'function', function: { name: 'serve_preview', description: 'Serve the local workspace preview.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'remember_fact', description: 'Save durable memory.', parameters: { type: 'object', properties: { title: { type: 'string' }, content: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } }, memory_type: { type: 'string' }, importance: { type: 'number' } }, required: ['title', 'content'] } } },
+  { type: 'function', function: { name: 'finish', description: 'Finish the run with summary and artifacts.', parameters: { type: 'object', properties: { summary: { type: 'string' }, artifacts: { type: 'array', items: { type: 'object' } } }, required: ['summary'] } } },
+];
+
 function parseJsonFromText(text, fallback = {}) {
   const raw = String(text || '').trim();
   if (!raw) return fallback;
