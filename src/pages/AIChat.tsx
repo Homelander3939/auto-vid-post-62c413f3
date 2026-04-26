@@ -351,36 +351,6 @@ export default function AIChat() {
   const mirrorToTelegram = useCallback(async (text: string) => {
     if (!telegramEnabled || !resolvedChatId || !text.trim()) return;
     try {
-      await supabase.functions.invoke('send-telegram', {
-        body: { chat_id: resolvedChatId, text: text.slice(0, 3900) },
-      });
-    } catch (e) {
-      console.error('Mirror to Telegram failed:', e);
-    }
-  }, [telegramEnabled, resolvedChatId]);
-
-  const mirrorImageToTelegram = useCallback(async (file: FileAttachment, caption?: string) => {
-    if (!telegramEnabled || !resolvedChatId || !file.url) return;
-    try {
-      const response = await fetch(file.url);
-      const blob = await response.blob();
-      const reader = new FileReader();
-      const base64 = await new Promise<string>((resolve, reject) => {
-        reader.onload = () => {
-          if (typeof reader.result !== 'string' || !reader.result.includes(',')) {
-            reject(new Error('Invalid image data'));
-            return;
-          }
-          const [, data] = reader.result.split(',', 2);
-          if (!data) {
-            reject(new Error('Invalid image data'));
-            return;
-          }
-          resolve(data);
-        };
-        reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
-        reader.readAsDataURL(blob);
-      });
       const sentLocal = await sendLocalTelegram({ chat_id: resolvedChatId, text: text.slice(0, 3900) });
       if (sentLocal) return;
       await supabase.functions.invoke('send-telegram', {
