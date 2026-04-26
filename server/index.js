@@ -2022,6 +2022,9 @@ async function processPendingCommands() {
             // Process Telegram AI response locally via LM Studio
             const settings = await getSettings();
             console.log(`[Commands] ai_response: processing Telegram message from chat ${cmd.args?.chat_id}`);
+            if (cmd.args?.chat_id) {
+              settings.telegram.chatId = String(cmd.args.chat_id);
+            }
             await processTelegramAIResponse(
               supabase,
               cmd.args,
