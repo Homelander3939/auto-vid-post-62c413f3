@@ -856,7 +856,7 @@ async function localJsonLLM(systemPrompt, userPrompt, fallback = {}, aiSettings 
   const data = await localChatCompletion([
     { role: 'system', content: `${systemPrompt}\nReturn valid JSON only. No markdown.` },
     { role: 'user', content: userPrompt },
-  ], { temperature: 0.35, max_tokens: 2200, aiSettings });
+  ], { temperature: 0.55, max_tokens: 4096, aiSettings });
   return parseJsonFromText(data?.choices?.[0]?.message?.content || '', fallback);
 }
 
@@ -1077,30 +1077,80 @@ app.post('/api/generate-social-post', async (req, res) => {
       for (const source of fresh) await emit('source', source);
     }
 
-    await emit('step', { id: 'write', emoji: '✍️', label: `Writing ${platforms.length} tailored variants with local LLM…`, status: 'active' });
-    const sourcesBlock = sources.slice(0, 8).map((s, i) => `[${i + 1}] ${s.title} — ${s.snippet || ''} (${s.url})`).join('\n');
+    // Deep-dive: fetch top source pages and extract readable article text so the LLM has
+    // real content to summarise (not just headlines). Keeps it cheap by capping pages + chars.
+    await emit('step', { id: 'deepread', emoji: '📖', label: `Reading top ${Math.min(sources.length, 4)} sources for deeper context…`, status: 'active' });
+    const topSources = sources.slice(0, 4);
+    await Promise.all(topSources.map(async (s) => {
+      try {
+        const r = await fetch(s.url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LovableAgent/1.0)' }, signal: AbortSignal.timeout(8000) });
+        if (!r.ok) return;
+        const html = await r.text();
+        // Strip scripts/styles, take text inside <article>/<main>/<p> if possible.
+        const cleaned = html
+          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ');
+        const articleMatch = cleaned.match(/<article[\s\S]*?<\/article>/i)?.[0]
+          || cleaned.match(/<main[\s\S]*?<\/main>/i)?.[0]
+          || cleaned;
+        const text = articleMatch
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 1800);
+        if (text.length > 200) s.content = text;
+      } catch (e) { /* skip page */ }
+    }));
+    const readCount = topSources.filter((s) => s.content).length;
+    await emit('step', { id: 'deepread', emoji: '📖', label: `Extracted full text from ${readCount} of ${topSources.length} pages`, status: 'done' });
+
+    await emit('step', { id: 'write', emoji: '✍️', label: `Writing ${platforms.length} tailored narrative posts with local LLM…`, status: 'active' });
+    // Build a rich source block: include extracted page content when available, snippet otherwise.
+    const sourcesBlock = sources.slice(0, 8).map((s, i) => {
+      const body = s.content || s.snippet || '';
+      return `[${i + 1}] ${s.title}\n${body}\nURL: ${s.url}`;
+    }).join('\n\n');
     const platformLimits = { x: 280, twitter: 280, linkedin: 1200, facebook: 800, instagram: 1500, tiktok: 800 };
-    const platformGuide = platforms.map((p) => `- ${p} (~${platformLimits[p.toLowerCase()] || 800} chars)`).join('\n');
+    const platformStyles = {
+      x: 'Punchy, conversational, 1-3 short sentences. Strong hook in first 8 words. No bullet lists. No URLs.',
+      twitter: 'Punchy, conversational, 1-3 short sentences. Strong hook in first 8 words. No bullet lists. No URLs.',
+      linkedin: 'Professional storytelling: 3-5 short paragraphs. Open with a hook, give context, share insight, end with a question or CTA. No bullet lists of headlines — write a real narrative.',
+      facebook: 'Friendly, story-driven, 2-4 short paragraphs. Conversational tone. End with a question to spark replies.',
+      instagram: 'Lifestyle/inspirational tone, 2-4 short paragraphs separated by line breaks. Engaging hook, emojis OK (sparingly).',
+      tiktok: 'Hooky and casual. Short punchy lines. Speak to the viewer directly.',
+    };
+    const platformGuide = platforms.map((p) => {
+      const k = p.toLowerCase();
+      return `- ${p} (max ~${platformLimits[k] || 800} chars): ${platformStyles[k] || 'Engaging, native to the platform.'}`;
+    }).join('\n');
     let variants = {};
     // Try up to 2 attempts to coax valid JSON out of the local LLM
     for (let attempt = 0; attempt < 2 && Object.keys(variants).length === 0; attempt += 1) {
       const write = await localJsonLLM(
-        'You are a senior social media manager. Output ONLY a JSON object — no prose, no markdown fences. Hashtags are arrays of plain words WITHOUT the # symbol.',
-        `Write engaging, platform-tailored social posts based on the research below.\n\nUser goal: ${prompt}\nAngle: ${plan.angle || prompt}\n\nPlatforms to write for:\n${platformGuide}\n\nResearch sources:\n${sourcesBlock || '(no sources — write from your own knowledge of the topic)'}\n\nReturn this exact shape:\n{"variants":{${platforms.map((p) => `"${p}":{"description":"...","hashtags":["tag1","tag2"]}`).join(',')}}}`,
+        'You are a senior social media writer. You DO NOT paste headlines or lists of links. You synthesise research into a real human-written story for each platform. Output ONLY a JSON object — no prose, no markdown fences. Hashtags are arrays of plain words WITHOUT the # symbol.',
+        `Write a unique, human-sounding social post for EACH platform below, based on the research.\n\nUser goal: ${prompt}\nAngle: ${plan.angle || prompt}\n\nRULES:\n- Write a real narrative — flowing sentences and short paragraphs.\n- DO NOT list headlines, bullets of source titles, or "•" lines.\n- DO NOT include raw URLs in the body.\n- Pull concrete facts, names, numbers from the research below; weave them naturally.\n- Match each platform's tone and length.\n- 4-8 relevant hashtags per platform (no # symbol).\n\nPlatforms:\n${platformGuide}\n\nResearch (use this to inform the story):\n${sourcesBlock || '(no sources — write from general knowledge of the topic)'}\n\nReturn EXACTLY this shape:\n{"variants":{${platforms.map((p) => `"${p}":{"description":"<full narrative post here>","hashtags":["tag1","tag2"]}`).join(',')}}}`,
         { variants: {} },
         aiSettings,
       );
       variants = write.variants || {};
     }
-    // Last-resort fallback: synthesize a draft from research sources so user always gets something
+    // Last-resort fallback: synthesise a narrative paragraph (NOT a bullet list) from research
     if (Object.keys(variants).length === 0) {
-      const summary = sources.slice(0, 3).map((s) => `• ${s.title}${s.snippet ? ` — ${s.snippet}` : ''}`).join('\n')
-        || `Latest update on: ${prompt}`;
+      const facts = sources.slice(0, 4)
+        .map((s) => (s.content || s.snippet || '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+      const opener = `Here's what's happening with ${plan.angle || prompt}:`;
+      const body = facts.length
+        ? facts.map((f) => f.split(/(?<=[.!?])\s/).slice(0, 2).join(' ')).join(' ')
+        : `${prompt}. Latest reporting suggests this story is still developing — more soon.`;
       const baseTags = (plan.angle || prompt).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3).slice(0, 5);
       platforms.forEach((p) => {
-        variants[p] = { description: `${prompt}\n\n${summary}`.slice(0, platformLimits[p.toLowerCase()] || 800), hashtags: baseTags };
+        const limit = platformLimits[p.toLowerCase()] || 800;
+        variants[p] = { description: `${opener}\n\n${body}`.slice(0, limit), hashtags: baseTags };
       });
-      await emit('step', { id: 'write-fallback', emoji: '🛟', label: 'LLM returned no JSON — built draft from research sources', status: 'done' });
+      await emit('step', { id: 'write-fallback', emoji: '🛟', label: 'LLM returned no JSON — synthesised narrative draft from extracted page text', status: 'done' });
     }
     await emit('step', { id: 'write', emoji: '✨', label: `Wrote ${Object.keys(variants).length} platform variants`, status: 'done' });
     for (const platform of platforms) {
@@ -1677,8 +1727,79 @@ app.post('/api/ai-chat', async (req, res) => {
 
     await refreshLMStudioConfigFromSettings(supabase);
 
-    // Stream response from LM Studio
-    const streamResp = await streamLMStudio(messages, supabase);
+    // Detect research / deep-dive intent on the latest user message and pre-fetch sources
+    // so the LLM has real material to write a long-form, well-cited answer from.
+    const lastUser = [...messages].reverse().find((m) => m?.role === 'user');
+    const lastText = String(lastUser?.content || '');
+    const wantsResearch = /\b(research|deep[- ]?dive|investigate|latest|news|find out|summari[sz]e|sources?|cite|report on|look up|what'?s happening|latest on)\b/i.test(lastText);
+
+    let augmentedMessages = messages;
+    if (wantsResearch && lastText.trim().length > 5) {
+      try {
+        const settingsRow = await supabase.from('app_settings').select('research_provider,research_api_key').eq('id', 1).single();
+        const researchProvider = settingsRow.data?.research_provider || 'auto';
+        const researchKey = settingsRow.data?.research_api_key || '';
+        const sources = [];
+        const seen = new Set();
+        // 1) Brave first if configured
+        if ((researchProvider === 'brave' || researchProvider === 'auto') && researchKey) {
+          try {
+            const br = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(lastText)}&count=6`, {
+              headers: { 'X-Subscription-Token': researchKey, Accept: 'application/json' },
+            });
+            if (br.ok) {
+              const bj = await br.json();
+              (bj?.web?.results || []).slice(0, 6).forEach((x) => {
+                if (x?.url && !seen.has(x.url)) { seen.add(x.url); sources.push({ title: x.title, url: x.url, snippet: x.description || '' }); }
+              });
+            }
+          } catch {}
+        }
+        // 2) DuckDuckGo / browser fallback
+        if (sources.length < 4) {
+          const r = await fetch(`http://localhost:${PORT}/api/research/search`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: lastText, count: 6 }),
+          });
+          const data = await r.json().catch(() => ({}));
+          (data.results || []).forEach((s) => { if (s?.url && !seen.has(s.url)) { seen.add(s.url); sources.push(s); } });
+        }
+        // 3) Deep-read top sources
+        await Promise.all(sources.slice(0, 4).map(async (s) => {
+          try {
+            const r = await fetch(s.url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LovableAgent/1.0)' }, signal: AbortSignal.timeout(8000) });
+            if (!r.ok) return;
+            const html = await r.text();
+            const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ');
+            const article = cleaned.match(/<article[\s\S]*?<\/article>/i)?.[0] || cleaned.match(/<main[\s\S]*?<\/main>/i)?.[0] || cleaned;
+            const text = article.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
+            if (text.length > 200) s.content = text;
+          } catch {}
+        }));
+        // 4) Try to grab a representative image
+        let imageUrl = null;
+        try {
+          const ir = await fetch(`http://localhost:${PORT}/api/research/image-search`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: lastText, urls: sources.slice(0, 3).map((s) => s.url), count: 3 }),
+          });
+          const id = await ir.json().catch(() => ({}));
+          const first = (id.images || [])[0];
+          imageUrl = typeof first === 'string' ? first : first?.url || null;
+        } catch {}
+
+        const sourcesBlock = sources.slice(0, 8).map((s, i) =>
+          `[${i + 1}] ${s.title}\n${s.content || s.snippet || ''}\nURL: ${s.url}`).join('\n\n');
+        const researchSystem = `You are an expert research assistant. The user asked for a deep dive. Real-time research was just performed on their behalf. Write a thorough, human-written report in MARKDOWN:\n\n- Open with a 1-2 sentence TL;DR.\n- Then 3-6 sections with ## headings covering the most important angles.\n- Use flowing prose (NOT a list of headlines). Pull concrete facts, names, numbers from the sources.\n- Cite sources inline as [1], [2], etc. matching the numbered list.\n- End with a "## Sources" section listing each numbered source as a markdown link.\n${imageUrl ? `- Include this hero image near the top: ![cover](${imageUrl})` : ''}\n\nRESEARCH MATERIAL:\n${sourcesBlock || '(no sources retrieved — answer from general knowledge and say so)'}\n`;
+        augmentedMessages = [
+          { role: 'system', content: researchSystem },
+          ...messages,
+        ];
+      } catch (e) {
+        console.warn('[AI-Chat] Research augmentation failed:', e.message);
+      }
+    }
+
+    // Stream response from LM Studio (or selected provider via streamLMStudio helper)
+    const streamResp = await streamLMStudio(augmentedMessages, supabase);
     if (!streamResp.ok) {
       const errText = await streamResp.text().catch(() => '');
       console.error('[AI-Chat] LM Studio error:', streamResp.status, errText);
@@ -1691,11 +1812,9 @@ app.post('/api/ai-chat', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Access-Control-Allow-Origin', '*');
 
-    const { Readable } = require('stream');
     if (streamResp.body && typeof streamResp.body.pipe === 'function') {
       streamResp.body.pipe(res);
     } else if (streamResp.body) {
-      // node-fetch v2 returns a Node.js Readable
       streamResp.body.pipe(res);
     } else {
       const text = await streamResp.text();
