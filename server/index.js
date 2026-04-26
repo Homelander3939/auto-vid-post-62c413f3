@@ -521,21 +521,23 @@ app.post('/api/telegram/send', async (req, res) => {
 
 app.post('/api/agent-run', async (req, res) => {
   try {
-    const { action, runId, prompt, source = 'local-web', telegram_chat_id = null } = req.body || {};
+    const { action, runId, prompt, source = 'local-web', telegram_chat_id = null, chat_settings = null, aiSettings = null } = req.body || {};
     if (action === 'cancel' && runId) {
       await supabase.from('agent_runs').update({ status: 'cancelled', completed_at: new Date().toISOString(), error: 'Cancelled by user' }).eq('id', runId);
       return res.json({ ok: true });
     }
     if (!prompt) return res.status(400).json({ error: 'prompt is required' });
+    const selectedAI = await resolveSelectedAIConfig(chat_settings || aiSettings || null);
     const { data, error } = await supabase.from('agent_runs').insert({
       prompt,
       source,
       telegram_chat_id,
+      chat_settings: chat_settings || aiSettings || null,
       status: 'running',
       events: [],
       result: null,
       error: null,
-      model: 'local-lmstudio',
+      model: `${selectedAI.provider}:${selectedAI.model}`,
     }).select('id').single();
     if (error) throw error;
     setImmediate(() => runLocalAgent(data.id).catch((err) => console.error('[LocalAgent] run failed:', err.message)));
