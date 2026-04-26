@@ -537,22 +537,50 @@ export async function generatePostWithAI(input: AIGenerateInput): Promise<AIGene
 }
 
 export interface AIModel { id: string; label?: string }
-async function callLocalWorker<T>(path: string, body: unknown): Promise<T> {
+async function callLocalWorker<T>(path: string, body: unknown, timeoutMs = 15_000): Promise<T> {
   const response = await fetch(`http://localhost:3001${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data?.error || `Local worker returned ${response.status}`);
   return data as T;
 }
 
+// Detect whether the user's local worker is reachable. Cached briefly to avoid
+// hammering it on every dropdown render.
+let localWorkerCheck: { at: number; alive: boolean } | null = null;
+async function isLocalWorkerAlive(): Promise<boolean> {
+  const now = Date.now();
+  if (localWorkerCheck && now - localWorkerCheck.at < 5_000) return localWorkerCheck.alive;
+  try {
+    const r = await fetch('http://localhost:3001/api/health', { signal: AbortSignal.timeout(1500) });
+    const alive = r.ok;
+    localWorkerCheck = { at: now, alive };
+    return alive;
+  } catch {
+    localWorkerCheck = { at: now, alive: false };
+    return false;
+  }
+}
+
+// Local-worker-first model discovery. The worker can reach LM Studio on the LAN
+// AND calls cloud providers directly with the user's own keys (zero Lovable cloud
+// dependency). Falls back to the edge function only if the local worker is offline.
 export async function listAIModels(provider: string, apiKey: string, baseUrl?: string): Promise<AIModel[]> {
   if (provider === 'lmstudio') {
-    const data = await callLocalWorker<{ models: AIModel[] }>('/api/ai/models', { apiKey, baseUrl });
+    const data = await callLocalWorker<{ models: AIModel[] }>('/api/ai/models', { provider, apiKey, baseUrl });
     return data.models || [];
+  }
+  if (await isLocalWorkerAlive()) {
+    try {
+      const data = await callLocalWorker<{ models: AIModel[] }>('/api/ai/models', { provider, apiKey, baseUrl });
+      return data.models || [];
+    } catch (e) {
+      console.warn('[listAIModels] local worker failed, falling back to edge function:', (e as Error).message);
+    }
   }
   const { data, error } = await supabase.functions.invoke('list-ai-models', { body: { provider, apiKey, baseUrl } });
   if (error) throw new Error(error.message || 'Failed to list models');
@@ -563,7 +591,14 @@ export async function listAIModels(provider: string, apiKey: string, baseUrl?: s
 export interface ConnectionTestResult { ok: boolean; error?: string; latency?: number; provider?: string; model?: string; sample?: string }
 export async function testAIConnection(provider: string, apiKey: string, model: string, baseUrl?: string): Promise<ConnectionTestResult> {
   if (provider === 'lmstudio') {
-    return callLocalWorker<ConnectionTestResult>('/api/ai/test', { apiKey, model, baseUrl });
+    return callLocalWorker<ConnectionTestResult>('/api/ai/test', { provider, apiKey, model, baseUrl });
+  }
+  if (await isLocalWorkerAlive()) {
+    try {
+      return await callLocalWorker<ConnectionTestResult>('/api/ai/test', { provider, apiKey, model, baseUrl });
+    } catch (e) {
+      console.warn('[testAIConnection] local worker failed, falling back to edge function:', (e as Error).message);
+    }
   }
   const { data, error } = await supabase.functions.invoke('test-ai-connection', { body: { provider, apiKey, model, baseUrl } });
   if (error) return { ok: false, error: error.message };
