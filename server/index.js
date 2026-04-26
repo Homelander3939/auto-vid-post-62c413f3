@@ -795,12 +795,12 @@ async function runLocalAgent(runId) {
   const { data: run } = await supabase.from('agent_runs').select('*').eq('id', runId).single();
   if (!run) return;
   const settings = await getSettings().catch(() => null);
-  const config = await refreshLMStudioConfigFromSettings(supabase);
+  const config = await resolveSelectedAIConfig(run.chat_settings || null);
   const workspaceSlug = slugifyAgentRun(run.prompt);
   try {
-    await appendAgentEvent(runId, { type: 'preflight_ok', component: 'local_worker', alive: true, message: `Local worker connected · ${config.model}` });
-    await appendAgentEvent(runId, { type: 'tool_call', name: 'plan', label: 'local plan' });
-    await appendAgentEvent(runId, { type: 'plan', steps: ['Use local LM Studio', 'Use local browser/tools when needed', 'Return final result without cloud AI credits'] });
+    await appendAgentEvent(runId, { type: 'preflight_ok', component: 'local_worker', alive: true, message: `Local worker connected · ${config.label}` });
+    await appendAgentEvent(runId, { type: 'tool_call', name: 'plan', label: `${config.provider} plan` });
+    await appendAgentEvent(runId, { type: 'plan', steps: [`Use selected LLM provider: ${config.label}`, 'Use local browser/tools when needed', 'Return final result without Lovable AI credits'] });
     await appendAgentEvent(runId, { type: 'tool_result', name: 'plan', ok: true, summary: 'Local plan recorded.' });
 
     let researchContext = '';
@@ -816,9 +816,9 @@ async function runLocalAgent(runId) {
     }
 
     const reply = await localChatCompletion([
-      { role: 'system', content: 'You are a local autonomous agent running only on the user PC through LM Studio. Do not mention cloud credits. Be concise and include useful sources when provided.' },
+      { role: 'system', content: `You are a local-worker autonomous agent using the selected LLM provider (${config.label}). Do not mention cloud credits. Be concise and include useful sources when provided.` },
       { role: 'user', content: `${run.prompt}${researchContext ? `\n\nLocal research sources:\n${researchContext}` : ''}` },
-    ], { max_tokens: 1800, temperature: 0.4 });
+    ], { max_tokens: 1800, temperature: 0.4, aiSettings: run.chat_settings || null });
     const summary = reply?.choices?.[0]?.message?.content || 'Done.';
     await appendAgentEvent(runId, { type: 'finish', summary });
     await setAgentRunStatus(runId, { status: 'completed', completed_at: new Date().toISOString(), result: { summary } });
@@ -850,11 +850,11 @@ function parseJsonFromText(text, fallback = {}) {
   return fallback;
 }
 
-async function localJsonLLM(systemPrompt, userPrompt, fallback = {}) {
+async function localJsonLLM(systemPrompt, userPrompt, fallback = {}, aiSettings = null) {
   const data = await localChatCompletion([
     { role: 'system', content: `${systemPrompt}\nReturn valid JSON only. No markdown.` },
     { role: 'user', content: userPrompt },
-  ], { temperature: 0.35, max_tokens: 2200 });
+  ], { temperature: 0.35, max_tokens: 2200, aiSettings });
   return parseJsonFromText(data?.choices?.[0]?.message?.content || '', fallback);
 }
 
