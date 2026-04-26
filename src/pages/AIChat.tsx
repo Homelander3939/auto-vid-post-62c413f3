@@ -555,8 +555,12 @@ export default function AIChat() {
     if (telegramEnabled && resolvedChatId) {
       void mirrorBrowserMessage('You', text, pendingFiles);
       // Show "typing..." in Telegram while AI thinks
-      void supabase.functions.invoke('send-telegram', {
-        body: { chat_id: resolvedChatId, action: 'typing' },
+      void sendLocalTelegram({ chat_id: resolvedChatId, action: 'typing' }).then((sentLocal) => {
+        if (!sentLocal) {
+          void supabase.functions.invoke('send-telegram', {
+            body: { chat_id: resolvedChatId, action: 'typing' },
+          });
+        }
       });
     }
 
@@ -589,9 +593,16 @@ export default function AIChat() {
     if (shouldLaunchAgentRun(text, pendingFiles)) {
       try {
         const agentPrompt = buildAgentRunPrompt(text, pendingFiles);
-        const { data, error } = await supabase.functions.invoke('agent-run', {
-          body: { prompt: agentPrompt, source: 'ai-chat' },
-        });
+        const localResp = await fetch(`${LOCAL_WORKER_URL}/api/agent-run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: agentPrompt, source: 'ai-chat' }),
+          signal: AbortSignal.timeout(5000),
+        }).catch(() => null);
+        const data = localResp?.ok
+          ? await localResp.json()
+          : (await supabase.functions.invoke('agent-run', { body: { prompt: agentPrompt, source: 'ai-chat' } })).data;
+        const error = !localResp?.ok && !data ? new Error('Agent run did not start') : null;
         if (error || data?.error || !data?.runId) {
           throw new Error(data?.error || error?.message || 'Agent run did not start');
         }
