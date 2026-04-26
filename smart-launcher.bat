@@ -17,8 +17,7 @@ start "LM Studio API" cmd /k "lms server start --port 1234 --cors --bind 0.0.0.0
 echo Waiting for LM Studio server to become ready...
 timeout /t 8 /nobreak
 
-echo [2b/5] Loading Gemma 3 27B model...
-start "LM Studio Load Model" cmd /c "lms load google/gemma-3-27b"
+echo [2b/5] LM Studio model loading is controlled by Settings / currently loaded model.
 
 echo [3/5] Checking Dependencies...
 call npm run ensure-deps
@@ -44,7 +43,7 @@ cd ..
 
 echo [4/5] Launching services...
 :: Start Backend — use localhost:1234 for LM Studio (running on this machine)
-start "Uploader_SERVER" cmd /k "cd server && SET LM_STUDIO_URL=http://localhost:1234 && SET LM_STUDIO_MODEL=google/gemma-3-27b && npm start"
+start "Uploader_SERVER" cmd /k "cd server && SET LM_STUDIO_URL=http://localhost:1234 && npm start"
 
 :: Start Frontend (LOCKED TO PORT 8081)
 start "Uploader_FRONTEND" cmd /k "npm run dev -- --port 8081 --strictPort"

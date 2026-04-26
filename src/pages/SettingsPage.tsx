@@ -1308,6 +1308,23 @@ export default function SettingsPage() {
         {settings.telegram.enabled && (
           <CardContent className="space-y-4">
             <div className="space-y-2">
+              <Label>Bot Token</Label>
+              <PasswordInput
+                value={settings.telegram.botToken}
+                onChange={(v) =>
+                  setSettings((p) => ({
+                    ...p,
+                    telegram: { ...p.telegram, botToken: v },
+                  }))
+                }
+                placeholder="Paste your Telegram bot token from BotFather"
+              />
+              <p className="text-xs text-muted-foreground">
+                Saved for the local worker, so Telegram sends directly from your PC instead of the cloud connector.
+              </p>
+            </div>
+
+            <div className="space-y-2">
               <Label>Chat ID</Label>
               <div className="flex gap-2">
                 <Input

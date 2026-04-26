@@ -29,6 +29,7 @@ const { sendTelegram } = require('./telegram');
 const { scanFolder, scanAllFiles } = require('./folderWatcher');
 const { parseTextFile } = require('./textParser');
 const { processTelegramAIResponse, streamLMStudio, LM_STUDIO_URL, discoverLMStudioModels, refreshLMStudioConfigFromSettings, testLMStudioConnection } = require('./ai-handler');
+const { handleAgentCommand } = require('./agentWorkspace');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
@@ -487,6 +488,56 @@ app.get('/', (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', mode: 'local' }));
 
+app.post('/api/telegram/send', async (req, res) => {
+  try {
+    const settings = await getSettings();
+    const chatId = req.body?.chat_id || settings.telegram?.chatId;
+    if (!settings.telegram?.enabled || !settings.telegram?.botToken) {
+      return res.status(400).json({ success: false, error: 'Telegram is not configured locally. Add your bot token in Settings.' });
+    }
+    if (req.body?.action) {
+      const { sendChatActionViaBotToken } = require('./telegram');
+      await sendChatActionViaBotToken(settings.telegram.botToken, chatId, req.body.action);
+      return res.json({ success: true });
+    }
+    if (req.body?.photo_base64) {
+      const { sendTelegramPhoto } = require('./telegram');
+      await sendTelegramPhoto(settings.telegram.botToken, chatId, Buffer.from(req.body.photo_base64, 'base64'), req.body?.text || '', null);
+      return res.json({ success: true });
+    }
+    await sendTelegram(settings.telegram.botToken, chatId, req.body?.text || '', null);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/agent-run', async (req, res) => {
+  try {
+    const { action, runId, prompt, source = 'local-web', telegram_chat_id = null } = req.body || {};
+    if (action === 'cancel' && runId) {
+      await supabase.from('agent_runs').update({ status: 'cancelled', completed_at: new Date().toISOString(), error: 'Cancelled by user' }).eq('id', runId);
+      return res.json({ ok: true });
+    }
+    if (!prompt) return res.status(400).json({ error: 'prompt is required' });
+    const { data, error } = await supabase.from('agent_runs').insert({
+      prompt,
+      source,
+      telegram_chat_id,
+      status: 'running',
+      events: [],
+      result: null,
+      error: null,
+      model: 'local-lmstudio',
+    }).select('id').single();
+    if (error) throw error;
+    setImmediate(() => runLocalAgent(data.id).catch((err) => console.error('[LocalAgent] run failed:', err.message)));
+    res.json({ runId: data.id, local: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const LOCAL_DB_TABLES = new Set([
   'app_settings', 'platform_accounts', 'upload_jobs', 'scheduled_uploads', 'schedule_config',
   'social_post_accounts', 'social_posts', 'social_post_schedules', 'generation_jobs',
@@ -622,24 +673,110 @@ async function appendGenerationEvent(jobId, event, data) {
 
 async function localChatCompletion(messages, { tools, tool_choice, max_tokens = 2048, temperature = 0.4 } = {}) {
   const config = await refreshLMStudioConfigFromSettings(supabase);
-  const response = await fetch(`${String(config.url).replace(/\/+$/, '').replace(/\/v1$/i, '')}/v1/chat/completions`, {
+  const buildBody = (model) => ({
+    model,
+    messages,
+    ...(tools ? { tools } : {}),
+    ...(tool_choice ? { tool_choice } : {}),
+    temperature,
+    max_tokens,
+  });
+  const base = String(config.url).replace(/\/+$/, '').replace(/\/v1$/i, '');
+  const call = async (model) => fetch(`${base}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.apiKey || 'lm-studio'}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      ...(tools ? { tools } : {}),
-      ...(tool_choice ? { tool_choice } : {}),
-      temperature,
-      max_tokens,
-    }),
+    body: JSON.stringify(buildBody(model)),
   });
-  const text = await response.text();
+  let response = await call(config.model);
+  let text = await response.text();
+  if (!response.ok && /model|not found|unloaded|cannot find/i.test(text)) {
+    const loaded = await discoverLMStudioModels(base, config.apiKey || 'lm-studio').catch(() => []);
+    const fallbackModel = loaded[0]?.id;
+    if (fallbackModel && fallbackModel !== config.model) {
+      console.warn(`[AI] Saved LM Studio model unavailable (${config.model}); retrying loaded model ${fallbackModel}`);
+      response = await call(fallbackModel);
+      text = await response.text();
+    }
+  }
   if (!response.ok) throw new Error(`LM Studio returned ${response.status}: ${text.slice(0, 300)}`);
   return JSON.parse(text || '{}');
+}
+
+function slugifyAgentRun(s) {
+  return String(s || 'task').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task';
+}
+
+async function appendAgentEvent(runId, event) {
+  const { data: row } = await supabase.from('agent_runs').select('events').eq('id', runId).single();
+  const events = Array.isArray(row?.events) ? row.events : [];
+  events.push({ ...event, ts: Date.now() });
+  await supabase.from('agent_runs').update({ events, updated_at: new Date().toISOString() }).eq('id', runId);
+  return events;
+}
+
+async function setAgentRunStatus(runId, patch) {
+  await supabase.from('agent_runs').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', runId);
+}
+
+async function isAgentCancelled(runId) {
+  const { data } = await supabase.from('agent_runs').select('status').eq('id', runId).single();
+  return data?.status === 'cancelled';
+}
+
+const LOCAL_AGENT_TOOLS = [
+  { type: 'function', function: { name: 'plan', description: 'Call first with 3-7 concise steps.', parameters: { type: 'object', properties: { steps: { type: 'array', items: { type: 'string' } } }, required: ['steps'] } } },
+  { type: 'function', function: { name: 'research_deep', description: 'Search the web locally and return sourced findings.', parameters: { type: 'object', properties: { query: { type: 'string' }, depth: { type: 'string' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'browser_task', description: 'Run a local browser research/automation task.', parameters: { type: 'object', properties: { task: { type: 'string' }, url: { type: 'string' } }, required: ['task'] } } },
+  { type: 'function', function: { name: 'write_file', description: 'Write a local workspace file.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
+  { type: 'function', function: { name: 'read_file', description: 'Read a local workspace file.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'list_files', description: 'List local workspace files.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'run_shell', description: 'Run an allowlisted local shell command.', parameters: { type: 'object', properties: { command: { type: 'string' }, timeout_seconds: { type: 'number' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'open_in_browser', description: 'Open a URL or workspace file locally.', parameters: { type: 'object', properties: { target: { type: 'string' } }, required: ['target'] } } },
+  { type: 'function', function: { name: 'serve_preview', description: 'Serve the local workspace preview.', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'remember_fact', description: 'Save durable memory.', parameters: { type: 'object', properties: { title: { type: 'string' }, content: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } }, memory_type: { type: 'string' }, importance: { type: 'number' } }, required: ['title', 'content'] } } },
+  { type: 'function', function: { name: 'finish', description: 'Finish the run with summary and artifacts.', parameters: { type: 'object', properties: { summary: { type: 'string' }, artifacts: { type: 'array', items: { type: 'object' } } }, required: ['summary'] } } },
+];
+
+async function runLocalAgent(runId) {
+  const { data: run } = await supabase.from('agent_runs').select('*').eq('id', runId).single();
+  if (!run) return;
+  const settings = await getSettings().catch(() => null);
+  const config = await refreshLMStudioConfigFromSettings(supabase);
+  const workspaceSlug = slugifyAgentRun(run.prompt);
+  try {
+    await appendAgentEvent(runId, { type: 'preflight_ok', component: 'local_worker', alive: true, message: `Local worker connected · ${config.model}` });
+    await appendAgentEvent(runId, { type: 'tool_call', name: 'plan', label: 'local plan' });
+    await appendAgentEvent(runId, { type: 'plan', steps: ['Use local LM Studio', 'Use local browser/tools when needed', 'Return final result without cloud AI credits'] });
+    await appendAgentEvent(runId, { type: 'tool_result', name: 'plan', ok: true, summary: 'Local plan recorded.' });
+
+    let researchContext = '';
+    if (/\b(research|latest|news|find out|crypto|web3|search|scrape|analy[sz]e)\b/i.test(run.prompt)) {
+      await appendAgentEvent(runId, { type: 'tool_call', name: 'research_deep', label: run.prompt.slice(0, 80) });
+      const r = await fetch(`http://localhost:${PORT}/api/research/search`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: run.prompt, count: 6 }),
+      });
+      const data = await r.json().catch(() => ({}));
+      const sources = Array.isArray(data.results) ? data.results.slice(0, 6) : [];
+      researchContext = sources.map((s, i) => `[${i + 1}] ${s.title || s.url}\n${s.snippet || ''}\n${s.url || ''}`).join('\n\n');
+      await appendAgentEvent(runId, { type: 'tool_result', name: 'research_deep', ok: true, summary: `Found ${sources.length} sources locally.`, data: { sources } });
+    }
+
+    const reply = await localChatCompletion([
+      { role: 'system', content: 'You are a local autonomous agent running only on the user PC through LM Studio. Do not mention cloud credits. Be concise and include useful sources when provided.' },
+      { role: 'user', content: `${run.prompt}${researchContext ? `\n\nLocal research sources:\n${researchContext}` : ''}` },
+    ], { max_tokens: 1800, temperature: 0.4 });
+    const summary = reply?.choices?.[0]?.message?.content || 'Done.';
+    await appendAgentEvent(runId, { type: 'finish', summary });
+    await setAgentRunStatus(runId, { status: 'completed', completed_at: new Date().toISOString(), result: { summary } });
+    if (settings && run.telegram_chat_id) await notifyTelegram(settings, summary);
+  } catch (err) {
+    await appendAgentEvent(runId, { type: 'error', message: err.message });
+    await setAgentRunStatus(runId, { status: 'failed', completed_at: new Date().toISOString(), error: err.message });
+    if (settings && run.telegram_chat_id) await notifyTelegram(settings, `❌ Local agent failed: ${err.message}`);
+  }
 }
 
 function parseJsonFromText(text, fallback = {}) {
