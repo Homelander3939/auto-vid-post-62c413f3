@@ -253,6 +253,12 @@ async function routeDeterministicTelegramTask(text, chatId, backend) {
   const clean = String(text || '').trim();
   if (!clean) return null;
 
+  // Real research first — runs the deterministic deep-research pipeline,
+  // saves an agent_run for the Job Queue, and posts the full report to Telegram.
+  if (looksLikeResearchRequest(clean)) {
+    return await runDeepResearchForTelegram(clean, chatId);
+  }
+
   if (looksLikeSocialPostRequest(clean)) {
     const platforms = extractSocialPlatforms(clean);
     const data = await invokeLocalWorker('/api/generate-social-post', {
