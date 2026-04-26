@@ -192,18 +192,12 @@ function summarizeGeneratedPost(data, platforms) {
   const variants = data?.variants || {};
   const firstPlatform = platforms.find((p) => variants[p]) || Object.keys(variants)[0];
   const first = firstPlatform ? variants[firstPlatform] : null;
-  const tags = Array.isArray(first?.hashtags) && first.hashtags.length ? `
-#${first.hashtags.slice(0, 8).join(' #')}` : '';
+  const tags = Array.isArray(first?.hashtags) && first.hashtags.length ? `\n#${first.hashtags.slice(0, 8).join(' #')}` : '';
   const sources = Array.isArray(data?.sources) ? data.sources.slice(0, 5) : [];
-  const sourceText = sources.length ? `
-
-Sources:
-${sources.map((src, i) => `${i + 1}. ${src.title || src.url}
-${src.url || ''}`).join('
-')}` : '';
-  return `✅ Post generation complete (${platforms.join(', ')})
-
-${first?.description || 'Draft saved.'}${tags}${sourceText}`.slice(0, 3900);
+  const sourceText = sources.length
+    ? `\n\nSources:\n${sources.map((src, i) => `${i + 1}. ${src.title || src.url}\n${src.url || ''}`).join('\n')}`
+    : '';
+  return `✅ Post generation complete (${platforms.join(', ')})\n\n${first?.description || 'Draft saved.'}${tags}${sourceText}`.slice(0, 3900);
 }
 
 async function routeDeterministicTelegramTask(text, chatId, backend) {
@@ -212,13 +206,14 @@ async function routeDeterministicTelegramTask(text, chatId, backend) {
 
   if (looksLikeSocialPostRequest(clean)) {
     const platforms = extractSocialPlatforms(clean);
-    await invokeCloudFunction(backend, 'generate-social-post', {
+    const data = await invokeLocalWorker('/api/generate-social-post', {
       prompt: clean,
       platforms,
       includeImage: true,
-      stream: true,
+      stream: false,
+      telegram_chat_id: chatId,
     });
-    return `Started post-generation agent for: ${truncateText(clean)}\nPlatforms: ${platforms.join(', ')}\nI will send the draft here for approval when it is ready.`;
+    return summarizeGeneratedPost(data, platforms);
   }
 
   if (looksLikeAgenticRequest(clean)) {
