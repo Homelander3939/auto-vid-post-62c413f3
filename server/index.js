@@ -778,11 +778,17 @@ async function runLocalAgent(runId) {
     const summary = reply?.choices?.[0]?.message?.content || 'Done.';
     await appendAgentEvent(runId, { type: 'finish', summary });
     await setAgentRunStatus(runId, { status: 'completed', completed_at: new Date().toISOString(), result: { summary } });
-    if (settings && run.telegram_chat_id) await notifyTelegram(settings, summary);
+    if (settings) {
+      if (run.telegram_chat_id) settings.telegram.chatId = String(run.telegram_chat_id);
+      await notifyTelegram(settings, `✅ Local agent completed\n\n${summary}`);
+    }
   } catch (err) {
     await appendAgentEvent(runId, { type: 'error', message: err.message });
     await setAgentRunStatus(runId, { status: 'failed', completed_at: new Date().toISOString(), error: err.message });
-    if (settings && run.telegram_chat_id) await notifyTelegram(settings, `❌ Local agent failed: ${err.message}`);
+    if (settings) {
+      if (run.telegram_chat_id) settings.telegram.chatId = String(run.telegram_chat_id);
+      await notifyTelegram(settings, `❌ Local agent failed: ${err.message}`);
+    }
   }
 }
 
