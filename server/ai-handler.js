@@ -1035,8 +1035,16 @@ async function streamLMStudio(messages, supabase) {
         .select('telegram_enabled,telegram_chat_id').eq('id', 1).single();
       if (s?.telegram_enabled && s?.telegram_chat_id) chatId = String(s.telegram_chat_id);
     } catch {}
-    const report = await runDeepResearchForTelegram(lastUserText, chatId, supabase);
-    return makeSseStreamFromText(report || 'Research returned no output.');
+    const res = await runDeepResearchForTelegram(lastUserText, chatId, supabase);
+    // Stream back the FULL markdown report (with hero image + ## headings + sources)
+    // so the chat renders it as rich content via ReactMarkdown.
+    const reportMd = typeof res === 'object' && res !== null
+      ? (res.report || 'Research returned no output.')
+      : String(res || 'Research returned no output.');
+    const linkLine = (typeof res === 'object' && res?.linkBack)
+      ? `\n\n---\n\n🔗 [Open full report in Job Queue](${res.linkBack})`
+      : '';
+    return makeSseStreamFromText(reportMd + linkLine);
   }
 
   const fullMessages = [
