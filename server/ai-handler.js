@@ -249,6 +249,204 @@ function summarizeGeneratedPost(data, platforms) {
   return `✅ Post generation complete (${platforms.join(', ')})\n\n${first?.description || 'Draft saved.'}${tags}${sourceText}`.slice(0, 3900);
 }
 
+/**
+ * Real deep-research pipeline for Telegram requests.
+ * 1) Search (Brave if configured, else DuckDuckGo via local /api/research/search)
+ * 2) Fetch top sources and extract readable text
+ * 3) Pick a hero image
+ * 4) Ask the LLM to write a long-form markdown report grounded in the extracted text
+ * 5) Persist as an agent_run so it appears in the Job Queue with full result + sources
+ * 6) Send the formatted report straight to Telegram + a link back to /queue?run=<id>
+ */
+async function runDeepResearchForTelegram(prompt, chatId, supabase) {
+  if (!supabase) throw new Error('supabase client missing for deep research');
+  const port = process.env.PORT || 3001;
+  const startedAt = Date.now();
+
+  // Create the agent_run row up front so the Job Queue UI shows progress live.
+  const { data: runRow, error: runErr } = await supabase
+    .from('agent_runs')
+    .insert({
+      prompt,
+      status: 'running',
+      source: 'telegram',
+      automation_mode: 'research',
+      task_mode: 'deep-research',
+      telegram_chat_id: chatId ? String(chatId) : null,
+      events: [
+        { type: 'phase', name: 'search', ts: Date.now() },
+      ],
+    })
+    .select('id')
+    .single();
+  if (runErr) throw new Error(`Could not start research run: ${runErr.message}`);
+  const runId = runRow.id;
+
+  const appendEvent = async (event) => {
+    try {
+      const { data: cur } = await supabase.from('agent_runs').select('events').eq('id', runId).single();
+      const events = Array.isArray(cur?.events) ? cur.events : [];
+      events.push({ ts: Date.now(), ...event });
+      await supabase.from('agent_runs').update({ events }).eq('id', runId);
+    } catch {}
+  };
+
+  try {
+    // Settings
+    const { data: settingsRow } = await supabase
+      .from('app_settings')
+      .select('research_provider,research_api_key,local_agent_url,telegram_bot_token,telegram_chat_id,ai_provider,ai_api_key,ai_model,ai_base_url')
+      .eq('id', 1).single();
+    const researchProvider = settingsRow?.research_provider || 'auto';
+    const researchKey = settingsRow?.research_api_key || '';
+    const baseUrl = (settingsRow?.local_agent_url || `http://localhost:${port}`).replace(/\/+$/, '');
+
+    await appendEvent({ type: 'tool_call', name: 'research_deep', label: prompt.slice(0, 80) });
+
+    const sources = [];
+    const seen = new Set();
+
+    // 1a) Brave first
+    if ((researchProvider === 'brave' || researchProvider === 'auto') && researchKey) {
+      try {
+        const br = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(prompt)}&count=8`, {
+          headers: { 'X-Subscription-Token': researchKey, Accept: 'application/json' },
+        });
+        if (br.ok) {
+          const bj = await br.json();
+          (bj?.web?.results || []).forEach((x) => {
+            if (x?.url && !seen.has(x.url)) { seen.add(x.url); sources.push({ title: x.title, url: x.url, snippet: x.description || '' }); }
+          });
+        }
+      } catch {}
+    }
+    // 1b) DuckDuckGo / browser fallback
+    if (sources.length < 5) {
+      try {
+        const r = await fetch(`http://localhost:${port}/api/research/search`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: prompt, count: 8 }),
+        });
+        const data = await r.json().catch(() => ({}));
+        (data.results || []).forEach((s) => { if (s?.url && !seen.has(s.url)) { seen.add(s.url); sources.push(s); } });
+      } catch {}
+    }
+
+    await appendEvent({ type: 'tool_result', name: 'research_deep', ok: sources.length > 0, summary: `Found ${sources.length} sources` });
+
+    // 2) Deep-read up to 6 top pages
+    await appendEvent({ type: 'phase', name: 'read-sources' });
+    await Promise.all(sources.slice(0, 6).map(async (s) => {
+      try {
+        const r = await fetch(s.url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LovableAgent/1.0)' },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!r.ok) return;
+        const html = await r.text();
+        const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ');
+        const article = cleaned.match(/<article[\s\S]*?<\/article>/i)?.[0]
+          || cleaned.match(/<main[\s\S]*?<\/main>/i)?.[0] || cleaned;
+        const text = article.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2500);
+        if (text.length > 200) s.content = text;
+      } catch {}
+    }));
+    const readCount = sources.slice(0, 6).filter((s) => s.content).length;
+    await appendEvent({ type: 'tool_result', name: 'deep_read', ok: readCount > 0, summary: `Extracted readable text from ${readCount} pages` });
+
+    // 3) Hero image
+    let imageUrl = null;
+    try {
+      const ir = await fetch(`http://localhost:${port}/api/research/image-search`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: prompt, urls: sources.slice(0, 3).map((s) => s.url), count: 3 }),
+      });
+      const id = await ir.json().catch(() => ({}));
+      const first = (id.images || [])[0];
+      imageUrl = typeof first === 'string' ? first : first?.url || null;
+    } catch {}
+
+    // 4) Ask the LLM for a real markdown report
+    await appendEvent({ type: 'phase', name: 'write-report' });
+    const sourcesBlock = sources.slice(0, 8).map((s, i) =>
+      `[${i + 1}] ${s.title}\n${s.content || s.snippet || ''}\nURL: ${s.url}`).join('\n\n');
+    const reportSystem = [
+      'You are an expert research analyst. The user asked for a deep dive.',
+      'Real-time research was just performed for you. Write a thorough markdown report.',
+      '',
+      'STRICT RULES:',
+      '- Open with a 1–2 sentence TL;DR.',
+      '- Then 4–6 sections with `##` headings covering the most important angles.',
+      '- Use flowing prose (NOT bullet lists of headlines). Pull concrete facts, names, numbers, prices, dates from the sources.',
+      '- Cite sources inline as [1], [2] matching the numbered list.',
+      '- End with a `## Sources` section listing each numbered source as a markdown link.',
+      imageUrl ? `- Include this hero image near the top: ![cover](${imageUrl})` : '',
+      '',
+      'RESEARCH MATERIAL:',
+      sourcesBlock || '(no sources retrieved — write from general knowledge and say so)',
+    ].filter(Boolean).join('\n');
+
+    let report = '';
+    try {
+      const llmResp = await selectedChatFetch(supabase, {
+        messages: [
+          { role: 'system', content: reportSystem },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.55,
+        max_tokens: 3500,
+      });
+      const text = await llmResp.text();
+      const data = JSON.parse(text);
+      report = data?.choices?.[0]?.message?.content || '';
+    } catch (e) {
+      report = `Could not write the report (${e.message}). Raw sources collected:\n\n` +
+        sources.slice(0, 8).map((s, i) => `${i + 1}. ${s.title}\n${s.url}`).join('\n');
+    }
+
+    if (!report.trim()) {
+      report = `# Research: ${prompt}\n\n_(LLM returned an empty report. Sources found:)_\n\n` +
+        sources.slice(0, 8).map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join('\n');
+    }
+
+    // 5) Persist final result
+    const result = {
+      kind: 'deep-research',
+      report,
+      image_url: imageUrl,
+      sources: sources.slice(0, 8).map((s, i) => ({
+        index: i + 1, title: s.title, url: s.url, snippet: s.snippet || (s.content || '').slice(0, 220),
+      })),
+      took_ms: Date.now() - startedAt,
+    };
+    await appendEvent({ type: 'finish', summary: `Wrote a ${report.length}-char report from ${sources.length} sources.` });
+    await supabase.from('agent_runs').update({
+      status: 'completed',
+      completed_at: new Date().toISOString(),
+      result,
+    }).eq('id', runId);
+
+    // 6) Build a Telegram-friendly summary
+    const tgPlain = report
+      .replace(/!\[[^\]]*\]\([^)]+\)/g, '')   // strip image markdown
+      .replace(/\*\*/g, '')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/^#{1,6}\s+/gm, '')
+      .trim();
+    const linkBack = settingsRow?.local_agent_url
+      ? `${baseUrl.replace(/:3001$/, ':8081')}/queue?run=${runId}`
+      : `http://localhost:8081/queue?run=${runId}`;
+    const tgFinal = `${tgPlain.slice(0, 3500)}\n\n🔗 Open full report: ${linkBack}`;
+    return tgFinal;
+  } catch (err) {
+    await appendEvent({ type: 'error', message: err.message });
+    await supabase.from('agent_runs').update({
+      status: 'failed', completed_at: new Date().toISOString(), error: err.message,
+    }).eq('id', runId);
+    return `❌ Research failed: ${err.message}\n\nMake sure smart-launcher.bat is running and your AI provider (LM Studio or selected provider) is reachable.`;
+  }
+}
+
 async function routeDeterministicTelegramTask(text, chatId, backend, supabase) {
   const clean = String(text || '').trim();
   if (!clean) return null;
