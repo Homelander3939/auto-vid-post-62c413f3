@@ -426,24 +426,56 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
       result,
     }).eq('id', runId);
 
-    // 6) Build a Telegram-friendly summary
+    // 6) Send a rich preview to Telegram (hero photo + plain-text caption + body)
+    const linkBack = `http://localhost:8081/queue?run=${runId}`;
     const tgPlain = report
       .replace(/!\[[^\]]*\]\([^)]+\)/g, '')   // strip image markdown
-      .replace(/\*\*/g, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
       .replace(/`([^`]+)`/g, '$1')
       .replace(/^#{1,6}\s+/gm, '')
+      .replace(/\n{3,}/g, '\n\n')
       .trim();
-    const linkBack = settingsRow?.local_agent_url
-      ? `${baseUrl.replace(/:3001$/, ':8081')}/queue?run=${runId}`
-      : `http://localhost:8081/queue?run=${runId}`;
-    const tgFinal = `${tgPlain.slice(0, 3500)}\n\n🔗 Open full report: ${linkBack}`;
-    return tgFinal;
+    const tgBody = `${tgPlain.slice(0, 3500)}\n\n🔗 Full report with sources: ${linkBack}`;
+
+    if (chatId && settingsRow?.telegram_bot_token) {
+      try {
+        const { sendTelegram, sendTelegramPhoto } = require('./telegram');
+        let photoSent = false;
+        if (imageUrl) {
+          try {
+            const imgResp = await fetch(imageUrl);
+            if (imgResp.ok) {
+              const buf = Buffer.from(await imgResp.arrayBuffer());
+              const caption = tgPlain.slice(0, 900);
+              await sendTelegramPhoto(settingsRow.telegram_bot_token, chatId, buf, caption, null);
+              photoSent = true;
+              // Send the rest of the body as a follow-up message if it didn't fit in caption
+              if (tgPlain.length > 900) {
+                await sendTelegram(settingsRow.telegram_bot_token, chatId, tgBody, null);
+              } else {
+                await sendTelegram(settingsRow.telegram_bot_token, chatId, `🔗 Full report with sources: ${linkBack}`, null);
+              }
+            }
+          } catch (photoErr) {
+            console.warn('[Research] Hero photo send failed:', photoErr.message);
+          }
+        }
+        if (!photoSent) {
+          await sendTelegram(settingsRow.telegram_bot_token, chatId, tgBody, null);
+        }
+      } catch (tgErr) {
+        console.warn('[Research] Telegram delivery failed:', tgErr.message);
+      }
+    }
+
+    // Mark the report so callers (Telegram processor) know not to re-send it.
+    return { report, telegramSent: Boolean(chatId && settingsRow?.telegram_bot_token), linkBack, runId };
   } catch (err) {
     await appendEvent({ type: 'error', message: err.message });
     await supabase.from('agent_runs').update({
       status: 'failed', completed_at: new Date().toISOString(), error: err.message,
     }).eq('id', runId);
-    return `❌ Research failed: ${err.message}\n\nMake sure smart-launcher.bat is running and your AI provider (LM Studio or selected provider) is reachable.`;
+    return { report: `❌ Research failed: ${err.message}\n\nMake sure smart-launcher.bat is running and your AI provider (LM Studio or selected provider) is reachable.`, telegramSent: false, runId, error: true };
   }
 }
 
@@ -454,7 +486,10 @@ async function routeDeterministicTelegramTask(text, chatId, backend, supabase) {
   // Real research first — runs the deterministic deep-research pipeline,
   // saves an agent_run for the Job Queue, and posts the full report to Telegram.
   if (looksLikeResearchRequest(clean)) {
-    return await runDeepResearchForTelegram(clean, chatId, supabase);
+    const res = await runDeepResearchForTelegram(clean, chatId, supabase);
+    // Return a marker object so the Telegram processor knows the rich reply
+    // (photo + body) was already delivered, and shouldn't be re-sent as plain text.
+    return res && typeof res === 'object' ? res : { report: String(res || ''), telegramSent: false };
   }
 
   if (looksLikeSocialPostRequest(clean)) {
@@ -814,8 +849,9 @@ async function executeTool(supabase, name, args) {
       const taskText = String(args.task || '').trim();
       if (taskText && looksLikeResearchRequest(taskText)) {
         try {
-          const report = await runDeepResearchForTelegram(taskText, null, supabase);
-          return report || 'Research finished but produced no output.';
+          const res = await runDeepResearchForTelegram(taskText, null, supabase);
+          const md = typeof res === 'object' && res !== null ? (res.report || '') : String(res || '');
+          return md || 'Research finished but produced no output.';
         } catch (e) {
           return `Research failed: ${e.message}`;
         }
@@ -1000,8 +1036,16 @@ async function streamLMStudio(messages, supabase) {
         .select('telegram_enabled,telegram_chat_id').eq('id', 1).single();
       if (s?.telegram_enabled && s?.telegram_chat_id) chatId = String(s.telegram_chat_id);
     } catch {}
-    const report = await runDeepResearchForTelegram(lastUserText, chatId, supabase);
-    return makeSseStreamFromText(report || 'Research returned no output.');
+    const res = await runDeepResearchForTelegram(lastUserText, chatId, supabase);
+    // Stream back the FULL markdown report (with hero image + ## headings + sources)
+    // so the chat renders it as rich content via ReactMarkdown.
+    const reportMd = typeof res === 'object' && res !== null
+      ? (res.report || 'Research returned no output.')
+      : String(res || 'Research returned no output.');
+    const linkLine = (typeof res === 'object' && res?.linkBack)
+      ? `\n\n---\n\n🔗 [Open full report in Job Queue](${res.linkBack})`
+      : '';
+    return makeSseStreamFromText(reportMd + linkLine);
   }
 
   const fullMessages = [
@@ -1067,15 +1111,23 @@ async function processTelegramAIResponse(supabase, args, sendTelegramFn, backend
   try {
     const routedReply = await routeDeterministicTelegramTask(userText, chatId, backend, supabase);
     if (routedReply) {
-      await sendTelegramFn(null, chatId, routedReply, backend);
+      // Some routes (deep-research) deliver a rich Telegram message themselves
+      // (hero photo + caption + body) and return { report, telegramSent: true }.
+      // In that case skip resending plain text — just record the bot reply.
+      const isStructured = typeof routedReply === 'object' && routedReply !== null;
+      const replyText = isStructured ? (routedReply.report || '') : String(routedReply);
+      const alreadySent = isStructured && routedReply.telegramSent === true;
+      if (!alreadySent && replyText) {
+        await sendTelegramFn(null, chatId, replyText, backend);
+      }
       await supabase.from('telegram_messages').insert({
         update_id: (args.update_id || Date.now()) + 1_000_000_000,
         chat_id: chatId,
-        text: routedReply,
+        text: replyText.slice(0, 8000),
         is_bot: true,
-        raw_update: { bot_reply: true, routed: true },
+        raw_update: { bot_reply: true, routed: true, structured: isStructured },
       });
-      return routedReply;
+      return replyText;
     }
   } catch (routeErr) {
     console.warn('[AI] Deterministic Telegram routing failed, falling back to LM Studio:', routeErr.message);
