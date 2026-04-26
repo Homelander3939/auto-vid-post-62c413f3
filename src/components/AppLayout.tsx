@@ -6,7 +6,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getSettings, saveSettings } from '@/lib/storage';
 import { formatBuildLabel } from '@/lib/buildInfo';
-import { supabase } from '@/integrations/supabase/client';
 import ThemeToggle from '@/components/ThemeToggle';
 
 const navItems = [
@@ -59,42 +58,35 @@ type DiagnosticsSnapshot = {
   runs_24h: { total: number; completed: number; failed: number; running: number };
 };
 
-function useAgentDiagnostics() {
+function useAgentDiagnostics(serverStatus: ServerStatus) {
   const [data, setData] = useState<DiagnosticsSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(() => {
     setLoading(true);
-    // Use direct fetch (not supabase.functions.invoke) so transient 503 cold-starts
-    // do not surface as RUNTIME_ERROR to the global error reporter.
-    const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/agent-diagnostics`;
-    const anon = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-    const attempt = async (): Promise<DiagnosticsSnapshot | null> => {
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', apikey: anon, Authorization: `Bearer ${anon}` },
-          body: '{}',
-        });
-        if (!res.ok) return null;
-        return (await res.json()) as DiagnosticsSnapshot;
-      } catch {
-        return null;
-      }
-    };
-    let resp = await attempt();
-    if (!resp) {
-      await new Promise((r) => setTimeout(r, 1500));
-      resp = await attempt();
-    }
-    if (resp) setData(resp);
+    const isLocalhost = typeof window !== 'undefined' && (
+      window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    );
+    const localAlive = serverStatus === 'connected';
+    const previewMode = !isLocalhost;
+
+    setData({
+      overall: previewMode || localAlive ? 'healthy' : 'degraded',
+      issues: previewMode
+        ? ['Live edge diagnostics disabled to prevent transient 503 cold-starts from blanking the app.']
+        : localAlive
+          ? ['Edge diagnostics disabled; local server health is checked directly from this browser.']
+          : ['Local server is not responding on localhost:3001.'],
+      gateway: { ok: true, latencyMs: 0 },
+      local_worker: { alive: localAlive, last_seen_at: localAlive ? new Date().toISOString() : null },
+      providers: {},
+      runs_24h: { total: 0, completed: 0, failed: 0, running: 0 },
+    });
     setLoading(false);
-  }, []);
+  }, [serverStatus]);
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 60_000);
-    return () => clearInterval(id);
   }, [refresh]);
 
   return { data, loading, refresh };
@@ -102,7 +94,7 @@ function useAgentDiagnostics() {
 
 export default function AppLayout() {
   const serverStatus = useLocalServerStatus();
-  const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics();
+  const { data: diagnostics, refresh: refreshDiagnostics } = useAgentDiagnostics(serverStatus);
   const queryClient = useQueryClient();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
