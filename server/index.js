@@ -714,6 +714,45 @@ const LOCAL_AGENT_TOOLS = [
   { type: 'function', function: { name: 'finish', description: 'Finish the run with summary and artifacts.', parameters: { type: 'object', properties: { summary: { type: 'string' }, artifacts: { type: 'array', items: { type: 'object' } } }, required: ['summary'] } } },
 ];
 
+async function runLocalAgent(runId) {
+  const { data: run } = await supabase.from('agent_runs').select('*').eq('id', runId).single();
+  if (!run) return;
+  const settings = await getSettings().catch(() => null);
+  const config = await refreshLMStudioConfigFromSettings(supabase);
+  const workspaceSlug = slugifyAgentRun(run.prompt);
+  try {
+    await appendAgentEvent(runId, { type: 'preflight_ok', component: 'local_worker', alive: true, message: `Local worker connected · ${config.model}` });
+    await appendAgentEvent(runId, { type: 'tool_call', name: 'plan', label: 'local plan' });
+    await appendAgentEvent(runId, { type: 'plan', steps: ['Use local LM Studio', 'Use local browser/tools when needed', 'Return final result without cloud AI credits'] });
+    await appendAgentEvent(runId, { type: 'tool_result', name: 'plan', ok: true, summary: 'Local plan recorded.' });
+
+    let researchContext = '';
+    if (/\b(research|latest|news|find out|crypto|web3|search|scrape|analy[sz]e)\b/i.test(run.prompt)) {
+      await appendAgentEvent(runId, { type: 'tool_call', name: 'research_deep', label: run.prompt.slice(0, 80) });
+      const r = await fetch(`http://localhost:${PORT}/api/research/search`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: run.prompt, count: 6 }),
+      });
+      const data = await r.json().catch(() => ({}));
+      const sources = Array.isArray(data.results) ? data.results.slice(0, 6) : [];
+      researchContext = sources.map((s, i) => `[${i + 1}] ${s.title || s.url}\n${s.snippet || ''}\n${s.url || ''}`).join('\n\n');
+      await appendAgentEvent(runId, { type: 'tool_result', name: 'research_deep', ok: true, summary: `Found ${sources.length} sources locally.`, data: { sources } });
+    }
+
+    const reply = await localChatCompletion([
+      { role: 'system', content: 'You are a local autonomous agent running only on the user PC through LM Studio. Do not mention cloud credits. Be concise and include useful sources when provided.' },
+      { role: 'user', content: `${run.prompt}${researchContext ? `\n\nLocal research sources:\n${researchContext}` : ''}` },
+    ], { max_tokens: 1800, temperature: 0.4 });
+    const summary = reply?.choices?.[0]?.message?.content || 'Done.';
+    await appendAgentEvent(runId, { type: 'finish', summary });
+    await setAgentRunStatus(runId, { status: 'completed', completed_at: new Date().toISOString(), result: { summary } });
+    if (settings && run.telegram_chat_id) await notifyTelegram(settings, summary);
+  } catch (err) {
+    await appendAgentEvent(runId, { type: 'error', message: err.message });
+    await setAgentRunStatus(runId, { status: 'failed', completed_at: new Date().toISOString(), error: err.message });
+    if (settings && run.telegram_chat_id) await notifyTelegram(settings, `❌ Local agent failed: ${err.message}`);
+  }
+}
+
 function parseJsonFromText(text, fallback = {}) {
   const raw = String(text || '').trim();
   if (!raw) return fallback;
