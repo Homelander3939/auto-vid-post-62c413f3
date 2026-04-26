@@ -486,7 +486,10 @@ async function routeDeterministicTelegramTask(text, chatId, backend, supabase) {
   // Real research first — runs the deterministic deep-research pipeline,
   // saves an agent_run for the Job Queue, and posts the full report to Telegram.
   if (looksLikeResearchRequest(clean)) {
-    return await runDeepResearchForTelegram(clean, chatId, supabase);
+    const res = await runDeepResearchForTelegram(clean, chatId, supabase);
+    // Return a marker object so the Telegram processor knows the rich reply
+    // (photo + body) was already delivered, and shouldn't be re-sent as plain text.
+    return res && typeof res === 'object' ? res : { report: String(res || ''), telegramSent: false };
   }
 
   if (looksLikeSocialPostRequest(clean)) {
