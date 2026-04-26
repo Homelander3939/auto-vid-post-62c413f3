@@ -708,16 +708,15 @@ async function getAppContextFast(supabase: any, userPrompt = ''): Promise<AppCon
         .map((e) => ({ title: e.m.title, content: e.m.content, importance: e.m.importance }))
     : [];
 
-  // Score skills (by trigger/name overlap with prompt)
+  // Score skills by relevance, but ALWAYS include up to 12 so the LLM is aware of
+  // the installed skill catalog even when no trigger keyword matches the prompt.
   const skillList = (skillsRaw || []) as any[];
-  const skills = skillList
-    .map((s) => ({
-      s,
-      score: keywordOverlap(userPrompt, `${s.name}\n${s.description}\n${(s.triggers || []).join(' ')}`),
-    }))
-    .filter((e) => e.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 6)
+  const scored = skillList.map((s) => ({
+    s,
+    score: keywordOverlap(userPrompt, `${s.name}\n${s.description}\n${(s.triggers || []).join(' ')}`),
+  })).sort((a, b) => b.score - a.score);
+  const skills = scored
+    .slice(0, 12)
     .map((e) => ({ name: e.s.name, slug: e.s.slug, description: e.s.description, triggers: e.s.triggers || [] }));
 
   return { text: ctx, memories, skills, agentMemoryEnabled: memEnabled };
