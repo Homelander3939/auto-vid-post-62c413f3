@@ -80,6 +80,22 @@ async function getSelectedChatConfig(supabase) {
   return { provider, endpoint: openAICompatEndpoint(provider, data.ai_base_url), model: data.ai_model, apiKey: data.ai_api_key };
 }
 
+async function selectedChatFetch(supabase, bodyObj) {
+  const config = await getSelectedChatConfig(supabase);
+  const resp = await fetch(config.endpoint, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${config.apiKey || 'lm-studio'}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ...bodyObj, model: config.model }),
+  }).catch(err => ({ ok: false, status: 0, _networkError: err }));
+  if (!resp.ok && resp._networkError) {
+    throw new Error(`${config.provider} network error: ${resp._networkError.message}`);
+  }
+  return resp;
+}
+
 async function testLMStudioConnection({ baseUrl, apiKey, model } = {}) {
   const url = normalizeLMStudioUrl(baseUrl || LM_STUDIO_URL);
   const key = apiKey || LM_STUDIO_API_KEY || 'lm-studio';
