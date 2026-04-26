@@ -692,8 +692,9 @@ export default function CampaignScheduler() {
       {/* Already scheduled */}
       {scheduled.length > 0 && (
         <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Scheduled Uploads</CardTitle>
+          <CardHeader className="pb-3 flex flex-row items-center justify-between">
+            <CardTitle className="text-base">Scheduled Uploads ({scheduled.length})</CardTitle>
+            <a href="/queue" className="text-xs text-primary hover:underline">View in Job Queue →</a>
           </CardHeader>
           <CardContent className="space-y-3">
             {scheduled.map((item) => (
