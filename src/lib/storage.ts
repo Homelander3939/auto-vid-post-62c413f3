@@ -111,6 +111,7 @@ export async function getSettings(): Promise<AppSettings> {
   return {
     folderPath: data.folder_path,
     uploadMode: (data as any).upload_mode || 'local',
+    deleteAfterUpload: (data as any).delete_after_upload !== false,
     youtube: { email: data.youtube_email, password: data.youtube_password, enabled: data.youtube_enabled },
     tiktok: { email: data.tiktok_email, password: data.tiktok_password, enabled: data.tiktok_enabled },
     instagram: { email: data.instagram_email, password: data.instagram_password, enabled: data.instagram_enabled },
@@ -124,6 +125,7 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
     .update({
       folder_path: settings.folderPath,
       upload_mode: settings.uploadMode,
+      delete_after_upload: settings.deleteAfterUpload,
       youtube_email: settings.youtube.email,
       youtube_password: settings.youtube.password,
       youtube_enabled: settings.youtube.enabled,
