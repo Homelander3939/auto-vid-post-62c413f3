@@ -2674,6 +2674,19 @@ app.post('/api/refresh-cron', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/recurring/run-now', async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    if (!id) return res.status(400).json({ error: 'id required' });
+    // Fire-and-forget; respond fast so UI is snappy
+    processRecurringSchedule({ onlyConfigId: id, force: true })
+      .catch((e) => console.error('[Recurring] run-now error:', e.message));
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/generation-schedules/run-now', async (req, res) => {
   try {
     const { scheduleId } = req.body || {};
