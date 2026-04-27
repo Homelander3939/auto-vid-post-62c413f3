@@ -262,15 +262,14 @@ export default function CampaignScheduler() {
           platforms: [...platforms],
         });
       }
-      setEntries(prev => [...prev, ...newEntries]);
       setVideoFiles([]);
       setVideoFile(null);
       setMultiTextFiles([]);
       setScheduledAt('');
       if (videoInputRef.current) videoInputRef.current.value = '';
       if (textInputRef.current) textInputRef.current.value = '';
-      const matchedCount = matched.filter(m => m.textFile).length;
-      toast({ title: `${newEntries.length} entries added`, description: matchedCount ? `${matchedCount} with .txt metadata` : 'Auto titles from filenames' });
+      // Auto-commit immediately — no extra "Schedule N Uploads" click required.
+      await saveAll([...entries, ...newEntries]);
       return;
     }
 
@@ -291,8 +290,6 @@ export default function CampaignScheduler() {
       platforms,
     };
 
-    setEntries((prev) => [...prev, entry]);
-
     // Reset form
     setVideoFile(null);
     setVideoFiles([]);
@@ -307,7 +304,8 @@ export default function CampaignScheduler() {
     setPlatforms(['youtube', 'tiktok', 'instagram']);
     if (videoInputRef.current) videoInputRef.current.value = '';
     if (textInputRef.current) textInputRef.current.value = '';
-    toast({ title: 'Added to campaign' });
+    // Auto-commit immediately — schedule it and let cancellation happen from the queue.
+    await saveAll([...entries, entry]);
   };
 
   const removeEntry = (idx: number) => {
