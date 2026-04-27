@@ -43,11 +43,47 @@ import { saveLocalJobAccountSelections, saveLocalScheduledAccountSelections, typ
 interface ScheduleEntry {
   videoFile?: File;
   folderPath?: string;
+  textFileName?: string;
   title: string;
   description: string;
   tags: string[];
   scheduledAt: string;
   platforms: string[];
+}
+
+function parseLocalDateTimeInput(value: string): Date | null {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+  const [, y, m, d, h, min, sec = '0'] = match;
+  const date = new Date(Number(y), Number(m) - 1, Number(d), Number(h), Number(min), Number(sec));
+  if (
+    date.getFullYear() !== Number(y) ||
+    date.getMonth() !== Number(m) - 1 ||
+    date.getDate() !== Number(d) ||
+    date.getHours() !== Number(h) ||
+    date.getMinutes() !== Number(min)
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function formatLocalDateTimeInput(date: Date) {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function addMinutesToLocalDateTimeInput(value: string, minutes: number) {
+  const date = parseLocalDateTimeInput(value);
+  if (!date) return value;
+  date.setMinutes(date.getMinutes() + minutes);
+  return formatLocalDateTimeInput(date);
+}
+
+function localDateTimeInputToIso(value: string) {
+  const date = parseLocalDateTimeInput(value);
+  if (!date) throw new Error('Invalid scheduled date/time');
+  return date.toISOString();
 }
 
 function buildPlatformAccountSelections(platforms: string[], selectedAccounts: Record<string, string>): PlatformAccountSelections {
@@ -59,8 +95,7 @@ function buildPlatformAccountSelections(platforms: string[], selectedAccounts: R
 }
 
 function toLocalDateTimeInputValue(date: Date) {
-  const offsetMs = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+  return formatLocalDateTimeInput(date);
 }
 
 export default function CampaignScheduler() {
@@ -104,6 +139,8 @@ export default function CampaignScheduler() {
   }, [platforms.join(',')]);
 
   const isMultiFile = videoFiles.length > 1;
+  const multiFileMatches = isMultiFile ? matchVideoTextFiles(videoFiles, multiTextFiles) : [];
+  const multiFileMatchedCount = multiFileMatches.filter((match) => match.textFile).length;
 
   // Load current upload mode
   useEffect(() => {
@@ -199,7 +236,6 @@ export default function CampaignScheduler() {
       }
       // Match optional .txt files to videos by stem; parse metadata when available
       const matched = matchVideoTextFiles(videoFiles, multiTextFiles);
-      const baseTime = new Date(scheduledAt).getTime();
       const newEntries: ScheduleEntry[] = [];
       for (let i = 0; i < matched.length; i++) {
         const { video, textFile } = matched[i];
@@ -217,10 +253,11 @@ export default function CampaignScheduler() {
         }
         newEntries.push({
           videoFile: video,
+          textFileName: textFile?.name,
           title: entryTitle,
           description: entryDesc,
           tags: entryTags,
-          scheduledAt: new Date(baseTime + i * intensityMinutes * 60_000).toISOString().slice(0, 16),
+          scheduledAt: addMinutesToLocalDateTimeInput(scheduledAt, i * intensityMinutes),
           platforms: [...platforms],
         });
       }
@@ -245,6 +282,7 @@ export default function CampaignScheduler() {
 
     const entry: ScheduleEntry = {
       ...(sourceMode === 'file' ? { videoFile: videoFile! } : { folderPath: folderPath.trim() }),
+      ...(textFileName ? { textFileName } : {}),
       title: title.trim() || (sourceMode === 'folder' ? '(auto from folder)' : ''),
       description: description.trim(),
       tags,
@@ -306,8 +344,8 @@ export default function CampaignScheduler() {
         const accountSelections = buildPlatformAccountSelections(entry.platforms, selectedAccounts);
         const primaryAccountId = entry.platforms.map((platform) => accountSelections[platform]).find(Boolean);
 
-        const scheduledAtIso = new Date(entry.scheduledAt).toISOString();
-        const scheduledTime = new Date(scheduledAtIso).getTime();
+        const scheduledAtIso = localDateTimeInputToIso(entry.scheduledAt);
+        const scheduledTime = parseLocalDateTimeInput(entry.scheduledAt)?.getTime() || new Date(scheduledAtIso).getTime();
         // If scheduled time is in the past or within 1 minute, create an upload_job immediately
         const isImmediate = scheduledTime <= Date.now() + 60_000;
 
@@ -463,6 +501,27 @@ export default function CampaignScheduler() {
                   <p className="text-xs text-muted-foreground">
                     Videos will be spaced {intensityMinutes} minutes apart starting from the scheduled time.
                   </p>
+                  <div className="rounded-lg border bg-secondary/30 p-2 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="font-medium">Metadata matches</span>
+                      <Badge variant="secondary" className="text-[10px]">{multiFileMatchedCount}/{videoFiles.length} matched</Badge>
+                    </div>
+                    <div className="max-h-32 overflow-y-auto space-y-1">
+                      {multiFileMatches.map(({ video, textFile }, idx) => (
+                        <div key={`${video.name}-${idx}`} className="flex items-center gap-2 text-xs min-w-0">
+                          <span className="font-mono text-muted-foreground w-5 shrink-0">{idx + 1}.</span>
+                          <span className="truncate flex-1">{video.name}</span>
+                          {textFile ? (
+                            <span className="inline-flex items-center gap-1 text-primary shrink-0 max-w-[45%] truncate">
+                              <FileText className="w-3 h-3" /> {textFile.name}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground shrink-0">no .txt</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
             </>
@@ -655,9 +714,18 @@ export default function CampaignScheduler() {
                   </p>
                   <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground flex-wrap">
                     <Clock className="w-3 h-3 shrink-0" />
-                    <span>{format(new Date(entry.scheduledAt), 'PPp')}</span>
+                    <span>{format(parseLocalDateTimeInput(entry.scheduledAt) || new Date(entry.scheduledAt), 'PPp')}</span>
                     <span>·</span>
                     <span className="capitalize">{entry.platforms.join(', ')}</span>
+                    {entry.textFileName && (
+                      <>
+                        <span>·</span>
+                        <span className="inline-flex items-center gap-1 text-primary">
+                          <FileText className="w-3 h-3" />
+                          {entry.textFileName}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
                 <AlertDialog>
