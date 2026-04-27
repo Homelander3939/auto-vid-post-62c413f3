@@ -2071,10 +2071,18 @@ function generateMetadataFromFilename(filename) {
   return { title: title || filename, description, tags };
 }
 
-async function processRecurringSchedule() {
+async function processRecurringSchedule(opts = {}) {
+  const { onlyConfigId = null, force = false } = opts;
   try {
-    const { data: configs } = await supabase.from('schedule_config').select('*').eq('enabled', true);
-    if (!configs || configs.length === 0) return;
+    let configs;
+    if (onlyConfigId) {
+      const { data } = await supabase.from('schedule_config').select('*').eq('id', onlyConfigId);
+      configs = data || [];
+    } else {
+      const { data } = await supabase.from('schedule_config').select('*').eq('enabled', true);
+      configs = data || [];
+    }
+    if (!configs || configs.length === 0) return { ran: 0 };
     const settings = await getSettings();
     const now = new Date();
     const currentMinute = now.getMinutes();
