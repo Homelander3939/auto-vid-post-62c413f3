@@ -704,15 +704,14 @@ export default function CampaignScheduler() {
             />
           </div>
 
-          {/* Add button */}
+          {/* Add button — auto-saves & schedules instantly; no extra confirmation step. */}
           <Button
             onClick={addEntry}
-            disabled={!canAdd}
-            variant="outline"
+            disabled={!canAdd || saving}
             className="w-full gap-2"
           >
-            <Plus className="w-4 h-4" />
-            Add to Campaign
+            <CalendarClock className="w-4 h-4" />
+            {saving ? (saveProgress || 'Scheduling…') : 'Schedule Upload'}
           </Button>
         </CardContent>
       </Card>
