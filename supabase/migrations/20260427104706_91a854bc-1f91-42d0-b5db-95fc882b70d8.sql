@@ -1,0 +1,1 @@
+ALTER TABLE public.app_settings ADD COLUMN IF NOT EXISTS delete_after_upload boolean NOT NULL DEFAULT true;
