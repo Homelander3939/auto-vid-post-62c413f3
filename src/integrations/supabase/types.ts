@@ -204,6 +204,7 @@ export type Database = {
           ai_model: string
           ai_provider: string
           created_at: string
+          delete_after_upload: boolean
           folder_path: string
           id: number
           image_api_key: string
@@ -242,6 +243,7 @@ export type Database = {
           ai_model?: string
           ai_provider?: string
           created_at?: string
+          delete_after_upload?: boolean
           folder_path?: string
           id?: number
           image_api_key?: string
@@ -280,6 +282,7 @@ export type Database = {
           ai_model?: string
           ai_provider?: string
           created_at?: string
+          delete_after_upload?: boolean
           folder_path?: string
           id?: number
           image_api_key?: string

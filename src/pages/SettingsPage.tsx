@@ -354,6 +354,7 @@ function PlatformAccountCard({
 const defaultSettings: AppSettings = {
   folderPath: '',
   uploadMode: 'local',
+  deleteAfterUpload: true,
   youtube: { email: '', password: '', enabled: false },
   tiktok: { email: '', password: '', enabled: false },
   instagram: { email: '', password: '', enabled: false },
@@ -668,13 +669,28 @@ export default function SettingsPage() {
               Drop .mp4 + .txt pairs here — the local server picks them up automatically
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             <Input
               value={settings.folderPath}
               onChange={(e) => setSettings((p) => ({ ...p, folderPath: e.target.value }))}
               placeholder="C:\Users\You\Videos\uploads"
               className="font-mono"
             />
+            <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-secondary/40 p-3">
+              <div className="space-y-0.5">
+                <Label htmlFor="delete-after-upload" className="text-sm font-medium">
+                  Delete source files after successful upload
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  When every selected platform succeeds, the video and its matching .txt are removed from the folder. Failed or partial uploads are kept for retry.
+                </p>
+              </div>
+              <Switch
+                id="delete-after-upload"
+                checked={settings.deleteAfterUpload}
+                onCheckedChange={(v) => setSettings((p) => ({ ...p, deleteAfterUpload: v }))}
+              />
+            </div>
           </CardContent>
         </Card>
       )}
