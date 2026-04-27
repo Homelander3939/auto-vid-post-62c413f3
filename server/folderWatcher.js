@@ -95,4 +95,51 @@ function scanAllFiles(folderPath) {
   return pairs;
 }
 
-module.exports = { scanFolder, scanAllFiles };
+/**
+ * Return video+txt pairs that are NEW (not in `alreadyQueued` set) and STABLE
+ * (size unchanged since the previous observation in `sizeMap`). Mutates `sizeMap`
+ * with the latest observed sizes so the caller can persist it.
+ *
+ * A pair is "ready" only when:
+ *   - matching .txt exists for the video stem
+ *   - both files exist on disk
+ *   - both files' sizes match what was seen in the previous scan
+ *     (i.e. the download has finished — size stable across one ~15s tick)
+ *   - the video's absolute path is NOT already in `alreadyQueued`
+ */
+function getReadyPairs(folderPath, alreadyQueued, sizeMap) {
+  if (!folderPath || !fs.existsSync(folderPath)) return [];
+  const pairs = scanAllFiles(folderPath);
+  const ready = [];
+
+  for (const pair of pairs) {
+    if (!pair.textFile) continue;
+    const videoAbs = path.resolve(path.join(folderPath, pair.videoFile));
+    const textAbs = path.resolve(path.join(folderPath, pair.textFile));
+    if (alreadyQueued.has(videoAbs)) continue;
+
+    let videoSize, textSize;
+    try {
+      videoSize = fs.statSync(videoAbs).size;
+      textSize = fs.statSync(textAbs).size;
+    } catch {
+      continue;
+    }
+
+    const prevVideo = sizeMap[videoAbs];
+    const prevText = sizeMap[textAbs];
+    sizeMap[videoAbs] = videoSize;
+    sizeMap[textAbs] = textSize;
+
+    // Need at least one prior observation, and the size must match it.
+    if (prevVideo === undefined || prevText === undefined) continue;
+    if (prevVideo !== videoSize || prevText !== textSize) continue;
+    if (videoSize === 0) continue;
+
+    ready.push({ videoAbs, textAbs, videoFile: pair.videoFile, textFile: pair.textFile, folderPath });
+  }
+
+  return ready;
+}
+
+module.exports = { scanFolder, scanAllFiles, getReadyPairs };
