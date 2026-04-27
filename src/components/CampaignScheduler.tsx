@@ -123,17 +123,19 @@ export default function CampaignScheduler() {
     if (files.length === 1) {
       setVideoFile(files[0]);
       setVideoFiles([]);
+      setMultiTextFiles([]);
       if (!title) {
         setTitle(cleanVideoTitle(files[0].name));
       }
     } else {
       setVideoFile(null);
       setVideoFiles(files);
+      setMultiTextFiles([]);
       setTitle('');
       setDescription('');
       setTagsInput('');
       setTextFileName(null);
-      toast({ title: `${files.length} videos selected`, description: 'Select matching .txt files for metadata' });
+      toast({ title: `${files.length} videos selected`, description: 'Optionally select matching .txt files, then click "Add to Campaign"' });
     }
   };
 
