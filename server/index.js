@@ -1913,15 +1913,23 @@ async function processScheduledUploads() {
       if (/^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(videoFileName)) {
         const folderPath = normalizeFolderPath(videoFileName);
         const intensityMin = parseFolderIntensity(videoFileName);
+        const maxCount = parseFolderMaxCount(videoFileName);
 
         // If an intensity is set, fan out: scan ALL videos and schedule them spaced by intensity.
         if (intensityMin) {
-          const allPairs = scanAllFiles(folderPath);
+          let allPairs = scanAllFiles(folderPath);
           if (allPairs.length === 0) {
             console.error(`[Scheduler] No videos found in folder: ${folderPath}`);
             await supabase.from('scheduled_uploads').update({ status: 'error' }).eq('id', item.id);
             await notifyTelegram(settings, `❌ Scheduled folder upload: no videos found in ${folderPath}`);
             continue;
+          }
+
+          // If user requested only the last N videos, take the N highest-numbered
+          // pairs (scanAllFiles is sorted ascending by series #), then keep ascending
+          // order so uploads still go 25 → 26 → 27.
+          if (maxCount && allPairs.length > maxCount) {
+            allPairs = allPairs.slice(-maxCount);
           }
 
           const baseTime = new Date(item.scheduled_at).getTime();
@@ -1936,7 +1944,9 @@ async function processScheduledUploads() {
               if (!entryTags?.length) entryTags = meta.tags || [];
             }
             return {
-              video_file_name: pair.videoFile,
+              // Store the absolute path so the worker resolves it regardless of
+              // the global default folder (handled by the path.isAbsolute branch).
+              video_file_name: path.resolve(path.join(folderPath, pair.videoFile)),
               video_storage_path: null,
               title: entryTitle || pair.videoFile,
               description: entryDesc || '',
@@ -1965,7 +1975,8 @@ async function processScheduledUploads() {
           }
 
           await supabase.from('scheduled_uploads').update({ status: 'completed' }).eq('id', item.id);
-          await notifyTelegram(settings, `📅 Scheduled ${inserted?.length || 0} videos from ${folderPath}, every ${intensityMin}m starting ${new Date(baseTime).toLocaleString()}`);
+          const limitNote = maxCount ? ` (last ${allPairs.length} of folder)` : '';
+          await notifyTelegram(settings, `📅 Scheduled ${inserted?.length || 0} videos from ${folderPath}${limitNote}, every ${intensityMin}m starting ${new Date(baseTime).toLocaleString()}`);
           continue;
         }
 
