@@ -590,11 +590,56 @@ export default function UploadQueue() {
       {/* Upcoming scheduled uploads */}
       {upcomingUploads.length > 0 && (
         <div className="space-y-3">
-          <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
-            <CalendarClock className="w-4 h-4" /> Upcoming Scheduled ({upcomingUploads.length})
-          </h2>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+              <CalendarClock className="w-4 h-4" /> Upcoming Scheduled ({upcomingUploads.length})
+            </h2>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground"
+                onClick={toggleAllScheduled}
+              >
+                {selectedScheduled.size === upcomingUploads.length ? 'Deselect all' : 'Select all'}
+              </Button>
+              {selectedScheduled.size > 0 && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs text-destructive hover:text-destructive">
+                      <Trash2 className="w-3 h-3" />
+                      Cancel {selectedScheduled.size} selected
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Cancel {selectedScheduled.size} scheduled upload(s)?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will permanently remove the selected scheduled uploads. This cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={handleBulkCancelScheduled}
+                        className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+                      >
+                        Cancel selected
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
+            </div>
+          </div>
           {upcomingUploads.map((item) => (
-            <ScheduledCard key={item.id} item={item} onDelete={() => handleDeleteScheduled(item.id)} />
+            <ScheduledCard
+              key={item.id}
+              item={item}
+              onDelete={() => handleDeleteScheduled(item.id)}
+              selected={selectedScheduled.has(item.id)}
+              onToggleSelect={(checked) => toggleScheduledSelected(item.id, checked)}
+            />
           ))}
         </div>
       )}
