@@ -254,6 +254,25 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
               <p className="text-xs text-muted-foreground">Time between each video upload when multiple videos are found.</p>
             </div>
 
+            {/* Videos per run cap */}
+            <div className="space-y-2">
+              <Label className="text-xs flex items-center gap-1.5"><Hash className="w-3.5 h-3.5" /> Videos per run</Label>
+              <div className="flex items-center gap-3">
+                <Switch checked={useMaxVideos} onCheckedChange={(v) => { setUseMaxVideos(v); if (v && !maxVideos) setMaxVideos(3); }} />
+                <span className="text-xs">{useMaxVideos ? `Upload only the last ${maxVideos ?? 3} video(s)` : 'Upload all matching videos'}</span>
+              </div>
+              {useMaxVideos && (
+                <Input
+                  type="number"
+                  min={1}
+                  value={maxVideos ?? 3}
+                  onChange={e => setMaxVideos(Math.max(1, parseInt(e.target.value) || 1))}
+                  placeholder="Number of videos per run"
+                />
+              )}
+              <p className="text-xs text-muted-foreground">Each run picks the N highest-numbered video+.txt pairs and uploads them in ascending order, then deletes them after success.</p>
+            </div>
+
             {/* Duration */}
             <div className="space-y-2">
               <Label className="text-xs flex items-center gap-1.5"><Timer className="w-3.5 h-3.5" /> Duration</Label>
