@@ -124,6 +124,7 @@ export default function CampaignScheduler() {
   const [platforms, setPlatforms] = useState<string[]>(['youtube', 'tiktok', 'instagram']);
   const [scheduledAt, setScheduledAt] = useState('');
   const [intensityMinutes, setIntensityMinutes] = useState(10);
+  const [folderMaxVideos, setFolderMaxVideos] = useState<number | null>(null);
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({});
 
   const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);
@@ -332,7 +333,13 @@ export default function CampaignScheduler() {
           storagePath = await uploadVideoFile(entry.videoFile);
           fileName = entry.videoFile.name;
         } else if (entry.folderPath) {
-          fileName = `[folder|${intensityMinutes}] ${entry.folderPath}`;
+          // Encode "last N" cap into the marker as [folder|intensity|count]; the
+          // server fan-out picks the N highest-numbered pairs (ascending order)
+          // and deletes them after a fully-successful upload.
+          const tag = folderMaxVideos && folderMaxVideos > 0
+            ? `[folder|${intensityMinutes}|${folderMaxVideos}]`
+            : `[folder|${intensityMinutes}]`;
+          fileName = `${tag} ${entry.folderPath}`;
         }
 
         const metadata: VideoMetadata = {
