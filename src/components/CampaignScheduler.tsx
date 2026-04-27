@@ -501,6 +501,27 @@ export default function CampaignScheduler() {
                   <p className="text-xs text-muted-foreground">
                     Videos will be spaced {intensityMinutes} minutes apart starting from the scheduled time.
                   </p>
+                  <div className="rounded-lg border bg-secondary/30 p-2 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="font-medium">Metadata matches</span>
+                      <Badge variant="secondary" className="text-[10px]">{multiFileMatchedCount}/{videoFiles.length} matched</Badge>
+                    </div>
+                    <div className="max-h-32 overflow-y-auto space-y-1">
+                      {multiFileMatches.map(({ video, textFile }, idx) => (
+                        <div key={`${video.name}-${idx}`} className="flex items-center gap-2 text-xs min-w-0">
+                          <span className="font-mono text-muted-foreground w-5 shrink-0">{idx + 1}.</span>
+                          <span className="truncate flex-1">{video.name}</span>
+                          {textFile ? (
+                            <span className="inline-flex items-center gap-1 text-primary shrink-0 max-w-[45%] truncate">
+                              <FileText className="w-3 h-3" /> {textFile.name}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground shrink-0">no .txt</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
             </>
