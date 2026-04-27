@@ -424,6 +424,7 @@ export default function Schedule() {
       accountSelections: {},
       runCount: 0,
       maxRuns: null,
+      maxVideos: null,
       lastRunAt: null,
     }]);
   };
