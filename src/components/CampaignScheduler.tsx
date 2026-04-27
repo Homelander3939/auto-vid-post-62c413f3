@@ -139,6 +139,8 @@ export default function CampaignScheduler() {
   }, [platforms.join(',')]);
 
   const isMultiFile = videoFiles.length > 1;
+  const multiFileMatches = isMultiFile ? matchVideoTextFiles(videoFiles, multiTextFiles) : [];
+  const multiFileMatchedCount = multiFileMatches.filter((match) => match.textFile).length;
 
   // Load current upload mode
   useEffect(() => {
