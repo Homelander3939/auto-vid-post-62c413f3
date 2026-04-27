@@ -365,6 +365,11 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
               <Button onClick={handleSave} className="flex-1 gap-2" size="sm">
                 <Save className="w-3.5 h-3.5" /> Save
               </Button>
+              {config.id && (
+                <Button onClick={handleRunNow} variant="secondary" size="sm" className="gap-2">
+                  <Repeat className="w-3.5 h-3.5" /> Run now
+                </Button>
+              )}
               {onDelete && (
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
