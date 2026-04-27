@@ -298,6 +298,7 @@ export default function CampaignScheduler() {
     setVideoFiles([]);
     setMultiTextFiles([]);
     setFolderPath('');
+    setFolderMaxVideos(null);
     setTitle('');
     setDescription('');
     setTagsInput('');
