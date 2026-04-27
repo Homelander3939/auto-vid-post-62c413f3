@@ -176,14 +176,24 @@ function resolveMetadataForVideo(baseDir, videoFileName, fallbackTitle = '', fal
 
 function normalizeFolderPath(folderPath) {
   return String(folderPath || '')
-    .replace(/^\[folder(?:\|\d+)?\]\s*/i, '')
+    // Strip [folder] / [folder|N] / [folder|N|M] prefix
+    .replace(/^\[folder(?:\|\d+(?:\|\d+)?)?\]\s*/i, '')
     .replace(/^"(.+)"$/, '$1')
     .replace(/^'(.+)'$/, '$1')
     .trim();
 }
 
 function parseFolderIntensity(marker) {
-  const m = String(marker || '').match(/^\[folder\|(\d+)\]/i);
+  const m = String(marker || '').match(/^\[folder\|(\d+)(?:\|\d+)?\]/i);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// Optional max-count: [folder|intensity|count] — limits the campaign to the
+// last N (highest-numbered) videos in the folder.
+function parseFolderMaxCount(marker) {
+  const m = String(marker || '').match(/^\[folder\|\d+\|(\d+)\]/i);
   if (!m) return null;
   const n = parseInt(m[1], 10);
   return Number.isFinite(n) && n > 0 ? n : null;
