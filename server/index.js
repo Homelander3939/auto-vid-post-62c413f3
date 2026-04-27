@@ -2463,16 +2463,137 @@ async function processPendingCommands() {
   }
 }
 
+// --- Folder watcher: auto-detect new video+txt pairs and queue them as upload_jobs ---
+const FOLDER_WATCH_STATE_PATH = path.join(__dirname, 'data', 'folder-watch-state.json');
+const folderWatchState = { queued: new Set(), sizes: {} };
+try {
+  if (fs.existsSync(FOLDER_WATCH_STATE_PATH)) {
+    const raw = JSON.parse(fs.readFileSync(FOLDER_WATCH_STATE_PATH, 'utf8'));
+    folderWatchState.queued = new Set(Array.isArray(raw.queued) ? raw.queued : []);
+    folderWatchState.sizes = raw.sizes && typeof raw.sizes === 'object' ? raw.sizes : {};
+  }
+} catch (e) { console.error('[FolderWatch] State load failed:', e.message); }
+function persistFolderWatchState() {
+  try {
+    fs.mkdirSync(path.dirname(FOLDER_WATCH_STATE_PATH), { recursive: true });
+    fs.writeFileSync(FOLDER_WATCH_STATE_PATH, JSON.stringify({
+      queued: Array.from(folderWatchState.queued),
+      sizes: folderWatchState.sizes,
+    }));
+  } catch (e) { console.error('[FolderWatch] State save failed:', e.message); }
+}
+
+async function pollFolderWatchers() {
+  let settings;
+  try { settings = await getSettings(); } catch { return; }
+
+  // Collect every folder we should watch, with a "source" descriptor for defaults.
+  const folders = new Map(); // absPath -> { platforms, accountSelections, intensity }
+  const addFolder = (raw, platforms, accountSelections, intensity) => {
+    const norm = normalizeFolderPath(raw);
+    if (!norm || !fs.existsSync(norm)) return;
+    const abs = path.resolve(norm);
+    if (!folders.has(abs)) folders.set(abs, { platforms, accountSelections, intensity });
+  };
+
+  // 1. Global default folder
+  if (settings.folderPath) {
+    const defaultPlatforms = ['youtube', 'tiktok', 'instagram'].filter((p) => settings[p]?.enabled && settings[p]?.email);
+    if (defaultPlatforms.length) addFolder(settings.folderPath, defaultPlatforms, {}, 0);
+  }
+
+  // 2. Enabled recurring schedules
+  try {
+    const { data: schedules } = await supabase.from('schedule_config').select('*').eq('enabled', true);
+    for (const s of schedules || []) {
+      addFolder(s.folder_path, Array.isArray(s.platforms) && s.platforms.length ? s.platforms : ['youtube','tiktok','instagram'], s.account_selections || {}, s.upload_interval_minutes || 0);
+    }
+  } catch (e) { console.error('[FolderWatch] schedules read failed:', e.message); }
+
+  // 3. Pending campaign folders (scheduled_uploads with [folder|N] paths)
+  try {
+    const { data: pending } = await supabase
+      .from('scheduled_uploads').select('video_file_name,target_platforms,id')
+      .eq('status', 'scheduled');
+    for (const item of pending || []) {
+      if (typeof item.video_file_name === 'string' && /^\[folder(?:\|\d+)?\]\s/i.test(item.video_file_name)) {
+        const folderPath = normalizeFolderPath(item.video_file_name);
+        const intensity = parseFolderIntensity(item.video_file_name) || 0;
+        const sel = getScheduledAccountSelections(item.id) || {};
+        addFolder(folderPath, item.target_platforms || ['youtube','tiktok','instagram'], sel, intensity);
+      }
+    }
+  } catch (e) { console.error('[FolderWatch] scheduled_uploads read failed:', e.message); }
+
+  if (folders.size === 0) return;
+
+  let dirty = false;
+
+  for (const [absFolder, cfg] of folders) {
+    const ready = getReadyPairs(absFolder, folderWatchState.queued, folderWatchState.sizes);
+    dirty = true; // sizes were updated
+    if (ready.length === 0) continue;
+
+    // Filter platforms to enabled-with-credentials ones
+    const readyPlatforms = await getReadyPlatformsForSelections(settings, cfg.platforms || [], cfg.accountSelections || {});
+    if (readyPlatforms.length === 0) {
+      console.log(`[FolderWatch] ${absFolder}: skipping ${ready.length} new pair(s) — no ready platforms`);
+      continue;
+    }
+
+    for (const pair of ready) {
+      try {
+        // Insert as a folder-style upload_jobs row so the existing worker handles it.
+        const tagPath = `[folder${cfg.intensity ? `|${cfg.intensity}` : ''}] ${absFolder}`;
+        const meta = parseTextFile(pair.textAbs);
+        const { data: insJob, error: insErr } = await supabase.from('upload_jobs').insert({
+          video_file_name: tagPath,
+          title: meta.title || pair.videoFile,
+          description: meta.description || '',
+          tags: meta.tags || [],
+          target_platforms: readyPlatforms,
+          account_id: readyPlatforms.map((p) => cfg.accountSelections?.[p]).find(Boolean) || null,
+          status: 'pending',
+        }).select().single();
+
+        if (insErr) {
+          console.error(`[FolderWatch] Failed to queue ${pair.videoAbs}:`, insErr.message);
+          continue;
+        }
+        if (insJob && cfg.accountSelections && Object.keys(cfg.accountSelections).length) {
+          try { saveJobAccountSelections(insJob.id, cfg.accountSelections); } catch {}
+        }
+
+        folderWatchState.queued.add(pair.videoAbs);
+        dirty = true;
+        console.log(`[FolderWatch] Queued new pair: ${pair.videoFile} (+ ${pair.textFile}) → job ${insJob?.id}`);
+        await notifyTelegram(settings, `📥 New file detected: ${pair.videoFile}\nQueued for upload to ${readyPlatforms.join(', ')}`);
+      } catch (e) {
+        console.error(`[FolderWatch] Queue error for ${pair.videoAbs}:`, e.message);
+      }
+    }
+  }
+
+  if (dirty) persistFolderWatchState();
+}
+
 // --- Cron: poll every minute for uploads, every 15s for commands ---
 let cronJob = null;
 let commandPollInterval = null;
 let uploadPollInterval = null;
 let socialPollInterval = null;
+let folderWatchInterval = null;
 function setupCron() {
   if (cronJob) { cronJob.stop(); cronJob = null; }
   if (commandPollInterval) { clearInterval(commandPollInterval); commandPollInterval = null; }
   if (uploadPollInterval) { clearInterval(uploadPollInterval); uploadPollInterval = null; }
   if (socialPollInterval) { clearInterval(socialPollInterval); socialPollInterval = null; }
+  if (folderWatchInterval) { clearInterval(folderWatchInterval); folderWatchInterval = null; }
+
+  // Folder watcher: auto-detect new video+txt pairs every 15s
+  folderWatchInterval = setInterval(() => {
+    pollFolderWatchers().catch((e) => console.error('[FolderWatch] Poll error:', e.message));
+  }, 15000);
 
   // Fast poll: check pending uploads every 5 seconds for near-immediate browser start.
   uploadPollInterval = setInterval(async () => {
