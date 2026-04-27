@@ -82,6 +82,7 @@ async function getSettings() {
 
   return {
     folderPath: data.folder_path,
+    deleteAfterUpload: data.delete_after_upload !== false,
     youtube: { email: data.youtube_email, password: data.youtube_password, enabled: data.youtube_enabled },
     tiktok: { email: data.tiktok_email, password: data.tiktok_password, enabled: data.tiktok_enabled },
     instagram: { email: data.instagram_email, password: data.instagram_password, enabled: data.instagram_enabled },
