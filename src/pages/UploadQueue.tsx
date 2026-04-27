@@ -346,7 +346,17 @@ function JobCard({ job }: { job: UploadJob }) {
 
 /* ── Scheduled Upload Card ────────────────── */
 
-function ScheduledCard({ item, onDelete }: { item: ScheduledUpload; onDelete: () => void }) {
+function ScheduledCard({
+  item,
+  onDelete,
+  selected,
+  onToggleSelect,
+}: {
+  item: ScheduledUpload;
+  onDelete: () => void;
+  selected: boolean;
+  onToggleSelect: (checked: boolean) => void;
+}) {
   const scheduledDate = new Date(item.scheduled_at);
   const now = new Date();
   const isOverdue = scheduledDate < now;
@@ -357,6 +367,11 @@ function ScheduledCard({ item, onDelete }: { item: ScheduledUpload; onDelete: ()
       <CardContent className="py-3 px-4">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0 flex-1">
+            <Checkbox
+              checked={selected}
+              onCheckedChange={(v) => onToggleSelect(!!v)}
+              aria-label="Select scheduled upload"
+            />
             <CalendarClock className="w-4 h-4 text-primary shrink-0" />
             <div className="min-w-0">
               <p className="text-sm font-medium truncate">{item.title || item.video_file_name}</p>
