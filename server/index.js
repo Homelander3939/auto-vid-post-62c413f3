@@ -2129,11 +2129,17 @@ async function processRecurringSchedule() {
         console.log(`[Recurring] Schedule ${config.id} (${config.name}) matched at ${now.toISOString()}, run #${newRunCount}, scanning: ${folderPath}`);
 
         // Scan ALL files in folder, matched by name
-        const allPairs = scanAllFiles(folderPath);
+        let allPairs = scanAllFiles(folderPath);
         if (allPairs.length === 0) {
           console.log(`[Recurring] No videos found in ${folderPath}`);
           await notifyTelegram(settings, `⚠️ Schedule "${config.name}": no videos found in ${folderPath}`);
           continue;
+        }
+
+        // Apply per-run max_videos cap (last N highest-numbered, kept in ascending order).
+        const maxVideos = Number.isFinite(config.max_videos) && config.max_videos > 0 ? config.max_videos : null;
+        if (maxVideos && allPairs.length > maxVideos) {
+          allPairs = allPairs.slice(-maxVideos);
         }
 
         const requestedPlatforms = Array.isArray(config.platforms) && config.platforms.length
