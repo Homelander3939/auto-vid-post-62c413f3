@@ -234,7 +234,6 @@ export default function CampaignScheduler() {
       }
       // Match optional .txt files to videos by stem; parse metadata when available
       const matched = matchVideoTextFiles(videoFiles, multiTextFiles);
-      const baseTime = new Date(scheduledAt).getTime();
       const newEntries: ScheduleEntry[] = [];
       for (let i = 0; i < matched.length; i++) {
         const { video, textFile } = matched[i];
@@ -252,10 +251,11 @@ export default function CampaignScheduler() {
         }
         newEntries.push({
           videoFile: video,
+          textFileName: textFile?.name,
           title: entryTitle,
           description: entryDesc,
           tags: entryTags,
-          scheduledAt: new Date(baseTime + i * intensityMinutes * 60_000).toISOString().slice(0, 16),
+          scheduledAt: addMinutesToLocalDateTimeInput(scheduledAt, i * intensityMinutes),
           platforms: [...platforms],
         });
       }
@@ -280,6 +280,7 @@ export default function CampaignScheduler() {
 
     const entry: ScheduleEntry = {
       ...(sourceMode === 'file' ? { videoFile: videoFile! } : { folderPath: folderPath.trim() }),
+      ...(textFileName ? { textFileName } : {}),
       title: title.trim() || (sourceMode === 'folder' ? '(auto from folder)' : ''),
       description: description.trim(),
       tags,
@@ -341,8 +342,8 @@ export default function CampaignScheduler() {
         const accountSelections = buildPlatformAccountSelections(entry.platforms, selectedAccounts);
         const primaryAccountId = entry.platforms.map((platform) => accountSelections[platform]).find(Boolean);
 
-        const scheduledAtIso = new Date(entry.scheduledAt).toISOString();
-        const scheduledTime = new Date(scheduledAtIso).getTime();
+        const scheduledAtIso = localDateTimeInputToIso(entry.scheduledAt);
+        const scheduledTime = parseLocalDateTimeInput(entry.scheduledAt)?.getTime() || new Date(scheduledAtIso).getTime();
         // If scheduled time is in the past or within 1 minute, create an upload_job immediately
         const isImmediate = scheduledTime <= Date.now() + 60_000;
 
