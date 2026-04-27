@@ -505,7 +505,14 @@ export async function getScheduledUploads(): Promise<ScheduledUpload[]> {
     .order('scheduled_at', { ascending: true });
 
   if (error || !data) return [];
-  return data as ScheduledUpload[];
+  return (data as ScheduledUpload[]).sort((a, b) => {
+    const rank = (status: string) => status === 'scheduled' ? 0 : status === 'processing' ? 1 : 2;
+    const rankDiff = rank(a.status) - rank(b.status);
+    if (rankDiff !== 0) return rankDiff;
+    const timeA = new Date(a.scheduled_at).getTime();
+    const timeB = new Date(b.scheduled_at).getTime();
+    return rank(a.status) === 2 ? timeB - timeA : timeA - timeB;
+  });
 }
 
 export async function createScheduledUpload(
