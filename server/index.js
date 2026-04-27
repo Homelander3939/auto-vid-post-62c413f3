@@ -2071,10 +2071,18 @@ function generateMetadataFromFilename(filename) {
   return { title: title || filename, description, tags };
 }
 
-async function processRecurringSchedule() {
+async function processRecurringSchedule(opts = {}) {
+  const { onlyConfigId = null, force = false } = opts;
   try {
-    const { data: configs } = await supabase.from('schedule_config').select('*').eq('enabled', true);
-    if (!configs || configs.length === 0) return;
+    let configs;
+    if (onlyConfigId) {
+      const { data } = await supabase.from('schedule_config').select('*').eq('id', onlyConfigId);
+      configs = data || [];
+    } else {
+      const { data } = await supabase.from('schedule_config').select('*').eq('enabled', true);
+      configs = data || [];
+    }
+    if (!configs || configs.length === 0) return { ran: 0 };
     const settings = await getSettings();
     const now = new Date();
     const currentMinute = now.getMinutes();
@@ -2101,22 +2109,26 @@ async function processRecurringSchedule() {
         const folderPath = normalizeFolderPath(config.folder_path);
         if (!folderPath) continue;
 
-        // Parse cron to check if NOW matches
+        // Parse cron to check if NOW matches (with a 1-minute grace window so schedules
+        // saved a few seconds after their target minute still fire within ~90s).
         const [cronMin, cronHr, , , cronDow] = config.cron_expression.split(' ');
-        const minuteMatch = cronMin === '*' || parseInt(cronMin) === currentMinute;
+        const prevMinute = (currentMinute + 59) % 60;
+        const minuteMatch = cronMin === '*'
+          || parseInt(cronMin) === currentMinute
+          || parseInt(cronMin) === prevMinute;
         const hourMatch = cronHr === '*'
           || (cronHr.startsWith('*/') ? currentHour % parseInt(cronHr.replace('*/', '')) === 0 : parseInt(cronHr) === currentHour);
         const dowMatch = cronDow === '*' || cronDow.split(',').map(Number).includes(currentDow);
 
-        if (!minuteMatch || !hourMatch || !dowMatch) continue;
+        if (!force && (!minuteMatch || !hourMatch || !dowMatch)) continue;
 
         // Prevent running multiple times in the same minute window — persisted in DB
         const nowMinuteStart = new Date(now);
         nowMinuteStart.setSeconds(0, 0);
-        if (config.last_run_at) {
+        if (!force && config.last_run_at) {
           const lastRun = new Date(config.last_run_at);
-          // If last run was within the last 60 seconds, skip (already ran this minute)
-          if (nowMinuteStart.getTime() - lastRun.getTime() < 60_000) continue;
+          // If last run was within the last 90 seconds, skip (already ran for this trigger)
+          if (nowMinuteStart.getTime() - lastRun.getTime() < 90_000) continue;
         }
 
         // Persist last_run_at + increment run_count immediately to prevent duplicate runs on restart
@@ -2660,6 +2672,19 @@ function setupCron() {
 app.post('/api/refresh-cron', (req, res) => {
   setupCron();
   res.json({ ok: true });
+});
+
+app.post('/api/recurring/run-now', async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    if (!id) return res.status(400).json({ error: 'id required' });
+    // Fire-and-forget; respond fast so UI is snappy
+    processRecurringSchedule({ onlyConfigId: id, force: true })
+      .catch((e) => console.error('[Recurring] run-now error:', e.message));
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/generation-schedules/run-now', async (req, res) => {

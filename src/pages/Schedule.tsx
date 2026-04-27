@@ -67,6 +67,8 @@ const localTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local
 
 // ---- Single schedule editor ----
 function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; onSave: (c: ScheduleConfig) => void; onDelete?: () => void }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
   const [expanded, setExpanded] = useState(!config.id); // new ones start expanded
   const [name, setName] = useState(config.name);
   const [enabled, setEnabled] = useState(config.enabled);
@@ -127,6 +129,29 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
       maxRuns: useMaxRuns ? maxRuns : null,
       maxVideos: useMaxVideos ? maxVideos : null,
     });
+    setExpanded(false);
+  };
+
+  const handleRunNow = async () => {
+    try {
+      const res = await fetch('http://localhost:3001/api/recurring/run-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: config.id }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json().catch(() => ({}));
+      if (data?.error) throw new Error(data.error);
+      toast({ title: 'Run triggered', description: 'Scanning folder & queueing videos…' });
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ['scheduled_uploads'] });
+        qc.invalidateQueries({ queryKey: ['queue'] });
+        qc.invalidateQueries({ queryKey: ['schedules'] });
+      }, 2000);
+    } catch (e: any) {
+      toast({ title: 'Run failed', description: e?.message || 'Local server unreachable', variant: 'destructive' });
+    }
   };
 
   const togglePlatform = (p: string) => setPlatforms(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
@@ -348,6 +373,11 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
               <Button onClick={handleSave} className="flex-1 gap-2" size="sm">
                 <Save className="w-3.5 h-3.5" /> Save
               </Button>
+              {config.id && (
+                <Button onClick={handleRunNow} variant="secondary" size="sm" className="gap-2">
+                  <Repeat className="w-3.5 h-3.5" /> Run now
+                </Button>
+              )}
               {onDelete && (
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
