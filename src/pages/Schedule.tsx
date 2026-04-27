@@ -127,6 +127,23 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
       maxRuns: useMaxRuns ? maxRuns : null,
       maxVideos: useMaxVideos ? maxVideos : null,
     });
+    setExpanded(false);
+  };
+
+  const handleRunNow = async () => {
+    try {
+      const res = await fetch('http://localhost:3001/api/recurring/run-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: config.id }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json().catch(() => ({}));
+      if (data?.error) throw new Error(data.error);
+    } catch (e) {
+      console.error('[Schedule] Run now failed:', e);
+    }
   };
 
   const togglePlatform = (p: string) => setPlatforms(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
