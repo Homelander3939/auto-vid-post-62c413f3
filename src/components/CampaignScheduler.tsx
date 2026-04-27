@@ -144,47 +144,15 @@ export default function CampaignScheduler() {
     if (files.length === 0) return;
 
     if (isMultiFile) {
-      // Match text files to video files by name stem — stored for later use in addEntry
-      const textMap = new Map<string, File>();
-      for (const tf of files) {
-        const stem = tf.name.replace(/\.[^.]+$/, '').toLowerCase();
-        textMap.set(stem, tf);
-      }
-      // Store matched text files on videoFiles state indirectly via a ref or separate state
-      // For simplicity we'll process and build entries immediately
+      // Just store txt files; entries are built when user clicks "Add to Campaign"
+      setMultiTextFiles(files);
       const matched = matchVideoTextFiles(videoFiles, files);
-      const newEntries: ScheduleEntry[] = [];
-      const baseTime = scheduledAt ? new Date(scheduledAt).getTime() : Date.now() + 5 * 60_000;
-
-      for (let i = 0; i < matched.length; i++) {
-        const { video, textFile } = matched[i];
-        let entryTitle = cleanVideoTitle(video.name);
-        let entryDesc = '';
-        let entryTags: string[] = [];
-
-        if (textFile) {
-          const text = await textFile.text();
-          const parsed = parseTextContent(text);
-          if (parsed.title) entryTitle = parsed.title;
-          if (parsed.description) entryDesc = parsed.description;
-          if (parsed.tags?.length) entryTags = parsed.tags;
-        }
-
-        newEntries.push({
-          videoFile: video,
-          title: entryTitle,
-          description: entryDesc,
-          tags: entryTags,
-          scheduledAt: new Date(baseTime + i * intensityMinutes * 60_000).toISOString().slice(0, 16),
-          platforms: [...platforms],
-        });
-      }
-
-      setEntries(prev => [...prev, ...newEntries]);
-      setVideoFiles([]);
-      setVideoFile(null);
-      if (videoInputRef.current) videoInputRef.current.value = '';
-      toast({ title: `${newEntries.length} entries added to campaign` });
+      const matchCount = matched.filter(m => m.textFile).length;
+      if (textInputRef.current) textInputRef.current.value = '';
+      toast({
+        title: `${files.length} .txt file(s) selected`,
+        description: `Matched ${matchCount}/${videoFiles.length} videos. Set platforms, time, then click "Add to Campaign".`,
+      });
       return;
     }
 
