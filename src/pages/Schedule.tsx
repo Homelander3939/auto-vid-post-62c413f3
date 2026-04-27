@@ -362,7 +362,7 @@ export default function Schedule() {
   });
 
   const { data: scheduledUploads = [] } = useQuery({
-    queryKey: ['scheduled-uploads'],
+    queryKey: ['scheduled_uploads'],
     queryFn: getScheduledUploads,
     refetchInterval: 5000,
   });
@@ -386,7 +386,7 @@ export default function Schedule() {
 
   const handleDeleteScheduled = async (id: string) => {
     await deleteScheduledUpload(id);
-    qc.invalidateQueries({ queryKey: ['scheduled-uploads'] });
+    qc.invalidateQueries({ queryKey: ['scheduled_uploads'] });
     toast({ title: 'Scheduled upload cancelled' });
   };
 
