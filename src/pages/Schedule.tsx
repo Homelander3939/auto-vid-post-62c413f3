@@ -76,6 +76,8 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   const [endAt, setEndAt] = useState(config.endAt);
   const [maxRuns, setMaxRuns] = useState<number | null>(config.maxRuns ?? null);
   const [useMaxRuns, setUseMaxRuns] = useState<boolean>(config.maxRuns != null);
+  const [maxVideos, setMaxVideos] = useState<number | null>(config.maxVideos ?? null);
+  const [useMaxVideos, setUseMaxVideos] = useState<boolean>(config.maxVideos != null);
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>(config.accountSelections || {});
 
   const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);
@@ -123,6 +125,7 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
       name, enabled, cronExpression, platforms, folderPath, endAt, uploadIntervalMinutes,
       accountSelections: selectedAccounts,
       maxRuns: useMaxRuns ? maxRuns : null,
+      maxVideos: useMaxVideos ? maxVideos : null,
     });
   };
 
