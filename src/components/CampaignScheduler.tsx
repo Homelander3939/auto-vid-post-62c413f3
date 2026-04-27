@@ -691,9 +691,18 @@ export default function CampaignScheduler() {
                   </p>
                   <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground flex-wrap">
                     <Clock className="w-3 h-3 shrink-0" />
-                    <span>{format(new Date(entry.scheduledAt), 'PPp')}</span>
+                    <span>{format(parseLocalDateTimeInput(entry.scheduledAt) || new Date(entry.scheduledAt), 'PPp')}</span>
                     <span>·</span>
                     <span className="capitalize">{entry.platforms.join(', ')}</span>
+                    {entry.textFileName && (
+                      <>
+                        <span>·</span>
+                        <span className="inline-flex items-center gap-1 text-primary">
+                          <FileText className="w-3 h-3" />
+                          {entry.textFileName}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
                 <AlertDialog>
