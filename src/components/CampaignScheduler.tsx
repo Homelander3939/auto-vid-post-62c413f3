@@ -314,23 +314,23 @@ export default function CampaignScheduler() {
     setEntries((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const saveAll = async () => {
-    if (entries.length === 0) {
+  const saveAll = async (entriesToSave: ScheduleEntry[] = entries) => {
+    if (entriesToSave.length === 0) {
       toast({ title: 'Add at least one entry', variant: 'destructive' });
       return;
     }
     setSaving(true);
     let immediateJobIds: string[] = [];
     try {
-      for (let i = 0; i < entries.length; i++) {
-        const entry = entries[i];
-        setSaveProgress(`Processing ${i + 1}/${entries.length}...`);
+      for (let i = 0; i < entriesToSave.length; i++) {
+        const entry = entriesToSave[i];
+        setSaveProgress(`Processing ${i + 1}/${entriesToSave.length}...`);
 
         let storagePath: string | null = null;
         let fileName = '';
 
         if (entry.videoFile) {
-          setSaveProgress(`Uploading video ${i + 1}/${entries.length}...`);
+          setSaveProgress(`Uploading video ${i + 1}/${entriesToSave.length}...`);
           storagePath = await uploadVideoFile(entry.videoFile);
           fileName = entry.videoFile.name;
         } else if (entry.folderPath) {
@@ -359,7 +359,7 @@ export default function CampaignScheduler() {
         const isImmediate = scheduledTime <= Date.now();
 
         if (isImmediate) {
-          setSaveProgress(`Creating job ${i + 1}/${entries.length}...`);
+          setSaveProgress(`Creating job ${i + 1}/${entriesToSave.length}...`);
           const job = await createUploadJob(fileName, storagePath, metadata, entry.platforms, primaryAccountId);
           try {
             await saveLocalJobAccountSelections(job.id, accountSelections);
@@ -368,7 +368,7 @@ export default function CampaignScheduler() {
           }
           immediateJobIds.push(job.id);
         } else {
-          setSaveProgress(`Scheduling ${i + 1}/${entries.length}...`);
+          setSaveProgress(`Scheduling ${i + 1}/${entriesToSave.length}...`);
           const scheduled = await createScheduledUpload(fileName, storagePath, metadata, entry.platforms, scheduledAtIso, primaryAccountId);
           try {
             await saveLocalScheduledAccountSelections(scheduled.id, accountSelections);
@@ -397,13 +397,13 @@ export default function CampaignScheduler() {
       }
 
       const immCount = immediateJobIds.length;
-      const schedCount = entries.length - immCount;
+      const schedCount = entriesToSave.length - immCount;
       const parts = [];
       if (immCount) parts.push(`${immCount} queued now`);
       if (schedCount) parts.push(`${schedCount} scheduled`);
 
       toast({
-        title: `${entries.length} upload(s) saved!`,
+        title: `${entriesToSave.length} upload(s) saved!`,
         description: parts.join(', '),
       });
       setEntries([]);
