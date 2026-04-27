@@ -257,6 +257,7 @@ export default function CampaignScheduler() {
     // Reset form
     setVideoFile(null);
     setVideoFiles([]);
+    setMultiTextFiles([]);
     setFolderPath('');
     setTitle('');
     setDescription('');
