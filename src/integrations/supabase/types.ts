@@ -429,6 +429,7 @@ export type Database = {
           id: number
           last_run_at: string | null
           max_runs: number | null
+          max_videos: number | null
           name: string
           platforms: string[]
           run_count: number
@@ -444,6 +445,7 @@ export type Database = {
           id?: number
           last_run_at?: string | null
           max_runs?: number | null
+          max_videos?: number | null
           name?: string
           platforms?: string[]
           run_count?: number
@@ -459,6 +461,7 @@ export type Database = {
           id?: number
           last_run_at?: string | null
           max_runs?: number | null
+          max_videos?: number | null
           name?: string
           platforms?: string[]
           run_count?: number

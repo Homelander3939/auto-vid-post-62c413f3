@@ -1,0 +1,1 @@
+ALTER TABLE public.schedule_config ADD COLUMN IF NOT EXISTS max_videos integer;
