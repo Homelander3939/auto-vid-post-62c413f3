@@ -567,6 +567,26 @@ export default function CampaignScheduler() {
                   First video uploads at the scheduled time, the rest are spaced {intensityMinutes} minutes apart. New uploads start independently — a slow previous run does not block the next.
                 </p>
               </div>
+
+              {/* How many last videos to upload from this folder */}
+              <div className="space-y-2">
+                <Label className="text-xs">Number of last videos (optional)</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={folderMaxVideos ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    setFolderMaxVideos(v === '' ? null : Math.max(1, parseInt(v, 10) || 1));
+                  }}
+                  placeholder="Leave empty to upload all"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {folderMaxVideos && folderMaxVideos > 0
+                    ? `Will upload only the last ${folderMaxVideos} videos (highest-numbered) from the folder, every ${intensityMinutes} minutes, then delete them after success.`
+                    : 'Leave empty to process every matching video+.txt pair in the folder.'}
+                </p>
+              </div>
             </div>
           )}
 
