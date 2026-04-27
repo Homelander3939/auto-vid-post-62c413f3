@@ -187,24 +187,52 @@ export default function CampaignScheduler() {
     ? folderPath.trim().length > 0 && scheduledAt
     : (!!videoFile || isMultiFile) && (isMultiFile || title.trim().length > 0) && scheduledAt;
 
-  const addEntry = () => {
+  const addEntry = async () => {
     if (isMultiFile) {
-      // For multi-file without text files, create entries with auto titles
-      const baseTime = scheduledAt ? new Date(scheduledAt).getTime() : Date.now() + 5 * 60_000;
-      const newEntries: ScheduleEntry[] = videoFiles.map((video, i) => ({
-        videoFile: video,
-        title: cleanVideoTitle(video.name),
-        description: '',
-        tags: [],
-        scheduledAt: new Date(baseTime + i * intensityMinutes * 60_000).toISOString().slice(0, 16),
-        platforms: [...platforms],
-      }));
+      if (!scheduledAt) {
+        toast({ title: 'Pick a scheduled date & time', variant: 'destructive' });
+        return;
+      }
+      if (platforms.length === 0) {
+        toast({ title: 'Select at least one platform', variant: 'destructive' });
+        return;
+      }
+      // Match optional .txt files to videos by stem; parse metadata when available
+      const matched = matchVideoTextFiles(videoFiles, multiTextFiles);
+      const baseTime = new Date(scheduledAt).getTime();
+      const newEntries: ScheduleEntry[] = [];
+      for (let i = 0; i < matched.length; i++) {
+        const { video, textFile } = matched[i];
+        let entryTitle = cleanVideoTitle(video.name);
+        let entryDesc = '';
+        let entryTags: string[] = [];
+        if (textFile) {
+          try {
+            const text = await textFile.text();
+            const parsed = parseTextContent(text);
+            if (parsed.title) entryTitle = parsed.title;
+            if (parsed.description) entryDesc = parsed.description;
+            if (parsed.tags?.length) entryTags = parsed.tags;
+          } catch { /* ignore parse errors */ }
+        }
+        newEntries.push({
+          videoFile: video,
+          title: entryTitle,
+          description: entryDesc,
+          tags: entryTags,
+          scheduledAt: new Date(baseTime + i * intensityMinutes * 60_000).toISOString().slice(0, 16),
+          platforms: [...platforms],
+        });
+      }
       setEntries(prev => [...prev, ...newEntries]);
       setVideoFiles([]);
       setVideoFile(null);
+      setMultiTextFiles([]);
       setScheduledAt('');
       if (videoInputRef.current) videoInputRef.current.value = '';
-      toast({ title: `${newEntries.length} entries added` });
+      if (textInputRef.current) textInputRef.current.value = '';
+      const matchedCount = matched.filter(m => m.textFile).length;
+      toast({ title: `${newEntries.length} entries added`, description: matchedCount ? `${matchedCount} with .txt metadata` : 'Auto titles from filenames' });
       return;
     }
 
