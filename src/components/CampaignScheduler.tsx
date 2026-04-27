@@ -80,6 +80,7 @@ export default function CampaignScheduler() {
   // Current entry fields
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoFiles, setVideoFiles] = useState<File[]>([]);
+  const [multiTextFiles, setMultiTextFiles] = useState<File[]>([]);
   const [folderPath, setFolderPath] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
