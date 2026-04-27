@@ -67,6 +67,8 @@ const localTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local
 
 // ---- Single schedule editor ----
 function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; onSave: (c: ScheduleConfig) => void; onDelete?: () => void }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
   const [expanded, setExpanded] = useState(!config.id); // new ones start expanded
   const [name, setName] = useState(config.name);
   const [enabled, setEnabled] = useState(config.enabled);
