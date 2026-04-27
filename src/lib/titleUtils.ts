@@ -27,10 +27,13 @@ export function extractSeriesNumber(filename: string): number {
   const stem = filename.replace(/\.[^.]+$/, '');
   // Remove date/time patterns first to isolate the series number
   const cleaned = stem
+    .replace(/[\s_-]+\d{4}[-_]\d{2}[-_]\d{2}/g, '')
     .replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}/g, '')
+    .replace(/[\s_-]+\d{2}[-_]\d{2}[-_]\d{2}\b/g, '')
     .replace(/[-_]\d{2}[-_]\d{2}[-_]\d{2}\b/g, '')
+    .replace(/[\s_-]+\d{6,}/g, '')
     .replace(/[-_]\d{6,}/g, '');
-  const match = cleaned.match(/(\d+)\s*$/);
+  const match = cleaned.match(/(\d+)\D*$/);
   return match ? parseInt(match[1], 10) : Infinity;
 }
 
@@ -38,7 +41,11 @@ export function extractSeriesNumber(filename: string): number {
  * Sort files by their series number (ascending, lowest first).
  */
 export function sortFilesBySeriesNumber<T extends { name: string }>(files: T[]): T[] {
-  return [...files].sort((a, b) => extractSeriesNumber(a.name) - extractSeriesNumber(b.name));
+  return [...files].sort((a, b) => {
+    const numDiff = extractSeriesNumber(a.name) - extractSeriesNumber(b.name);
+    if (numDiff !== 0) return numDiff;
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  });
 }
 
 export function matchVideoTextFiles(
