@@ -176,14 +176,24 @@ function resolveMetadataForVideo(baseDir, videoFileName, fallbackTitle = '', fal
 
 function normalizeFolderPath(folderPath) {
   return String(folderPath || '')
-    .replace(/^\[folder(?:\|\d+)?\]\s*/i, '')
+    // Strip [folder] / [folder|N] / [folder|N|M] prefix
+    .replace(/^\[folder(?:\|\d+(?:\|\d+)?)?\]\s*/i, '')
     .replace(/^"(.+)"$/, '$1')
     .replace(/^'(.+)'$/, '$1')
     .trim();
 }
 
 function parseFolderIntensity(marker) {
-  const m = String(marker || '').match(/^\[folder\|(\d+)\]/i);
+  const m = String(marker || '').match(/^\[folder\|(\d+)(?:\|\d+)?\]/i);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// Optional max-count: [folder|intensity|count] — limits the campaign to the
+// last N (highest-numbered) videos in the folder.
+function parseFolderMaxCount(marker) {
+  const m = String(marker || '').match(/^\[folder\|\d+\|(\d+)\]/i);
   if (!m) return null;
   const n = parseInt(m[1], 10);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -344,7 +354,7 @@ async function processJob(jobId, options = {}) {
       videoPath = path.join(tempDir, job.video_file_name);
       const buffer = Buffer.from(await fileData.arrayBuffer());
       fs.writeFileSync(videoPath, buffer);
-    } else if (typeof job.video_file_name === 'string' && /^\[folder(?:\|\d+)?\]\s/i.test(job.video_file_name)) {
+    } else if (typeof job.video_file_name === 'string' && /^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(job.video_file_name)) {
       const folderPath = normalizeFolderPath(job.video_file_name);
       const { videoFile, textFile } = scanFolder(folderPath);
 
@@ -1900,18 +1910,26 @@ async function processScheduledUploads() {
       let folderPathForJob = null;
 
       // Handle folder-based entries
-      if (/^\[folder(?:\|\d+)?\]\s/i.test(videoFileName)) {
+      if (/^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(videoFileName)) {
         const folderPath = normalizeFolderPath(videoFileName);
         const intensityMin = parseFolderIntensity(videoFileName);
+        const maxCount = parseFolderMaxCount(videoFileName);
 
         // If an intensity is set, fan out: scan ALL videos and schedule them spaced by intensity.
         if (intensityMin) {
-          const allPairs = scanAllFiles(folderPath);
+          let allPairs = scanAllFiles(folderPath);
           if (allPairs.length === 0) {
             console.error(`[Scheduler] No videos found in folder: ${folderPath}`);
             await supabase.from('scheduled_uploads').update({ status: 'error' }).eq('id', item.id);
             await notifyTelegram(settings, `❌ Scheduled folder upload: no videos found in ${folderPath}`);
             continue;
+          }
+
+          // If user requested only the last N videos, take the N highest-numbered
+          // pairs (scanAllFiles is sorted ascending by series #), then keep ascending
+          // order so uploads still go 25 → 26 → 27.
+          if (maxCount && allPairs.length > maxCount) {
+            allPairs = allPairs.slice(-maxCount);
           }
 
           const baseTime = new Date(item.scheduled_at).getTime();
@@ -1926,7 +1944,9 @@ async function processScheduledUploads() {
               if (!entryTags?.length) entryTags = meta.tags || [];
             }
             return {
-              video_file_name: pair.videoFile,
+              // Store the absolute path so the worker resolves it regardless of
+              // the global default folder (handled by the path.isAbsolute branch).
+              video_file_name: path.resolve(path.join(folderPath, pair.videoFile)),
               video_storage_path: null,
               title: entryTitle || pair.videoFile,
               description: entryDesc || '',
@@ -1955,7 +1975,8 @@ async function processScheduledUploads() {
           }
 
           await supabase.from('scheduled_uploads').update({ status: 'completed' }).eq('id', item.id);
-          await notifyTelegram(settings, `📅 Scheduled ${inserted?.length || 0} videos from ${folderPath}, every ${intensityMin}m starting ${new Date(baseTime).toLocaleString()}`);
+          const limitNote = maxCount ? ` (last ${allPairs.length} of folder)` : '';
+          await notifyTelegram(settings, `📅 Scheduled ${inserted?.length || 0} videos from ${folderPath}${limitNote}, every ${intensityMin}m starting ${new Date(baseTime).toLocaleString()}`);
           continue;
         }
 
@@ -2108,11 +2129,17 @@ async function processRecurringSchedule() {
         console.log(`[Recurring] Schedule ${config.id} (${config.name}) matched at ${now.toISOString()}, run #${newRunCount}, scanning: ${folderPath}`);
 
         // Scan ALL files in folder, matched by name
-        const allPairs = scanAllFiles(folderPath);
+        let allPairs = scanAllFiles(folderPath);
         if (allPairs.length === 0) {
           console.log(`[Recurring] No videos found in ${folderPath}`);
           await notifyTelegram(settings, `⚠️ Schedule "${config.name}": no videos found in ${folderPath}`);
           continue;
+        }
+
+        // Apply per-run max_videos cap (last N highest-numbered, kept in ascending order).
+        const maxVideos = Number.isFinite(config.max_videos) && config.max_videos > 0 ? config.max_videos : null;
+        if (maxVideos && allPairs.length > maxVideos) {
+          allPairs = allPairs.slice(-maxVideos);
         }
 
         const requestedPlatforms = Array.isArray(config.platforms) && config.platforms.length
@@ -2516,7 +2543,7 @@ async function pollFolderWatchers() {
       .from('scheduled_uploads').select('video_file_name,target_platforms,id')
       .eq('status', 'scheduled');
     for (const item of pending || []) {
-      if (typeof item.video_file_name === 'string' && /^\[folder(?:\|\d+)?\]\s/i.test(item.video_file_name)) {
+      if (typeof item.video_file_name === 'string' && /^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(item.video_file_name)) {
         const folderPath = normalizeFolderPath(item.video_file_name);
         const intensity = parseFolderIntensity(item.video_file_name) || 0;
         const sel = getScheduledAccountSelections(item.id) || {};

@@ -124,6 +124,7 @@ export default function CampaignScheduler() {
   const [platforms, setPlatforms] = useState<string[]>(['youtube', 'tiktok', 'instagram']);
   const [scheduledAt, setScheduledAt] = useState('');
   const [intensityMinutes, setIntensityMinutes] = useState(10);
+  const [folderMaxVideos, setFolderMaxVideos] = useState<number | null>(null);
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({});
 
   const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);
@@ -297,6 +298,7 @@ export default function CampaignScheduler() {
     setVideoFiles([]);
     setMultiTextFiles([]);
     setFolderPath('');
+    setFolderMaxVideos(null);
     setTitle('');
     setDescription('');
     setTagsInput('');
@@ -332,7 +334,13 @@ export default function CampaignScheduler() {
           storagePath = await uploadVideoFile(entry.videoFile);
           fileName = entry.videoFile.name;
         } else if (entry.folderPath) {
-          fileName = `[folder|${intensityMinutes}] ${entry.folderPath}`;
+          // Encode "last N" cap into the marker as [folder|intensity|count]; the
+          // server fan-out picks the N highest-numbered pairs (ascending order)
+          // and deletes them after a fully-successful upload.
+          const tag = folderMaxVideos && folderMaxVideos > 0
+            ? `[folder|${intensityMinutes}|${folderMaxVideos}]`
+            : `[folder|${intensityMinutes}]`;
+          fileName = `${tag} ${entry.folderPath}`;
         }
 
         const metadata: VideoMetadata = {
@@ -558,6 +566,26 @@ export default function CampaignScheduler() {
                 </Select>
                 <p className="text-xs text-muted-foreground">
                   First video uploads at the scheduled time, the rest are spaced {intensityMinutes} minutes apart. New uploads start independently — a slow previous run does not block the next.
+                </p>
+              </div>
+
+              {/* How many last videos to upload from this folder */}
+              <div className="space-y-2">
+                <Label className="text-xs">Number of last videos (optional)</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={folderMaxVideos ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    setFolderMaxVideos(v === '' ? null : Math.max(1, parseInt(v, 10) || 1));
+                  }}
+                  placeholder="Leave empty to upload all"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {folderMaxVideos && folderMaxVideos > 0
+                    ? `Will upload only the last ${folderMaxVideos} videos (highest-numbered) from the folder, every ${intensityMinutes} minutes, then delete them after success.`
+                    : 'Leave empty to process every matching video+.txt pair in the folder.'}
                 </p>
               </div>
             </div>
