@@ -413,6 +413,7 @@ function ScheduledCard({
 export default function UploadQueue() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [selectedScheduled, setSelectedScheduled] = useState<Set<string>>(new Set());
 
   const { data: jobs = [], isLoading } = useQuery({
     queryKey: ['queue'],
@@ -454,8 +455,45 @@ export default function UploadQueue() {
 
   const handleDeleteScheduled = async (id: string) => {
     await deleteScheduledUpload(id);
+    setSelectedScheduled(prev => { const n = new Set(prev); n.delete(id); return n; });
     queryClient.invalidateQueries({ queryKey: ['scheduled_uploads'] });
     toast({ title: 'Scheduled upload cancelled' });
+  };
+
+  const toggleScheduledSelected = (id: string, checked: boolean) => {
+    setSelectedScheduled(prev => {
+      const n = new Set(prev);
+      if (checked) n.add(id); else n.delete(id);
+      return n;
+    });
+  };
+
+  const toggleAllScheduled = () => {
+    setSelectedScheduled(prev => {
+      if (prev.size === upcomingUploads.length) return new Set();
+      return new Set(upcomingUploads.map(u => u.id));
+    });
+  };
+
+  const handleBulkCancelScheduled = async () => {
+    const ids = Array.from(selectedScheduled);
+    if (ids.length === 0) return;
+    // Run sequentially to avoid hammering the DB; ignore individual errors so one
+    // missing row doesn't abort the rest.
+    let okCount = 0;
+    for (const id of ids) {
+      try {
+        await deleteScheduledUpload(id);
+        okCount++;
+      } catch (err: any) {
+        console.warn('Failed to cancel scheduled upload', id, err?.message);
+      }
+    }
+    setSelectedScheduled(new Set());
+    queryClient.invalidateQueries({ queryKey: ['scheduled_uploads'] });
+    toast({
+      title: `Cancelled ${okCount}/${ids.length} scheduled upload${ids.length === 1 ? '' : 's'}`,
+    });
   };
 
   const hasPending = jobs.some((j) =>
