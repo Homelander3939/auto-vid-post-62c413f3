@@ -354,7 +354,7 @@ async function processJob(jobId, options = {}) {
       videoPath = path.join(tempDir, job.video_file_name);
       const buffer = Buffer.from(await fileData.arrayBuffer());
       fs.writeFileSync(videoPath, buffer);
-    } else if (typeof job.video_file_name === 'string' && /^\[folder(?:\|\d+)?\]\s/i.test(job.video_file_name)) {
+    } else if (typeof job.video_file_name === 'string' && /^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(job.video_file_name)) {
       const folderPath = normalizeFolderPath(job.video_file_name);
       const { videoFile, textFile } = scanFolder(folderPath);
 
@@ -1910,7 +1910,7 @@ async function processScheduledUploads() {
       let folderPathForJob = null;
 
       // Handle folder-based entries
-      if (/^\[folder(?:\|\d+)?\]\s/i.test(videoFileName)) {
+      if (/^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(videoFileName)) {
         const folderPath = normalizeFolderPath(videoFileName);
         const intensityMin = parseFolderIntensity(videoFileName);
 
@@ -2526,7 +2526,7 @@ async function pollFolderWatchers() {
       .from('scheduled_uploads').select('video_file_name,target_platforms,id')
       .eq('status', 'scheduled');
     for (const item of pending || []) {
-      if (typeof item.video_file_name === 'string' && /^\[folder(?:\|\d+)?\]\s/i.test(item.video_file_name)) {
+      if (typeof item.video_file_name === 'string' && /^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(item.video_file_name)) {
         const folderPath = normalizeFolderPath(item.video_file_name);
         const intensity = parseFolderIntensity(item.video_file_name) || 0;
         const sel = getScheduledAccountSelections(item.id) || {};
