@@ -43,11 +43,47 @@ import { saveLocalJobAccountSelections, saveLocalScheduledAccountSelections, typ
 interface ScheduleEntry {
   videoFile?: File;
   folderPath?: string;
+  textFileName?: string;
   title: string;
   description: string;
   tags: string[];
   scheduledAt: string;
   platforms: string[];
+}
+
+function parseLocalDateTimeInput(value: string): Date | null {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+  const [, y, m, d, h, min, sec = '0'] = match;
+  const date = new Date(Number(y), Number(m) - 1, Number(d), Number(h), Number(min), Number(sec));
+  if (
+    date.getFullYear() !== Number(y) ||
+    date.getMonth() !== Number(m) - 1 ||
+    date.getDate() !== Number(d) ||
+    date.getHours() !== Number(h) ||
+    date.getMinutes() !== Number(min)
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function formatLocalDateTimeInput(date: Date) {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function addMinutesToLocalDateTimeInput(value: string, minutes: number) {
+  const date = parseLocalDateTimeInput(value);
+  if (!date) return value;
+  date.setMinutes(date.getMinutes() + minutes);
+  return formatLocalDateTimeInput(date);
+}
+
+function localDateTimeInputToIso(value: string) {
+  const date = parseLocalDateTimeInput(value);
+  if (!date) throw new Error('Invalid scheduled date/time');
+  return date.toISOString();
 }
 
 function buildPlatformAccountSelections(platforms: string[], selectedAccounts: Record<string, string>): PlatformAccountSelections {
@@ -59,8 +95,7 @@ function buildPlatformAccountSelections(platforms: string[], selectedAccounts: R
 }
 
 function toLocalDateTimeInputValue(date: Date) {
-  const offsetMs = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+  return formatLocalDateTimeInput(date);
 }
 
 export default function CampaignScheduler() {
