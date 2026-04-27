@@ -68,6 +68,8 @@ export interface ScheduleConfig {
   folderPath: string;
   endAt: string | null;
   uploadIntervalMinutes: number;
+  /** Optional cap: only the last N (highest-numbered) videos in the folder are uploaded per run. */
+  maxVideos?: number | null;
   accountSelections?: Record<string, string>;
   runCount?: number;
   maxRuns?: number | null;
@@ -462,6 +464,7 @@ export async function getSchedules(): Promise<ScheduleConfig[]> {
     folderPath: row.folder_path || '',
     endAt: row.end_at || null,
     uploadIntervalMinutes: row.upload_interval_minutes || 10,
+    maxVideos: row.max_videos ?? null,
     accountSelections: row.account_selections || {},
     runCount: row.run_count || 0,
     maxRuns: row.max_runs ?? null,
@@ -484,6 +487,7 @@ export async function saveSchedule(config: ScheduleConfig): Promise<ScheduleConf
     folder_path: config.folderPath,
     end_at: config.endAt,
     upload_interval_minutes: config.uploadIntervalMinutes || 10,
+    max_videos: config.maxVideos ?? null,
     account_selections: config.accountSelections || {},
     max_runs: config.maxRuns ?? null,
   } as any;
