@@ -461,11 +461,41 @@ async function processJob(jobId, options = {}) {
       return `⚪ ${r.name}: ${r.status}`;
     });
     const emoji = finalStatus === 'completed' ? '🎉' : finalStatus === 'partial' ? '⚠️' : '❌';
-    const summaryMsg = `${emoji} <b>Upload ${finalStatus}</b>\n📹 ${metadata.title || job.video_file_name}\n\n${lines.join('\n')}`;
+
+    // === AUTO-DELETE LOCAL SOURCE FILES on full success ===
+    let cleanupLine = '';
+    const isLocalSource = !job.video_storage_path && videoPath && fs.existsSync(videoPath);
+    if (finalStatus === 'completed' && settings.deleteAfterUpload !== false && isLocalSource) {
+      try {
+        const folderDir = path.dirname(videoPath);
+        const stem = path.basename(videoPath).replace(/\.[^.]+$/, '');
+        const deleted = [];
+        try { fs.unlinkSync(videoPath); deleted.push(path.basename(videoPath)); } catch {}
+        // Find sibling .txt with the same stem (case-insensitive)
+        try {
+          for (const f of fs.readdirSync(folderDir)) {
+            if (f.toLowerCase() === `${stem.toLowerCase()}.txt`) {
+              try { fs.unlinkSync(path.join(folderDir, f)); deleted.push(f); } catch {}
+              break;
+            }
+          }
+        } catch {}
+        if (deleted.length) {
+          cleanupLine = `\n🧹 Cleaned up: ${deleted.join(' + ')}`;
+          console.log(`[Worker] Job ${jobId} cleaned up local source files: ${deleted.join(', ')}`);
+          // Forget queued state so a new file with the same name later gets picked up.
+          try { folderWatchState.queued.delete(path.resolve(videoPath)); persistFolderWatchState(); } catch {}
+        }
+      } catch (e) {
+        console.error(`[Worker] Cleanup failed for job ${jobId}:`, e.message);
+      }
+    }
+
+    const summaryMsg = `${emoji} <b>Upload ${finalStatus}</b>\n📹 ${metadata.title || job.video_file_name}\n\n${lines.join('\n')}${cleanupLine}`;
 
     await notifyTelegram(settings, summaryMsg);
 
-    // Cleanup temp file
+    // Cleanup temp file (Supabase-storage downloads)
     if (job.video_storage_path && videoPath) {
       try { fs.unlinkSync(videoPath); } catch {}
     }
