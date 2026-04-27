@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { RefreshCw, ExternalLink, Inbox, Trash2, Video, Monitor, Cloud, Pencil, Save, X, ChevronDown, ChevronUp, StopCircle, CalendarClock, Repeat, Eye } from 'lucide-react';
@@ -345,7 +346,17 @@ function JobCard({ job }: { job: UploadJob }) {
 
 /* ── Scheduled Upload Card ────────────────── */
 
-function ScheduledCard({ item, onDelete }: { item: ScheduledUpload; onDelete: () => void }) {
+function ScheduledCard({
+  item,
+  onDelete,
+  selected,
+  onToggleSelect,
+}: {
+  item: ScheduledUpload;
+  onDelete: () => void;
+  selected: boolean;
+  onToggleSelect: (checked: boolean) => void;
+}) {
   const scheduledDate = new Date(item.scheduled_at);
   const now = new Date();
   const isOverdue = scheduledDate < now;
@@ -356,6 +367,11 @@ function ScheduledCard({ item, onDelete }: { item: ScheduledUpload; onDelete: ()
       <CardContent className="py-3 px-4">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0 flex-1">
+            <Checkbox
+              checked={selected}
+              onCheckedChange={(v) => onToggleSelect(!!v)}
+              aria-label="Select scheduled upload"
+            />
             <CalendarClock className="w-4 h-4 text-primary shrink-0" />
             <div className="min-w-0">
               <p className="text-sm font-medium truncate">{item.title || item.video_file_name}</p>
@@ -397,6 +413,7 @@ function ScheduledCard({ item, onDelete }: { item: ScheduledUpload; onDelete: ()
 export default function UploadQueue() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [selectedScheduled, setSelectedScheduled] = useState<Set<string>>(new Set());
 
   const { data: jobs = [], isLoading } = useQuery({
     queryKey: ['queue'],
@@ -438,8 +455,45 @@ export default function UploadQueue() {
 
   const handleDeleteScheduled = async (id: string) => {
     await deleteScheduledUpload(id);
+    setSelectedScheduled(prev => { const n = new Set(prev); n.delete(id); return n; });
     queryClient.invalidateQueries({ queryKey: ['scheduled_uploads'] });
     toast({ title: 'Scheduled upload cancelled' });
+  };
+
+  const toggleScheduledSelected = (id: string, checked: boolean) => {
+    setSelectedScheduled(prev => {
+      const n = new Set(prev);
+      if (checked) n.add(id); else n.delete(id);
+      return n;
+    });
+  };
+
+  const toggleAllScheduled = () => {
+    setSelectedScheduled(prev => {
+      if (prev.size === upcomingUploads.length) return new Set();
+      return new Set(upcomingUploads.map(u => u.id));
+    });
+  };
+
+  const handleBulkCancelScheduled = async () => {
+    const ids = Array.from(selectedScheduled);
+    if (ids.length === 0) return;
+    // Run sequentially to avoid hammering the DB; ignore individual errors so one
+    // missing row doesn't abort the rest.
+    let okCount = 0;
+    for (const id of ids) {
+      try {
+        await deleteScheduledUpload(id);
+        okCount++;
+      } catch (err: any) {
+        console.warn('Failed to cancel scheduled upload', id, err?.message);
+      }
+    }
+    setSelectedScheduled(new Set());
+    queryClient.invalidateQueries({ queryKey: ['scheduled_uploads'] });
+    toast({
+      title: `Cancelled ${okCount}/${ids.length} scheduled upload${ids.length === 1 ? '' : 's'}`,
+    });
   };
 
   const hasPending = jobs.some((j) =>
@@ -536,11 +590,56 @@ export default function UploadQueue() {
       {/* Upcoming scheduled uploads */}
       {upcomingUploads.length > 0 && (
         <div className="space-y-3">
-          <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
-            <CalendarClock className="w-4 h-4" /> Upcoming Scheduled ({upcomingUploads.length})
-          </h2>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+              <CalendarClock className="w-4 h-4" /> Upcoming Scheduled ({upcomingUploads.length})
+            </h2>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground"
+                onClick={toggleAllScheduled}
+              >
+                {selectedScheduled.size === upcomingUploads.length ? 'Deselect all' : 'Select all'}
+              </Button>
+              {selectedScheduled.size > 0 && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs text-destructive hover:text-destructive">
+                      <Trash2 className="w-3 h-3" />
+                      Cancel {selectedScheduled.size} selected
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Cancel {selectedScheduled.size} scheduled upload(s)?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will permanently remove the selected scheduled uploads. This cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={handleBulkCancelScheduled}
+                        className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+                      >
+                        Cancel selected
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
+            </div>
+          </div>
           {upcomingUploads.map((item) => (
-            <ScheduledCard key={item.id} item={item} onDelete={() => handleDeleteScheduled(item.id)} />
+            <ScheduledCard
+              key={item.id}
+              item={item}
+              onDelete={() => handleDeleteScheduled(item.id)}
+              selected={selectedScheduled.has(item.id)}
+              onToggleSelect={(checked) => toggleScheduledSelected(item.id, checked)}
+            />
           ))}
         </div>
       )}

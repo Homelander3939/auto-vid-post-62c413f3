@@ -262,15 +262,14 @@ export default function CampaignScheduler() {
           platforms: [...platforms],
         });
       }
-      setEntries(prev => [...prev, ...newEntries]);
       setVideoFiles([]);
       setVideoFile(null);
       setMultiTextFiles([]);
       setScheduledAt('');
       if (videoInputRef.current) videoInputRef.current.value = '';
       if (textInputRef.current) textInputRef.current.value = '';
-      const matchedCount = matched.filter(m => m.textFile).length;
-      toast({ title: `${newEntries.length} entries added`, description: matchedCount ? `${matchedCount} with .txt metadata` : 'Auto titles from filenames' });
+      // Auto-commit immediately — no extra "Schedule N Uploads" click required.
+      await saveAll([...entries, ...newEntries]);
       return;
     }
 
@@ -291,8 +290,6 @@ export default function CampaignScheduler() {
       platforms,
     };
 
-    setEntries((prev) => [...prev, entry]);
-
     // Reset form
     setVideoFile(null);
     setVideoFiles([]);
@@ -307,30 +304,31 @@ export default function CampaignScheduler() {
     setPlatforms(['youtube', 'tiktok', 'instagram']);
     if (videoInputRef.current) videoInputRef.current.value = '';
     if (textInputRef.current) textInputRef.current.value = '';
-    toast({ title: 'Added to campaign' });
+    // Auto-commit immediately — schedule it and let cancellation happen from the queue.
+    await saveAll([...entries, entry]);
   };
 
   const removeEntry = (idx: number) => {
     setEntries((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const saveAll = async () => {
-    if (entries.length === 0) {
+  const saveAll = async (entriesToSave: ScheduleEntry[] = entries) => {
+    if (entriesToSave.length === 0) {
       toast({ title: 'Add at least one entry', variant: 'destructive' });
       return;
     }
     setSaving(true);
     let immediateJobIds: string[] = [];
     try {
-      for (let i = 0; i < entries.length; i++) {
-        const entry = entries[i];
-        setSaveProgress(`Processing ${i + 1}/${entries.length}...`);
+      for (let i = 0; i < entriesToSave.length; i++) {
+        const entry = entriesToSave[i];
+        setSaveProgress(`Processing ${i + 1}/${entriesToSave.length}...`);
 
         let storagePath: string | null = null;
         let fileName = '';
 
         if (entry.videoFile) {
-          setSaveProgress(`Uploading video ${i + 1}/${entries.length}...`);
+          setSaveProgress(`Uploading video ${i + 1}/${entriesToSave.length}...`);
           storagePath = await uploadVideoFile(entry.videoFile);
           fileName = entry.videoFile.name;
         } else if (entry.folderPath) {
@@ -359,7 +357,7 @@ export default function CampaignScheduler() {
         const isImmediate = scheduledTime <= Date.now();
 
         if (isImmediate) {
-          setSaveProgress(`Creating job ${i + 1}/${entries.length}...`);
+          setSaveProgress(`Creating job ${i + 1}/${entriesToSave.length}...`);
           const job = await createUploadJob(fileName, storagePath, metadata, entry.platforms, primaryAccountId);
           try {
             await saveLocalJobAccountSelections(job.id, accountSelections);
@@ -368,7 +366,7 @@ export default function CampaignScheduler() {
           }
           immediateJobIds.push(job.id);
         } else {
-          setSaveProgress(`Scheduling ${i + 1}/${entries.length}...`);
+          setSaveProgress(`Scheduling ${i + 1}/${entriesToSave.length}...`);
           const scheduled = await createScheduledUpload(fileName, storagePath, metadata, entry.platforms, scheduledAtIso, primaryAccountId);
           try {
             await saveLocalScheduledAccountSelections(scheduled.id, accountSelections);
@@ -397,13 +395,13 @@ export default function CampaignScheduler() {
       }
 
       const immCount = immediateJobIds.length;
-      const schedCount = entries.length - immCount;
+      const schedCount = entriesToSave.length - immCount;
       const parts = [];
       if (immCount) parts.push(`${immCount} queued now`);
       if (schedCount) parts.push(`${schedCount} scheduled`);
 
       toast({
-        title: `${entries.length} upload(s) saved!`,
+        title: `${entriesToSave.length} upload(s) saved!`,
         description: parts.join(', '),
       });
       setEntries([]);
@@ -706,15 +704,14 @@ export default function CampaignScheduler() {
             />
           </div>
 
-          {/* Add button */}
+          {/* Add button — auto-saves & schedules instantly; no extra confirmation step. */}
           <Button
             onClick={addEntry}
-            disabled={!canAdd}
-            variant="outline"
+            disabled={!canAdd || saving}
             className="w-full gap-2"
           >
-            <Plus className="w-4 h-4" />
-            Add to Campaign
+            <CalendarClock className="w-4 h-4" />
+            {saving ? (saveProgress || 'Scheduling…') : 'Schedule Upload'}
           </Button>
         </CardContent>
       </Card>
@@ -780,9 +777,9 @@ export default function CampaignScheduler() {
                 </AlertDialog>
               </div>
             ))}
-            <Button onClick={saveAll} disabled={saving} className="w-full gap-2 mt-2">
+            <Button onClick={() => saveAll()} disabled={saving} className="w-full gap-2 mt-2">
               <CalendarClock className="w-4 h-4" />
-              {saving ? (saveProgress || 'Saving…') : `Schedule ${entries.length} Upload${entries.length > 1 ? 's' : ''}`}
+              {saving ? (saveProgress || 'Saving…') : `Retry ${entries.length} Pending Upload${entries.length > 1 ? 's' : ''}`}
             </Button>
           </CardContent>
         </Card>
