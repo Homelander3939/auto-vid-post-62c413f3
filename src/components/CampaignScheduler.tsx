@@ -567,7 +567,9 @@ export default function CampaignScheduler() {
                   onClick={() => textInputRef.current?.click()}
                 >
                   <FileText className="w-3.5 h-3.5" />
-                  {isMultiFile ? 'Import matching .txt files' : 'Import from .txt'}
+                  {isMultiFile
+                    ? (multiTextFiles.length > 0 ? `${multiTextFiles.length} .txt selected — change` : 'Import matching .txt files (optional)')
+                    : 'Import from .txt'}
                 </Button>
               )}
             </div>
