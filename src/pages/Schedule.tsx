@@ -143,8 +143,14 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json().catch(() => ({}));
       if (data?.error) throw new Error(data.error);
-    } catch (e) {
-      console.error('[Schedule] Run now failed:', e);
+      toast({ title: 'Run triggered', description: 'Scanning folder & queueing videos…' });
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ['scheduled_uploads'] });
+        qc.invalidateQueries({ queryKey: ['queue'] });
+        qc.invalidateQueries({ queryKey: ['schedules'] });
+      }, 2000);
+    } catch (e: any) {
+      toast({ title: 'Run failed', description: e?.message || 'Local server unreachable', variant: 'destructive' });
     }
   };
 
