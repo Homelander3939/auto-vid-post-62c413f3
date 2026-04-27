@@ -3,17 +3,26 @@ const path = require('path');
 
 const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];
 
-/** Extract trailing series number from filename for sorting (e.g. "Roman_History_38_2026-04-13.mp4" → 38) */
+/** Extract trailing series number from filename for sorting (e.g. "Roman_History_38_2026-04-13.mp4" → 38).
+ * Strips trailing date/time/timestamp suffixes from the *end* of the stem only,
+ * then takes the trailing number. Anchored to $ so we never accidentally chew
+ * through the series number (e.g. avoids matching "_69_08-03-11" as a date).
+ */
 function extractSeriesNum(filename) {
-  const stem = filename.replace(/\.[^.]+$/, '');
-  const cleaned = stem
-    .replace(/[\s_-]+\d{4}[-_]\d{2}[-_]\d{2}/g, '')
-    .replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}/g, '')
-    .replace(/[\s_-]+\d{2}[-_]\d{2}[-_]\d{2}\b/g, '')
-    .replace(/[-_]\d{2}[-_]\d{2}[-_]\d{2}\b/g, '')
-    .replace(/[\s_-]+\d{6,}/g, '')
-    .replace(/[-_]\d{6,}/g, '');
-  const match = cleaned.match(/(\d+)\D*$/);
+  let stem = filename.replace(/\.[^.]+$/, '');
+  // Repeatedly peel trailing date/time/timestamp segments off the END.
+  let prev;
+  do {
+    prev = stem;
+    stem = stem
+      // _YYYY-MM-DD or _YYYY_MM_DD at the very end
+      .replace(/[\s._-]+\d{4}[-_.]\d{2}[-_.]\d{2}$/, '')
+      // _HH-MM-SS at the very end
+      .replace(/[\s._-]+\d{2}[-_.]\d{2}[-_.]\d{2}$/, '')
+      // long unix-ish timestamp at the very end
+      .replace(/[\s._-]+\d{6,}$/, '');
+  } while (stem !== prev);
+  const match = stem.match(/(\d+)\D*$/);
   return match ? parseInt(match[1], 10) : Infinity;
 }
 
