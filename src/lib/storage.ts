@@ -91,6 +91,7 @@ export interface ScheduledUpload {
 const defaultSettings: AppSettings = {
   folderPath: '',
   uploadMode: 'local',
+  deleteAfterUpload: true,
   youtube: { email: '', password: '', enabled: false },
   tiktok: { email: '', password: '', enabled: false },
   instagram: { email: '', password: '', enabled: false },
