@@ -346,8 +346,9 @@ export default function CampaignScheduler() {
 
         const scheduledAtIso = localDateTimeInputToIso(entry.scheduledAt);
         const scheduledTime = parseLocalDateTimeInput(entry.scheduledAt)?.getTime() || new Date(scheduledAtIso).getTime();
-        // If scheduled time is in the past or within 1 minute, create an upload_job immediately
-        const isImmediate = scheduledTime <= Date.now() + 60_000;
+        // Only already-past times become immediate jobs. Future campaign times must remain scheduled
+        // so they appear in scheduled lists and never start before the exact selected minute.
+        const isImmediate = scheduledTime <= Date.now();
 
         if (isImmediate) {
           setSaveProgress(`Creating job ${i + 1}/${entries.length}...`);

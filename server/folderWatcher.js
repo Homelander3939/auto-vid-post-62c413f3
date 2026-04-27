@@ -7,10 +7,13 @@ const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];
 function extractSeriesNum(filename) {
   const stem = filename.replace(/\.[^.]+$/, '');
   const cleaned = stem
+    .replace(/[\s_-]+\d{4}[-_]\d{2}[-_]\d{2}/g, '')
     .replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}/g, '')
+    .replace(/[\s_-]+\d{2}[-_]\d{2}[-_]\d{2}\b/g, '')
     .replace(/[-_]\d{2}[-_]\d{2}[-_]\d{2}\b/g, '')
+    .replace(/[\s_-]+\d{6,}/g, '')
     .replace(/[-_]\d{6,}/g, '');
-  const match = cleaned.match(/(\d+)\s*$/);
+  const match = cleaned.match(/(\d+)\D*$/);
   return match ? parseInt(match[1], 10) : Infinity;
 }
 
@@ -87,7 +90,7 @@ function scanAllFiles(folderPath) {
     const numA = extractSeriesNum(a.videoFile);
     const numB = extractSeriesNum(b.videoFile);
     if (numA !== numB) return numA - numB;
-    return a.mtimeMs - b.mtimeMs;
+    return a.videoFile.localeCompare(b.videoFile, undefined, { numeric: true, sensitivity: 'base' });
   });
   return pairs;
 }
