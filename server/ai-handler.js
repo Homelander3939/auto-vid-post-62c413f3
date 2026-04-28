@@ -571,9 +571,12 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
     // when the LLM is unavailable or kept returning empty output. Better than
     // dumping a bare list of links to the user.
     if (!report || report.trim().length < 120) {
+      const cloudHint = process.env.LOVABLE_API_KEY
+        ? ''
+        : ' Add LOVABLE_API_KEY to server/.env to enable cloud fallback.';
       const langNote = requestedLang
-        ? `\n\n_(Note: model could not write in ${requestedLang}. Showing extracted source content below.)_\n`
-        : '';
+        ? `\n\n_(Note: neither the local model nor the cloud fallback could write in ${requestedLang}.${cloudHint} Showing extracted source content below.)_\n`
+        : `\n\n_(Note: AI was unavailable.${cloudHint} Showing extracted source content below.)_\n`;
       const errorNote = llmError ? `\n\n_(LLM error: ${llmError})_` : '';
       const synthesized = sources.slice(0, 8)
         .map((s, i) => {
