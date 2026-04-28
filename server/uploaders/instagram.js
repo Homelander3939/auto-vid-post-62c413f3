@@ -1039,11 +1039,11 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
   const actualVideoPath = processedPath;
 
   console.log(`[Instagram] Starting upload... (profile: ${credentials?.browserProfileId || credentials?.accountId || 'default'})`);
-  const context = await chromium.launchPersistentContext(userDataDir, {
+  const context = await launchPersistentSafe(chromium, userDataDir, {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
     viewport: { width: 1280, height: 900 },
-  });
+  }, { label: `instagram:${credentials?.browserProfileId || credentials?.accountId || 'default'}` });
 
   const page = context.pages()[0] || await context.newPage();
 
