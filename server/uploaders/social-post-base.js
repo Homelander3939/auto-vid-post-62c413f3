@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { chromium } = require('playwright');
 const { getSharedBrowserProfileDir } = require('../browserProfiles');
+const { launchPersistentSafe } = require('../profileLock');
 
 function resolveUserDataDir(platform, browserProfileId, accountId) {
   if (browserProfileId) return getSharedBrowserProfileDir(browserProfileId);
@@ -13,11 +14,11 @@ function resolveUserDataDir(platform, browserProfileId, accountId) {
 async function launchPersistent(platform, opts = {}) {
   const userDataDir = resolveUserDataDir(platform, opts.browserProfileId, opts.accountId);
   fs.mkdirSync(userDataDir, { recursive: true });
-  const context = await chromium.launchPersistentContext(userDataDir, {
+  const context = await launchPersistentSafe(chromium, userDataDir, {
     headless: false,
     viewport: { width: 1280, height: 800 },
     args: ['--disable-blink-features=AutomationControlled'],
-  });
+  }, { label: `social-${platform}:${opts.browserProfileId || opts.accountId || 'default'}` });
   return context;
 }
 
