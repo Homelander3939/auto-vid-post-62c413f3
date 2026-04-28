@@ -172,10 +172,11 @@ async function getOrCreateOpenContext(profileId) {
 
   const userDataDir = getSharedBrowserProfileDir(profileId);
   ensureDir(userDataDir);
-  const context = await chromium.launchPersistentContext(userDataDir, {
+  const { launchPersistentSafe } = require('./profileLock');
+  const context = await launchPersistentSafe(chromium, userDataDir, {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
-  });
+  }, { label: `prepare:${profileId}` });
 
   context.on('close', () => openContexts.delete(profileId));
   openContexts.set(profileId, context);
