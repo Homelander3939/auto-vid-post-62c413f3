@@ -867,11 +867,11 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
   fs.mkdirSync(userDataDir, { recursive: true });
 
   console.log(`[YouTube] Starting upload... (profile: ${credentials?.browserProfileId || credentials?.accountId || 'default'})`);
-  const context = await chromium.launchPersistentContext(userDataDir, {
+  const context = await launchPersistentSafe(chromium, userDataDir, {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
     viewport: { width: 1280, height: 900 },
-  });
+  }, { label: `youtube:${credentials?.browserProfileId || credentials?.accountId || 'default'}` });
 
   const page = context.pages()[0] || await context.newPage();
 
