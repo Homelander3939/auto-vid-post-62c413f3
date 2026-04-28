@@ -467,11 +467,18 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
       sourcesBlock || '(no sources retrieved — write from general knowledge and say so)',
     ].filter(Boolean).join('\n');
 
-    // Strip reasoning tags some local models (DeepSeek-R1, Qwen-Thinking) emit.
+    // Strip reasoning tags some local models (DeepSeek-R1, Qwen-Thinking) emit,
+    // plus template-like placeholders ("*(Hero Image)*", "*(Section 1)*", "[insert title]"…)
+    // that small models occasionally hallucinate from instruction patterns.
     const stripReasoning = (s) => String(s || '')
       .replace(/<think>[\s\S]*?<\/think>/gi, '')
       .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
       .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '')
+      .replace(/^\s*\*?\(\s*hero\s*image\s*\)\*?\s*$/gim, '')
+      .replace(/^\s*\*?\(\s*section\s*\d*\s*\)\*?\s*:?\s*$/gim, '')
+      .replace(/\*?\(\s*hero\s*image\s*\)\*?/gi, '')
+      .replace(/\*?\(\s*section\s*\d+\s*\)\*?:?\s*/gi, '')
+      .replace(/\n{3,}/g, '\n\n')
       .trim();
 
     const callLLM = async (extraSystem) => {
