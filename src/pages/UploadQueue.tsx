@@ -374,10 +374,26 @@ function ScheduledCard({
             />
             <CalendarClock className="w-4 h-4 text-primary shrink-0" />
             <div className="min-w-0">
-              <p className="text-sm font-medium truncate">{item.title || item.video_file_name}</p>
-              <p className="text-xs text-muted-foreground">
-                {isOverdue ? 'Processing soon' : `Scheduled: ${timeStr}`} · {item.target_platforms.join(', ')}
-              </p>
+              {(() => {
+                const fname = item.video_file_name || '';
+                const m = fname.match(/^\[folder(?:\|(\d+)(?:\|(\d+))?)?\]\s*(.+)$/i);
+                const isFolder = !!m;
+                const intensity = m?.[1] ? parseInt(m[1], 10) : null;
+                const maxN = m?.[2] ? parseInt(m[2], 10) : null;
+                const fpath = m?.[3]?.trim();
+                const label = isFolder
+                  ? `📁 ${fpath} — ${maxN ? `last ${maxN}` : 'all'}${intensity ? `, every ${intensity}m` : ''}`
+                  : (item.title || fname);
+                return (
+                  <>
+                    <p className="text-sm font-medium truncate">{label}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {isOverdue ? 'Processing soon' : `Scheduled: ${timeStr}`} · {item.target_platforms.join(', ')}
+                      {isFolder && <span className="ml-1 italic">· scanned at run time</span>}
+                    </p>
+                  </>
+                );
+              })()}
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
