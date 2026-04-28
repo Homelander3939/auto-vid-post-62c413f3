@@ -550,7 +550,7 @@ export default function Schedule() {
                 </div>
               </CardContent>
             </Card>
-          ))}
+          );})}
         </div>
       )}
 
