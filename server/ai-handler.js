@@ -390,42 +390,107 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
     await appendEvent({ type: 'phase', name: 'write-report' });
     const sourcesBlock = sources.slice(0, 8).map((s, i) =>
       `[${i + 1}] ${s.title}\n${s.content || s.snippet || ''}\nURL: ${s.url}`).join('\n\n');
+
+    // Detect explicit output-language requests in the prompt (e.g. "in georgian language", "на русском", "in spanish").
+    // This is critical for non-English users — the LLM otherwise defaults to English.
+    const detectRequestedLanguage = (p) => {
+      const t = String(p || '').toLowerCase();
+      const map = [
+        { re: /\b(georgian|in\s+georgian|ქართულ)/i, name: 'Georgian (ქართული)' },
+        { re: /\b(russian|in\s+russian|на\s+русском|по-русски)/i, name: 'Russian (Русский)' },
+        { re: /\b(spanish|in\s+spanish|en\s+español)/i, name: 'Spanish (Español)' },
+        { re: /\b(french|in\s+french|en\s+français)/i, name: 'French (Français)' },
+        { re: /\b(german|in\s+german|auf\s+deutsch)/i, name: 'German (Deutsch)' },
+        { re: /\b(ukrainian|in\s+ukrainian|українськ)/i, name: 'Ukrainian (Українська)' },
+        { re: /\b(turkish|in\s+turkish|türkçe)/i, name: 'Turkish (Türkçe)' },
+        { re: /\b(arabic|in\s+arabic|العربية)/i, name: 'Arabic (العربية)' },
+        { re: /\b(chinese|in\s+chinese|中文)/i, name: 'Chinese (中文)' },
+      ];
+      for (const m of map) if (m.re.test(t)) return m.name;
+      return null;
+    };
+    const requestedLang = detectRequestedLanguage(prompt);
+    const langInstruction = requestedLang
+      ? `- WRITE THE ENTIRE REPORT IN ${requestedLang}. Every heading, sentence, and label must be in ${requestedLang}. Translate facts from English sources as needed. This is mandatory.`
+      : '- Write in the same natural language the user used in their prompt.';
+
     const reportSystem = [
       'You are an expert research analyst. The user asked for a deep dive.',
       'Real-time research was just performed for you. Write a thorough markdown report.',
       '',
       'STRICT RULES:',
+      langInstruction,
       '- Open with a 1–2 sentence TL;DR.',
       '- Then 4–6 sections with `##` headings covering the most important angles.',
       '- Use flowing prose (NOT bullet lists of headlines). Pull concrete facts, names, numbers, prices, dates from the sources.',
       '- Cite sources inline as [1], [2] matching the numbered list.',
       '- End with a `## Sources` section listing each numbered source as a markdown link.',
+      '- Do NOT wrap your answer in <think>…</think>. Write the final report directly.',
       imageUrl ? `- Include this hero image near the top: ![cover](${imageUrl})` : '',
       '',
       'RESEARCH MATERIAL:',
       sourcesBlock || '(no sources retrieved — write from general knowledge and say so)',
     ].filter(Boolean).join('\n');
 
-    let report = '';
-    try {
+    // Strip reasoning tags some local models (DeepSeek-R1, Qwen-Thinking) emit.
+    const stripReasoning = (s) => String(s || '')
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+      .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '')
+      .trim();
+
+    const callLLM = async (extraSystem) => {
       const llmResp = await selectedChatFetch(supabase, {
         messages: [
-          { role: 'system', content: reportSystem },
+          { role: 'system', content: extraSystem || reportSystem },
           { role: 'user', content: prompt },
         ],
         temperature: 0.55,
-        max_tokens: 3500,
+        max_tokens: 4000,
       });
       const text = await llmResp.text();
       const data = JSON.parse(text);
-      report = data?.choices?.[0]?.message?.content || '';
+      return stripReasoning(data?.choices?.[0]?.message?.content || '');
+    };
+
+    let report = '';
+    let llmError = null;
+    try {
+      report = await callLLM();
+      // Retry once with a simpler instruction if the model produced nothing usable.
+      if (!report || report.length < 200) {
+        await appendEvent({ type: 'phase', name: 'retry-report', summary: 'First attempt was empty/too short, retrying with simplified prompt.' });
+        const simple = [
+          requestedLang
+            ? `Write a detailed news report in ${requestedLang} based on the sources below. Do not output thinking tags.`
+            : 'Write a detailed news report based on the sources below. Do not output thinking tags.',
+          'Cover the main events, names, dates, and quotes. End with a Sources list.',
+          '',
+          sourcesBlock,
+        ].join('\n');
+        const retry = await callLLM(simple);
+        if (retry && retry.length > report.length) report = retry;
+      }
     } catch (e) {
-      report = `Could not write the report (${e.message}). Raw sources collected:\n\n` +
-        sources.slice(0, 8).map((s, i) => `${i + 1}. ${s.title}\n${s.url}`).join('\n');
+      llmError = e.message;
     }
 
-    if (!report.trim()) {
-      report = `# Research: ${prompt}\n\n_(LLM returned an empty report. Sources found:)_\n\n` +
+    // Deterministic fallback: build a readable report from scraped content
+    // when the LLM is unavailable or kept returning empty output. Better than
+    // dumping a bare list of links to the user.
+    if (!report || report.trim().length < 120) {
+      const langNote = requestedLang
+        ? `\n\n_(Note: model could not write in ${requestedLang}. Showing extracted source content below.)_\n`
+        : '';
+      const errorNote = llmError ? `\n\n_(LLM error: ${llmError})_` : '';
+      const synthesized = sources.slice(0, 8)
+        .map((s, i) => {
+          const body = (s.content || s.snippet || '').slice(0, 800).trim();
+          if (!body) return `### ${i + 1}. [${s.title}](${s.url})`;
+          return `### ${i + 1}. ${s.title}\n\n${body}\n\n[${s.url}](${s.url})`;
+        })
+        .join('\n\n');
+      report = `# ${prompt}\n${langNote}${errorNote}\n\n${synthesized || '_(No source content could be extracted.)_'}\n\n## Sources\n\n` +
         sources.slice(0, 8).map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join('\n');
     }
 
