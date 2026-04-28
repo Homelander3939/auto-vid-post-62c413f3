@@ -382,16 +382,41 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
     const readCount = sources.slice(0, 10).filter((s) => s.content).length;
     await appendEvent({ type: 'tool_result', name: 'deep_read', ok: readCount > 0, summary: `Extracted readable text from ${readCount} pages` });
 
-    // 3) Hero image
+    // 3) Hero image — build a thematic query: drop boilerplate words ("research", "send me",
+    // "in georgian language", etc.) so the image search hits the actual subject (e.g. "Georgia news Tbilisi")
+    // instead of returning generic broadcaster logos.
+    const buildImageQuery = (raw, topSource) => {
+      let q = String(raw || '')
+        .replace(/\b(please|hello|hi|hey|kindly|now|today)\b/gi, ' ')
+        .replace(/\b(research|deep[- ]?dive|investigate|summari[sz]e|find out|look up|report on|report|analy[sz]e|send me|send|share|provide|give me|give|search|info|information|details?|images?|photos?|with image)\b/gi, ' ')
+        .replace(/\b(in\s+)?(georgian|russian|spanish|french|german|ukrainian|turkish|arabic|chinese|english)\s*(language|langage)?\b/gi, ' ')
+        .replace(/\blanguage\b/gi, ' ')
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+      if (q.split(/\s+/).filter(Boolean).length < 2 && topSource?.title) {
+        q = `${q} ${topSource.title}`.trim();
+      }
+      return q || String(raw || '').trim();
+    };
+    const imageQuery = buildImageQuery(prompt, sources[0]);
+    await appendEvent({ type: 'tool_call', name: 'image_search', label: imageQuery });
     let imageUrl = null;
     try {
       const ir = await fetch(`http://localhost:${port}/api/research/image-search`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: prompt, urls: sources.slice(0, 3).map((s) => s.url), count: 3 }),
+        body: JSON.stringify({ query: imageQuery, urls: sources.slice(0, 3).map((s) => s.url), count: 5 }),
       });
       const id = await ir.json().catch(() => ({}));
-      const first = (id.images || [])[0];
-      imageUrl = typeof first === 'string' ? first : first?.url || null;
+      // Prefer thematic images; skip generic logos / icons / broadcaster watermarks.
+      const isThematic = (u) => {
+        const url = String(u || '').toLowerCase();
+        if (!url) return false;
+        if (/logo|favicon|sprite|placeholder-?image|\bicon\b|avatar|watermark/.test(url)) return false;
+        return true;
+      };
+      const candidates = (id.images || []).map((x) => (typeof x === 'string' ? x : x?.url)).filter(Boolean);
+      imageUrl = candidates.find(isThematic) || candidates[0] || null;
     } catch {}
 
     // 4) Ask the LLM for a real markdown report
