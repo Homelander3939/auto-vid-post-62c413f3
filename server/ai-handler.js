@@ -609,15 +609,31 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
     }).eq('id', runId);
 
     // 6) Send a rich preview to Telegram (hero photo + plain-text caption + body)
-    const linkBack = `http://localhost:8081/queue?run=${runId}`;
-    const tgPlain = report
+    // Use the published app URL when available so the link works on the user's phone.
+    const publicAppUrl = (process.env.PUBLIC_APP_URL || 'http://localhost:8081').replace(/\/+$/, '');
+    const linkBack = `${publicAppUrl}/queue?run=${runId}`;
+    // Aggressive sanitiser: strip image markdown, bold/italic markers, code fences,
+    // headings, AND template placeholders the LLM sometimes leaks like
+    // "*(Hero Image)*", "*(Section 1)*", "[insert title]", "{title}", "<placeholder>".
+    const stripPlaceholders = (s) => String(s || '')
+      .replace(/\*?\(\s*hero\s*image\s*\)\*?/gi, '')
+      .replace(/\*?\(\s*section\s*\d*\s*\)\*?:?/gi, '')
+      .replace(/\*?\(\s*(image|photo|cover|banner|placeholder)\s*\)\*?/gi, '')
+      .replace(/\[\s*(insert|placeholder|title|heading|image|photo|cover)[^\]]*\]/gi, '')
+      .replace(/\{\s*(title|heading|image|photo|placeholder)[^}]*\}/gi, '');
+    const tgPlain = stripPlaceholders(report)
       .replace(/!\[[^\]]*\]\([^)]+\)/g, '')   // strip image markdown
       .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*\n]+)\*/g, '$1')        // strip italics
       .replace(/`([^`]+)`/g, '$1')
       .replace(/^#{1,6}\s+/gm, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
-    const tgBody = `${tgPlain.slice(0, 3500)}\n\n🔗 Full report with sources: ${linkBack}`;
+    // HTML-escape for Telegram's HTML parse mode (telegram.js sends with parse_mode: HTML).
+    const htmlEscape = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const tgPlainSafe = htmlEscape(tgPlain);
+    const linkSafe = htmlEscape(linkBack);
+    const tgBody = `${tgPlainSafe.slice(0, 3500)}\n\n🔗 Full report with sources: ${linkSafe}`;
 
     if (chatId && settingsRow?.telegram_bot_token) {
       try {
@@ -625,21 +641,25 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
         let photoSent = false;
         if (imageUrl) {
           try {
-            const imgResp = await fetch(imageUrl);
+            const imgResp = await fetch(imageUrl, { signal: AbortSignal.timeout(15_000) });
             if (imgResp.ok) {
               const buf = Buffer.from(await imgResp.arrayBuffer());
-              const caption = tgPlain.slice(0, 900);
+              // Telegram caption hard-limit is 1024 chars; keep some headroom for safety.
+              const caption = htmlEscape(tgPlain.slice(0, 900));
               await sendTelegramPhoto(settingsRow.telegram_bot_token, chatId, buf, caption, null);
               photoSent = true;
-              // Send the rest of the body as a follow-up message if it didn't fit in caption
+              // Send the rest of the body as a follow-up message if it didn't fit in caption.
               if (tgPlain.length > 900) {
                 await sendTelegram(settingsRow.telegram_bot_token, chatId, tgBody, null);
               } else {
-                await sendTelegram(settingsRow.telegram_bot_token, chatId, `🔗 Full report with sources: ${linkBack}`, null);
+                await sendTelegram(settingsRow.telegram_bot_token, chatId, `🔗 Full report with sources: ${linkSafe}`, null);
               }
+            } else {
+              console.warn(`[Research] Hero image fetch returned ${imgResp.status}, falling back to text-only.`);
             }
           } catch (photoErr) {
             console.warn('[Research] Hero photo send failed:', photoErr.message);
+            await appendEvent({ type: 'warning', message: `Hero photo send failed: ${photoErr.message}` });
           }
         }
         if (!photoSent) {
