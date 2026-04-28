@@ -1,4 +1,5 @@
 @echo off
+setlocal enableextensions
 TITLE Video Uploader System
 SET "ROOT_DIR=C:\auto-vid-post"
 SET "BRAVE_PATH=C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
@@ -11,48 +12,62 @@ echo [1/5] Pulling latest updates from Lovable...
 cd /d "%ROOT_DIR%"
 git pull origin main
 
-:: --- 2. Start LM Studio Server & Auto-load Model ---
-echo [2/5] Starting LM Studio Server...
-start "LM Studio API" cmd /k "lms server start --port 1234 --cors --bind 0.0.0.0"
+:: --- 2. Start LM Studio Server (in background window) ---
+echo [2/5] Starting LM Studio Server on port 1234...
+start "LM Studio API" cmd /k "lms server start --port 1234 --cors"
 
 echo Waiting for LM Studio API to become ready...
-SET "LMS_READY="
-FOR /L %%i IN (1,1,30) DO (
-    IF NOT DEFINED LMS_READY (
-        timeout /t 1 /nobreak >nul
-        curl -s -o nul -w "%%{http_code}" http://localhost:1234/v1/models 2>nul | findstr /C:"200" >nul && SET "LMS_READY=1"
-    )
-)
-IF NOT DEFINED LMS_READY (
-    echo [!] LM Studio API did not respond on port 1234. Telegram AI will not work until LM Studio is running.
-) ELSE (
-    echo [OK] LM Studio API is ready.
+SET /A _tries=0
+:WAIT_LMS
+SET /A _tries+=1
+timeout /t 1 /nobreak >nul
+curl -s -o nul -w "%%{http_code}" http://localhost:1234/v1/models 2>nul | findstr /C:"200" >nul
+IF NOT ERRORLEVEL 1 GOTO LMS_READY
+IF %_tries% LSS 30 GOTO WAIT_LMS
+echo [!] LM Studio API did not respond on port 1234 after 30s.
+echo     Continuing anyway — Telegram AI will not work until you start LM Studio manually.
+GOTO AFTER_LMS
+
+:LMS_READY
+echo [OK] LM Studio API is ready.
+
+echo [2b/5] Ensuring first model in list is loaded...
+:: Get list of available (downloaded) models, pick the first one
+SET "FIRST_MODEL="
+FOR /F "tokens=*" %%M IN ('lms ls --json 2^>nul ^| node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);const arr=Array.isArray(j)?j:(j.models||j.data||[]);if(arr[0])console.log(arr[0].modelKey||arr[0].path||arr[0].id||arr[0].name||'');}catch(e){}}"') DO (
+    IF NOT DEFINED FIRST_MODEL SET "FIRST_MODEL=%%M"
 )
 
-echo [2b/5] Ensuring a model is loaded in LM Studio...
-:: Check if any model is already loaded
+:: Check if already loaded
 curl -s http://localhost:1234/v1/models 2>nul | findstr /C:"\"id\"" >nul
-IF ERRORLEVEL 1 (
-    echo No model currently loaded — loading default model now...
-    :: Try to load the configured model. `lms load` accepts a model identifier or substring;
-    :: if no arg is given, it loads the most recently used model.
-    start "LM Studio Load" /MIN cmd /c "lms load --gpu max --yes 2>&1"
-    echo Waiting for model to finish loading (up to 60s)...
-    SET "LMS_MODEL_READY="
-    FOR /L %%i IN (1,1,60) DO (
-        IF NOT DEFINED LMS_MODEL_READY (
-            timeout /t 1 /nobreak >nul
-            curl -s http://localhost:1234/v1/models 2>nul | findstr /C:"\"id\"" >nul && SET "LMS_MODEL_READY=1"
-        )
-    )
-    IF NOT DEFINED LMS_MODEL_READY (
-        echo [!] No model loaded after 60s. Open LM Studio and load a model manually, then Telegram AI will work.
-    ) ELSE (
-        echo [OK] Model is loaded and ready.
-    )
-) ELSE (
+IF NOT ERRORLEVEL 1 (
     echo [OK] A model is already loaded in LM Studio.
+    GOTO AFTER_LMS
 )
+
+IF DEFINED FIRST_MODEL (
+    echo Loading first available model: %FIRST_MODEL%
+    start "LM Studio Load" /MIN cmd /c "lms load ""%FIRST_MODEL%"" --gpu max --yes"
+) ELSE (
+    echo Loading most recently used model...
+    start "LM Studio Load" /MIN cmd /c "lms load --gpu max --yes"
+)
+
+echo Waiting for model to finish loading (up to 90s)...
+SET /A _mtries=0
+:WAIT_MODEL
+SET /A _mtries+=1
+timeout /t 1 /nobreak >nul
+curl -s http://localhost:1234/v1/models 2>nul | findstr /C:"\"id\"" >nul
+IF NOT ERRORLEVEL 1 GOTO MODEL_READY
+IF %_mtries% LSS 90 GOTO WAIT_MODEL
+echo [!] No model loaded after 90s. Open LM Studio and load a model manually.
+GOTO AFTER_LMS
+
+:MODEL_READY
+echo [OK] Model is loaded and ready.
+
+:AFTER_LMS
 
 echo [3/5] Checking Dependencies...
 call npm run ensure-deps
@@ -62,9 +77,8 @@ IF ERRORLEVEL 1 (
     echo     Fix the errors above, then run the launcher again.
     pause
     exit /b 1
-) ELSE (
-    echo [OK] Frontend packages are ready.
 )
+echo [OK] Frontend packages are ready.
 
 cd server
 IF NOT EXIST "node_modules" (
