@@ -367,7 +367,15 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
         const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ');
         const article = cleaned.match(/<article[\s\S]*?<\/article>/i)?.[0]
           || cleaned.match(/<main[\s\S]*?<\/main>/i)?.[0] || cleaned;
-        const text = article.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2500);
+        let text = article.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+        // Strip obvious nav/menu junk that pollutes models (e.g., "Toggle navigation COLLAPSE GE AB AM AZ ...")
+        text = text
+          .replace(/Toggle navigation[\s\S]{0,400}?(?=[A-ZА-Яა-ჰ][a-zа-яა-ჰ])/g, ' ')
+          .replace(/\b(COLLAPSE|LIVE|FB LIVE|Advanced Search|Toggle navigation|Skip to (main )?content|Cookie[s]? policy|Accept (all )?cookies|Subscribe now|Sign in|Log in|Menu)\b/gi, ' ')
+          .replace(/\b([A-Z]{2}\s+){3,}[A-Z]{2}\b/g, ' ') // long runs of uppercase nav tokens like "GE AB AM AZ OS EN RU"
+          .replace(/\s{2,}/g, ' ')
+          .trim()
+          .slice(0, 2500);
         if (text.length > 200) s.content = text;
       } catch {}
     }));
