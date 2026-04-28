@@ -719,6 +719,10 @@ function normalizeLMStudioBaseUrl(value) {
   return String(value || 'http://localhost:1234').trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
 }
 
+function shouldForceLocalLMStudio() {
+  return String(process.env.LM_STUDIO_FORCE_LOCAL || '').toLowerCase() === 'true';
+}
+
 async function resolveSelectedAIConfig(override = null) {
   const { data: saved } = await supabase.from('app_settings').select('ai_provider,ai_base_url,ai_api_key,ai_model').eq('id', 1).single();
   const provider = normalizeProviderName(override?.provider || saved?.ai_provider || 'lmstudio');
@@ -726,7 +730,7 @@ async function resolveSelectedAIConfig(override = null) {
 
   if (provider === 'lmstudio') {
     const savedLm = override ? null : await refreshLMStudioConfigFromSettings(supabase);
-    const baseUrl = normalizeLMStudioBaseUrl(override?.baseUrl || saved?.ai_base_url || savedLm?.url || process.env.LM_STUDIO_URL || 'http://localhost:1234');
+    const baseUrl = normalizeLMStudioBaseUrl(shouldForceLocalLMStudio() ? (process.env.LM_STUDIO_URL || 'http://localhost:1234') : (override?.baseUrl || saved?.ai_base_url || savedLm?.url || process.env.LM_STUDIO_URL || 'http://localhost:1234'));
     const model = String(override?.model || saved?.ai_model || savedLm?.model || process.env.LM_STUDIO_MODEL || '').trim();
     const apiKey = String(override?.apiKey || saved?.ai_api_key || savedLm?.apiKey || process.env.LM_STUDIO_API_KEY || 'lm-studio').trim();
     if (!model) throw new Error('No LM Studio model selected. Load a model in LM Studio or choose one in Settings.');
