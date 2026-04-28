@@ -6,6 +6,7 @@ const { requestTelegramApproval, tryFillVerificationCode } = require('./approval
 const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } = require('./smart-agent');
 const { getSharedBrowserProfileDir } = require('../browserProfiles');
 const { dismissOverlayBlockingFlow } = require('./overlay-dismiss');
+const { launchPersistentSafe } = require('../profileLock');
 
 /**
  * Pre-process video to 9:16 (1080x1920) with black padding using ffmpeg.
