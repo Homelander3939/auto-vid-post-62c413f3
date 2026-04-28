@@ -294,7 +294,7 @@ export default function CampaignScheduler() {
     setVideoFile(null);
     setVideoFiles([]);
     setMultiTextFiles([]);
-    setFolderPath('');
+    setFolderPath('D:\\AI Video');
     setFolderMaxVideos(null);
     setTitle('');
     setDescription('');
