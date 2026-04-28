@@ -89,14 +89,27 @@ async function getSelectedChatConfig(supabase) {
 
 async function selectedChatFetch(supabase, bodyObj) {
   const config = await getSelectedChatConfig(supabase);
-  const resp = await fetch(config.endpoint, {
+  const makeRequest = (body) => fetch(config.endpoint, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${config.apiKey || 'lm-studio'}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ ...bodyObj, model: config.model }),
+    body: JSON.stringify(body),
   }).catch(err => ({ ok: false, status: 0, _networkError: err }));
+
+  const resp = await makeRequest({ ...bodyObj, model: config.model });
+  if (config.provider === 'lmstudio' && !resp.ok && resp.status !== 0) {
+    const errText = await resp.clone().text().catch(() => '');
+    if (/model|not found|unloaded|cannot find/i.test(errText)) {
+      const loaded = await discoverLMStudioModels(LM_STUDIO_URL, config.apiKey || 'lm-studio').catch(() => []);
+      const fallbackModel = loaded[0]?.id;
+      if (fallbackModel && fallbackModel !== config.model) {
+        LM_STUDIO_MODEL = fallbackModel;
+        return makeRequest({ ...bodyObj, model: fallbackModel });
+      }
+    }
+  }
   if (!resp.ok && resp._networkError) {
     throw new Error(`${config.provider} network error: ${resp._networkError.message}`);
   }
