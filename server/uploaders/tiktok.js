@@ -7,6 +7,7 @@ const { sendTelegramPhoto } = require('../telegram');
 const { getTikTokPageDescription, isTikTokPublishedUrl, isTikTokVideoUrl } = require('./tiktok-state');
 const { getSharedBrowserProfileDir } = require('../browserProfiles');
 const { dismissOverlayBlockingFlow } = require('./overlay-dismiss');
+const { launchPersistentSafe } = require('../profileLock');
 
 const DEFAULT_USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'tiktok');
 
