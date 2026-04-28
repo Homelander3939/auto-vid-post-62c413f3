@@ -116,7 +116,7 @@ export default function CampaignScheduler() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoFiles, setVideoFiles] = useState<File[]>([]);
   const [multiTextFiles, setMultiTextFiles] = useState<File[]>([]);
-  const [folderPath, setFolderPath] = useState('');
+  const [folderPath, setFolderPath] = useState('D:\\AI Video');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [tagsInput, setTagsInput] = useState('');
@@ -542,7 +542,7 @@ export default function CampaignScheduler() {
                 <Input
                   value={folderPath}
                   onChange={(e) => setFolderPath(e.target.value)}
-                  placeholder="C:\Videos\uploads or /home/user/videos"
+                  placeholder="D:\AI Video"
                   className="font-mono text-xs"
                 />
                 <p className="text-xs text-muted-foreground">
