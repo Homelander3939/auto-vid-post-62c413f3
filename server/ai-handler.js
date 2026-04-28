@@ -6,6 +6,7 @@ const fetch = require('node-fetch');
 let LM_STUDIO_URL = normalizeLMStudioUrl(process.env.LM_STUDIO_URL || 'http://localhost:1234');
 let LM_STUDIO_MODEL = process.env.LM_STUDIO_MODEL || 'google/gemma-3-27b';
 let LM_STUDIO_API_KEY = process.env.LM_STUDIO_API_KEY || 'lm-studio';
+const FORCE_LOCAL_LM_STUDIO = String(process.env.LM_STUDIO_FORCE_LOCAL || '').toLowerCase() === 'true';
 
 function normalizeLMStudioUrl(value) {
   const raw = String(value || '').trim() || 'http://localhost:1234';
@@ -41,6 +42,12 @@ async function discoverLMStudioModels(baseUrl = LM_STUDIO_URL, apiKey = LM_STUDI
 }
 
 async function refreshLMStudioConfigFromSettings(supabase) {
+  if (FORCE_LOCAL_LM_STUDIO) {
+    LM_STUDIO_URL = normalizeLMStudioUrl(process.env.LM_STUDIO_URL || 'http://localhost:1234');
+    LM_STUDIO_API_KEY = process.env.LM_STUDIO_API_KEY || LM_STUDIO_API_KEY || 'lm-studio';
+    if (process.env.LM_STUDIO_MODEL) LM_STUDIO_MODEL = process.env.LM_STUDIO_MODEL;
+    return { url: LM_STUDIO_URL, model: LM_STUDIO_MODEL, apiKey: LM_STUDIO_API_KEY };
+  }
   try {
     const { data } = await supabase
       .from('app_settings')
