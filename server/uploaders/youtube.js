@@ -5,6 +5,7 @@ const { requestTelegramApproval, tryFillVerificationCode } = require('./approval
 const { smartClick, smartFill, waitForStateChange, analyzePage } = require('./smart-agent');
 const { getSharedBrowserProfileDir } = require('../browserProfiles');
 const { dismissOverlayBlockingFlow } = require('./overlay-dismiss');
+const { launchPersistentSafe } = require('../profileLock');
 
 const DEFAULT_USER_DATA_DIR = path.join(__dirname, '..', 'data', 'browser-sessions', 'youtube');
 const YT_STUDIO_URL = 'https://studio.youtube.com';
