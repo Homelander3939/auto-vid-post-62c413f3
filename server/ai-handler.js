@@ -367,23 +367,56 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
         const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ');
         const article = cleaned.match(/<article[\s\S]*?<\/article>/i)?.[0]
           || cleaned.match(/<main[\s\S]*?<\/main>/i)?.[0] || cleaned;
-        const text = article.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2500);
+        let text = article.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+        // Strip obvious nav/menu junk that pollutes models (e.g., "Toggle navigation COLLAPSE GE AB AM AZ ...")
+        text = text
+          .replace(/Toggle navigation[\s\S]{0,400}?(?=[A-ZА-Яა-ჰ][a-zа-яა-ჰ])/g, ' ')
+          .replace(/\b(COLLAPSE|LIVE|FB LIVE|Advanced Search|Toggle navigation|Skip to (main )?content|Cookie[s]? policy|Accept (all )?cookies|Subscribe now|Sign in|Log in|Menu)\b/gi, ' ')
+          .replace(/\b([A-Z]{2}\s+){3,}[A-Z]{2}\b/g, ' ') // long runs of uppercase nav tokens like "GE AB AM AZ OS EN RU"
+          .replace(/\s{2,}/g, ' ')
+          .trim()
+          .slice(0, 2500);
         if (text.length > 200) s.content = text;
       } catch {}
     }));
     const readCount = sources.slice(0, 10).filter((s) => s.content).length;
     await appendEvent({ type: 'tool_result', name: 'deep_read', ok: readCount > 0, summary: `Extracted readable text from ${readCount} pages` });
 
-    // 3) Hero image
+    // 3) Hero image — build a thematic query: drop boilerplate words ("research", "send me",
+    // "in georgian language", etc.) so the image search hits the actual subject (e.g. "Georgia news Tbilisi")
+    // instead of returning generic broadcaster logos.
+    const buildImageQuery = (raw, topSource) => {
+      let q = String(raw || '')
+        .replace(/\b(please|hello|hi|hey|kindly|now|today)\b/gi, ' ')
+        .replace(/\b(research|deep[- ]?dive|investigate|summari[sz]e|find out|look up|report on|report|analy[sz]e|send me|send|share|provide|give me|give|search|info|information|details?|images?|photos?|with image)\b/gi, ' ')
+        .replace(/\b(in\s+)?(georgian|russian|spanish|french|german|ukrainian|turkish|arabic|chinese|english)\s*(language|langage)?\b/gi, ' ')
+        .replace(/\blanguage\b/gi, ' ')
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+      if (q.split(/\s+/).filter(Boolean).length < 2 && topSource?.title) {
+        q = `${q} ${topSource.title}`.trim();
+      }
+      return q || String(raw || '').trim();
+    };
+    const imageQuery = buildImageQuery(prompt, sources[0]);
+    await appendEvent({ type: 'tool_call', name: 'image_search', label: imageQuery });
     let imageUrl = null;
     try {
       const ir = await fetch(`http://localhost:${port}/api/research/image-search`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: prompt, urls: sources.slice(0, 3).map((s) => s.url), count: 3 }),
+        body: JSON.stringify({ query: imageQuery, urls: sources.slice(0, 3).map((s) => s.url), count: 5 }),
       });
       const id = await ir.json().catch(() => ({}));
-      const first = (id.images || [])[0];
-      imageUrl = typeof first === 'string' ? first : first?.url || null;
+      // Prefer thematic images; skip generic logos / icons / broadcaster watermarks.
+      const isThematic = (u) => {
+        const url = String(u || '').toLowerCase();
+        if (!url) return false;
+        if (/logo|favicon|sprite|placeholder-?image|\bicon\b|avatar|watermark/.test(url)) return false;
+        return true;
+      };
+      const candidates = (id.images || []).map((x) => (typeof x === 'string' ? x : x?.url)).filter(Boolean);
+      imageUrl = candidates.find(isThematic) || candidates[0] || null;
     } catch {}
 
     // 4) Ask the LLM for a real markdown report
@@ -453,6 +486,41 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
       return stripReasoning(data?.choices?.[0]?.message?.content || '');
     };
 
+    // Cloud Lovable AI fallback — used when local LM Studio is unreachable OR when
+    // the local model can't produce the requested language (e.g. Mkhedruli for Georgian).
+    // LOVABLE_API_KEY is auto-provisioned in the Lovable Cloud / Supabase environment.
+    const callLovableCloud = async (system, model = 'google/gemini-3-flash-preview') => {
+      const key = process.env.LOVABLE_API_KEY;
+      if (!key) throw new Error('LOVABLE_API_KEY missing');
+      const resp = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.55,
+          max_tokens: 4000,
+        }),
+      });
+      const txt = await resp.text();
+      if (!resp.ok) throw new Error(`Lovable AI ${resp.status}: ${txt.slice(0, 200)}`);
+      const data = JSON.parse(txt);
+      return stripReasoning(data?.choices?.[0]?.message?.content || '');
+    };
+
+    // Quick check: does `text` actually contain characters from the requested language script?
+    const matchesScript = (text, lang) => {
+      if (!lang || !text) return true;
+      if (/Georgian/i.test(lang))  return /[\u10A0-\u10FF\u2D00-\u2D2F]/.test(text);
+      if (/Russian|Ukrainian/i.test(lang)) return /[\u0400-\u04FF]/.test(text);
+      if (/Arabic/i.test(lang))   return /[\u0600-\u06FF]/.test(text);
+      if (/Chinese/i.test(lang))  return /[\u4E00-\u9FFF]/.test(text);
+      return true;
+    };
+
     let report = '';
     let llmError = null;
     try {
@@ -475,13 +543,40 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
       llmError = e.message;
     }
 
+    // Cloud fallback: trigger when local model failed completely OR could not produce
+    // the requested language script (common with small local models for Georgian/Arabic/etc).
+    const needsCloudRetry = !report || report.trim().length < 200 || !matchesScript(report, requestedLang);
+    if (needsCloudRetry && process.env.LOVABLE_API_KEY) {
+      await appendEvent({
+        type: 'phase',
+        name: 'cloud-fallback',
+        summary: llmError
+          ? `Local model failed (${llmError}). Retrying via Lovable AI cloud.`
+          : `Local output was empty or not in ${requestedLang || 'requested language'}. Retrying via Lovable AI cloud.`,
+      });
+      try {
+        const cloudReport = await callLovableCloud(reportSystem);
+        if (cloudReport && cloudReport.length > 200 && matchesScript(cloudReport, requestedLang)) {
+          report = cloudReport;
+          llmError = null;
+        } else if (cloudReport && cloudReport.length > (report?.length || 0)) {
+          report = cloudReport;
+        }
+      } catch (e) {
+        await appendEvent({ type: 'error', message: `Cloud fallback failed: ${e.message}` });
+      }
+    }
+
     // Deterministic fallback: build a readable report from scraped content
     // when the LLM is unavailable or kept returning empty output. Better than
     // dumping a bare list of links to the user.
     if (!report || report.trim().length < 120) {
+      const cloudHint = process.env.LOVABLE_API_KEY
+        ? ''
+        : ' Add LOVABLE_API_KEY to server/.env to enable cloud fallback.';
       const langNote = requestedLang
-        ? `\n\n_(Note: model could not write in ${requestedLang}. Showing extracted source content below.)_\n`
-        : '';
+        ? `\n\n_(Note: neither the local model nor the cloud fallback could write in ${requestedLang}.${cloudHint} Showing extracted source content below.)_\n`
+        : `\n\n_(Note: AI was unavailable.${cloudHint} Showing extracted source content below.)_\n`;
       const errorNote = llmError ? `\n\n_(LLM error: ${llmError})_` : '';
       const synthesized = sources.slice(0, 8)
         .map((s, i) => {
