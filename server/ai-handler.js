@@ -486,6 +486,41 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
       return stripReasoning(data?.choices?.[0]?.message?.content || '');
     };
 
+    // Cloud Lovable AI fallback — used when local LM Studio is unreachable OR when
+    // the local model can't produce the requested language (e.g. Mkhedruli for Georgian).
+    // LOVABLE_API_KEY is auto-provisioned in the Lovable Cloud / Supabase environment.
+    const callLovableCloud = async (system, model = 'google/gemini-3-flash-preview') => {
+      const key = process.env.LOVABLE_API_KEY;
+      if (!key) throw new Error('LOVABLE_API_KEY missing');
+      const resp = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.55,
+          max_tokens: 4000,
+        }),
+      });
+      const txt = await resp.text();
+      if (!resp.ok) throw new Error(`Lovable AI ${resp.status}: ${txt.slice(0, 200)}`);
+      const data = JSON.parse(txt);
+      return stripReasoning(data?.choices?.[0]?.message?.content || '');
+    };
+
+    // Quick check: does `text` actually contain characters from the requested language script?
+    const matchesScript = (text, lang) => {
+      if (!lang || !text) return true;
+      if (/Georgian/i.test(lang))  return /[\u10A0-\u10FF\u2D00-\u2D2F]/.test(text);
+      if (/Russian|Ukrainian/i.test(lang)) return /[\u0400-\u04FF]/.test(text);
+      if (/Arabic/i.test(lang))   return /[\u0600-\u06FF]/.test(text);
+      if (/Chinese/i.test(lang))  return /[\u4E00-\u9FFF]/.test(text);
+      return true;
+    };
+
     let report = '';
     let llmError = null;
     try {
@@ -506,6 +541,30 @@ async function runDeepResearchForTelegram(prompt, chatId, supabase) {
       }
     } catch (e) {
       llmError = e.message;
+    }
+
+    // Cloud fallback: trigger when local model failed completely OR could not produce
+    // the requested language script (common with small local models for Georgian/Arabic/etc).
+    const needsCloudRetry = !report || report.trim().length < 200 || !matchesScript(report, requestedLang);
+    if (needsCloudRetry && process.env.LOVABLE_API_KEY) {
+      await appendEvent({
+        type: 'phase',
+        name: 'cloud-fallback',
+        summary: llmError
+          ? `Local model failed (${llmError}). Retrying via Lovable AI cloud.`
+          : `Local output was empty or not in ${requestedLang || 'requested language'}. Retrying via Lovable AI cloud.`,
+      });
+      try {
+        const cloudReport = await callLovableCloud(reportSystem);
+        if (cloudReport && cloudReport.length > 200 && matchesScript(cloudReport, requestedLang)) {
+          report = cloudReport;
+          llmError = null;
+        } else if (cloudReport && cloudReport.length > (report?.length || 0)) {
+          report = cloudReport;
+        }
+      } catch (e) {
+        await appendEvent({ type: 'error', message: `Cloud fallback failed: ${e.message}` });
+      }
     }
 
     // Deterministic fallback: build a readable report from scraped content
