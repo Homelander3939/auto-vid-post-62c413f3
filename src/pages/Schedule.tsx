@@ -506,14 +506,25 @@ export default function Schedule() {
           <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
             <CalendarClock className="w-4 h-4" /> Upcoming Scheduled Uploads ({activeScheduled.length})
           </h2>
-          {activeScheduled.map(item => (
+          {activeScheduled.map(item => {
+            const fname = item.video_file_name || '';
+            const folderMatch = fname.match(/^\[folder(?:\|(\d+)(?:\|(\d+))?)?\]\s*(.+)$/i);
+            const isFolder = !!folderMatch;
+            const folderIntensity = folderMatch?.[1] ? parseInt(folderMatch[1], 10) : null;
+            const folderMaxN = folderMatch?.[2] ? parseInt(folderMatch[2], 10) : null;
+            const folderPath = folderMatch?.[3]?.trim();
+            const displayLabel = isFolder
+              ? `📁 ${folderPath} — ${folderMaxN ? `last ${folderMaxN} videos` : 'all videos'}${folderIntensity ? `, every ${folderIntensity}m` : ''}`
+              : (item.title || fname);
+            return (
             <Card key={item.id} className="border-dashed">
               <CardContent className="py-3 px-4">
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">{item.title || item.video_file_name}</p>
+                    <p className="text-sm font-medium truncate">{displayLabel}</p>
                     <p className="text-xs text-muted-foreground">
                       {new Date(item.scheduled_at).toLocaleString()} · {item.target_platforms.join(', ')}
+                      {isFolder && <span className="ml-1 italic">· folder scanned at run time</span>}
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
