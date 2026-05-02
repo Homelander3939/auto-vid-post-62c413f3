@@ -1553,6 +1553,36 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       throw new Error('Publish was not confirmed, so URL was not returned.');
     }
 
+    // ===== PHASE 7.5: SAFETY WAIT BEFORE CLOSING TAB =====
+    // YouTube shows a "Your video is still uploading. Are you sure you want to leave?"
+    // beforeunload prompt if we close while file transfer or initial server processing
+    // is still active. Closing through that dialog leaves the video as a DRAFT instead
+    // of publishing it. Make absolutely sure neither the upload dialog nor active
+    // transcoding is in progress before tearing down the context.
+    try {
+      // 1) Drain any remaining file-transfer activity (handles slow uploads).
+      if (await isVideoUploadInProgress(page)) {
+        console.log('[YouTube] Upload dialog still visible after publish confirmation — waiting for file transfer to fully finish before closing tab...');
+        await waitForVideoUploadToComplete(page);
+      }
+
+      // 2) Wait for server-side transcoding/checks to finish so YouTube no longer
+      //    needs the tab open. Capped to 10 min — after that the video is safe
+      //    to close because YouTube has the file.
+      if (await isVideoTranscodingInProgress(page)) {
+        console.log('[YouTube] Transcoding/checks still running — waiting before closing tab to avoid the "leave site?" draft trap...');
+        await waitForVideoTranscodingToComplete(page);
+      }
+
+      // 3) Final settle delay so the publish action is committed server-side.
+      await page.waitForTimeout(8000);
+
+      // 4) Try to capture the published URL one more time now that processing settled.
+      cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);
+    } catch (waitErr) {
+      console.warn('[YouTube] Pre-close safety wait encountered an issue:', waitErr.message);
+    }
+
     // ===== PHASE 8: EXTRACT VIDEO URL =====
     const videoUrl =
       await extractPublishedVideoUrl(page)
@@ -1561,13 +1591,36 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
     console.log(`[YouTube] Upload complete! URL: ${videoUrl || 'not captured'}`);
 
-    await context.close();
+    await safeCloseContext(context, page);
     return { url: videoUrl || undefined };
   } catch (err) {
     console.error('[YouTube] Upload failed:', err.message);
-    await context.close();
+    await safeCloseContext(context, page);
     throw err;
   }
+}
+
+// Closes the browser context safely, auto-accepting any "Leave site?" beforeunload
+// dialog that YouTube shows when a video is still mid-process. Without this handler
+// Playwright can hang on close, or — worse — the dialog can cancel the navigation
+// and leave the freshly-uploaded video stranded as a draft.
+async function safeCloseContext(context, page) {
+  try {
+    if (page && !page.isClosed?.()) {
+      page.on('dialog', async (dialog) => {
+        try { await dialog.accept(); } catch {}
+      });
+      // Disable beforeunload handlers entirely so the close is silent.
+      try {
+        await page.evaluate(() => {
+          window.onbeforeunload = null;
+          window.addEventListener('beforeunload', (e) => { e.stopImmediatePropagation(); }, true);
+        });
+      } catch {}
+      try { await page.close({ runBeforeUnload: false }); } catch {}
+    }
+  } catch {}
+  try { await context?.close(); } catch {}
 }
 
 module.exports = { uploadToYouTube };
