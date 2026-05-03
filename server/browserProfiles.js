@@ -200,7 +200,16 @@ async function openBrowserProfileSession({ profileId, platform }) {
   return { profileId, url, userDataDir: getSharedBrowserProfileDir(profileId) };
 }
 
+async function closeBrowserProfileSession(profileId) {
+  const context = openContexts.get(profileId);
+  if (!context) return false;
+  openContexts.delete(profileId);
+  try { await context.close(); } catch {}
+  return true;
+}
+
 module.exports = {
+  closeBrowserProfileSession,
   copyScheduledSelectionsToJob,
   getBrowserProfileForAccount,
   getJobAccountSelections,
