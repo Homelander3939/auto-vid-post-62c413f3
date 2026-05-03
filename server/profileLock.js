@@ -18,8 +18,9 @@ function acquire(key) {
   let release;
   const ticket = new Promise((r) => { release = r; });
   const wait = prev ? prev.promise.catch(() => {}) : Promise.resolve();
-  locks.set(key, { promise: ticket });
-  return wait.then(() => release);
+  const entry = { promise: ticket };
+  locks.set(key, entry);
+  return wait.then(() => ({ release, entry }));
 }
 
 function clearStaleSingletonLocks(userDataDir) {
@@ -32,7 +33,7 @@ function clearStaleSingletonLocks(userDataDir) {
 async function launchPersistentSafe(chromium, userDataDir, options, opts = {}) {
   const { attempts = 3, waitMs = 90000, label = 'profile' } = opts;
   const key = path.resolve(userDataDir);
-  const release = await acquire(key);
+  const { release, entry } = await acquire(key);
 
   let lastErr;
   for (let i = 0; i < attempts; i++) {
@@ -41,7 +42,7 @@ async function launchPersistentSafe(chromium, userDataDir, options, opts = {}) {
       // Release lock when this context is fully closed
       const cleanup = () => {
         try { release(); } catch {}
-        if (locks.get(key)?.promise) {
+        if (locks.get(key) === entry) {
           // best-effort cleanup of map entry
           locks.delete(key);
         }
@@ -61,7 +62,7 @@ async function launchPersistentSafe(chromium, userDataDir, options, opts = {}) {
   }
   // Launch failed terminally — release lock
   try { release(); } catch {}
-  locks.delete(key);
+  if (locks.get(key) === entry) locks.delete(key);
   throw lastErr;
 }
 
