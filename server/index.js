@@ -35,6 +35,7 @@ const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
 const {
+  closeBrowserProfileSession,
   copyScheduledSelectionsToJob,
   getBrowserProfileForAccount,
   getJobAccountSelections,
@@ -1671,6 +1672,7 @@ app.post('/api/browser-profiles/open', async (req, res) => {
       }
     }
 
+    await closeBrowserProfileSession(profile.id);
     await openBrowserProfileSession({ profileId: profile.id, platform });
     res.json({ profile, linkedAccountIds });
   } catch (err) {
