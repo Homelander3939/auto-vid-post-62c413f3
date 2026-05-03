@@ -473,10 +473,15 @@ async function processJob(jobId, options = {}) {
     });
     const emoji = finalStatus === 'completed' ? '🎉' : finalStatus === 'partial' ? '⚠️' : '❌';
 
-    // === AUTO-DELETE LOCAL SOURCE FILES on full success ===
+    // === AUTO-DELETE LOCAL SOURCE FILES after any successful upload ===
+    // Triggers whenever at least one platform succeeded, regardless of whether
+    // the job came from a schedule, campaign, watched folder, or a one-off
+    // manual upload pointing at a local absolute path. Storage-backed jobs
+    // (downloaded from Supabase to a temp dir) are skipped — those temp files
+    // are cleaned separately below.
     let cleanupLine = '';
     const isLocalSource = !job.video_storage_path && videoPath && fs.existsSync(videoPath);
-    if (finalStatus === 'completed' && settings.deleteAfterUpload !== false && isLocalSource) {
+    if (successCount > 0 && settings.deleteAfterUpload !== false && isLocalSource) {
       try {
         const folderDir = path.dirname(videoPath);
         const stem = path.basename(videoPath).replace(/\.[^.]+$/, '');
@@ -492,7 +497,8 @@ async function processJob(jobId, options = {}) {
           }
         } catch {}
         if (deleted.length) {
-          cleanupLine = `\n🧹 Cleaned up: ${deleted.join(' + ')}`;
+          const partialNote = finalStatus !== 'completed' ? ' (partial success)' : '';
+          cleanupLine = `\n🧹 Cleaned up: ${deleted.join(' + ')}${partialNote}`;
           console.log(`[Worker] Job ${jobId} cleaned up local source files: ${deleted.join(', ')}`);
           // Forget queued state so a new file with the same name later gets picked up.
           try { folderWatchState.queued.delete(path.resolve(videoPath)); persistFolderWatchState(); } catch {}
