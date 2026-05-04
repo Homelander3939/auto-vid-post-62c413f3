@@ -152,12 +152,41 @@ function resolveMetadataForVideo(baseDir, videoFileName, fallbackTitle = '', fal
   }
 
   const stem = path.basename(videoFileName, path.extname(videoFileName));
-  const candidates = [
+
+  // 1. Exact stem match (preferred).
+  const exactCandidates = [
     path.join(baseDir, `${stem}.txt`),
     path.join(baseDir, `${stem}.TXT`),
   ];
+  let matchedTextPath = exactCandidates.find((candidate) => fs.existsSync(candidate));
 
-  const matchedTextPath = candidates.find((candidate) => fs.existsSync(candidate));
+  // 2. Fuzzy fallback: look for a .txt whose stem is a delimited prefix of the
+  //    video stem. This handles cases where the user generated metadata as
+  //    "Roman_History_43.txt" but the video file later got a date suffix
+  //    appended ("Roman_History_43_2026-05-04_11-04-50.mp4"). The next char
+  //    after the prefix must be a non-digit delimiter (_ - .) so that
+  //    "Roman_History_4" does NOT incorrectly match "Roman_History_43*".
+  if (!matchedTextPath) {
+    try {
+      const stemLower = stem.toLowerCase();
+      let bestMatch = null;
+      let bestLen = 0;
+      for (const f of fs.readdirSync(baseDir)) {
+        if (!/\.txt$/i.test(f)) continue;
+        const txtStem = f.replace(/\.[^.]+$/, '').toLowerCase();
+        if (txtStem.length === 0 || txtStem.length >= stemLower.length) continue;
+        if (!stemLower.startsWith(txtStem)) continue;
+        const next = stemLower.charAt(txtStem.length);
+        if (next !== '_' && next !== '-' && next !== '.') continue;
+        if (txtStem.length > bestLen) {
+          bestLen = txtStem.length;
+          bestMatch = path.join(baseDir, f);
+        }
+      }
+      if (bestMatch) matchedTextPath = bestMatch;
+    } catch { /* ignore readdir errors */ }
+  }
+
   if (!matchedTextPath) {
     return { title: resolvedTitle, description: resolvedDescription, tags: resolvedTags };
   }
