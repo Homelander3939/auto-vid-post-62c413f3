@@ -654,6 +654,66 @@ async function waitForPublishConfirmation(page, timeoutMs = 15000) {
   return false;
 }
 
+// After clicking "Publish", YouTube sometimes shows a confirmation dialog when
+// the file is still uploading or being checked, e.g.:
+//   "Your video is still uploading. Publish anyway?"
+//   "Checks aren't complete. Publish anyway?"
+// If we don't click "Publish anyway", the publish action is dropped and the
+// video stays in Drafts. This helper polls briefly for that dialog and confirms.
+async function confirmPublishAnywayIfPrompted(page, totalWaitMs = 20000) {
+  const started = Date.now();
+  let clickedAt = null;
+  const CONFIRM_LABELS = [
+    'publish anyway',
+    'publish anyways',
+    'continue publishing',
+    'schedule anyway',
+    'save anyway',
+  ];
+
+  while (Date.now() - started < totalWaitMs) {
+    const result = await page.evaluate((labels) => {
+      const dialogs = Array.from(document.querySelectorAll(
+        'tp-yt-paper-dialog, ytcp-dialog, [role="dialog"], [role="alertdialog"]'
+      ));
+      for (const dlg of dialogs) {
+        const style = window.getComputedStyle(dlg);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const rect = dlg.getBoundingClientRect();
+        if (rect.width < 100 || rect.height < 60) continue;
+        const buttons = Array.from(dlg.querySelectorAll(
+          'button, ytcp-button, tp-yt-paper-button, [role="button"]'
+        ));
+        for (const btn of buttons) {
+          const text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+          if (!text) continue;
+          if (labels.some((l) => text === l || text.includes(l))) {
+            const r = btn.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+              btn.click();
+              return { clicked: true, label: text };
+            }
+          }
+        }
+      }
+      return { clicked: false };
+    }, CONFIRM_LABELS).catch(() => ({ clicked: false }));
+
+    if (result.clicked) {
+      console.log(`[YouTube] Confirmed publish dialog by clicking: "${result.label}"`);
+      clickedAt = Date.now();
+      // Give YT a moment to commit and re-show the dialog if needed; loop once
+      // more to catch chained confirmations.
+      await page.waitForTimeout(2500);
+      // Stop scanning ~3s after the click — usually only one confirmation appears.
+      if (Date.now() - clickedAt > 3000) break;
+      continue;
+    }
+    await page.waitForTimeout(1000);
+  }
+  return clickedAt !== null;
+}
+
 // Detects if the "Video uploading" progress dialog is currently shown using Playwright
 // locators that pierce Shadow DOM (YouTube Studio uses custom web components whose
 // innerText is NOT visible via document.body.innerText).
@@ -1500,6 +1560,12 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       if (btn) btn.click();
     });
     await page.waitForTimeout(6000);
+
+    // Handle the "Your video is still being checked / uploaded — Publish anyway?"
+    // confirmation dialog. If we ignore it, clicking Publish has no effect and the
+    // video gets stranded as a draft once we close the tab.
+    await confirmPublishAnywayIfPrompted(page);
+
     cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);
 
     // Check immediately whether the file is still transferring.
