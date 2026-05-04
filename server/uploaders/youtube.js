@@ -1500,6 +1500,12 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
       if (btn) btn.click();
     });
     await page.waitForTimeout(6000);
+
+    // Handle the "Your video is still being checked / uploaded — Publish anyway?"
+    // confirmation dialog. If we ignore it, clicking Publish has no effect and the
+    // video gets stranded as a draft once we close the tab.
+    await confirmPublishAnywayIfPrompted(page);
+
     cachedVideoUrl = await captureVideoUrlCandidate(page, cachedVideoUrl);
 
     // Check immediately whether the file is still transferring.
