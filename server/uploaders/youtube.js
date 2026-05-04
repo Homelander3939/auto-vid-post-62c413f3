@@ -713,6 +713,8 @@ async function confirmPublishAnywayIfPrompted(page, totalWaitMs = 20000) {
   }
   return clickedAt !== null;
 }
+
+// Detects if the "Video uploading" progress dialog is currently shown using Playwright
 // locators that pierce Shadow DOM (YouTube Studio uses custom web components whose
 // innerText is NOT visible via document.body.innerText).
 async function isUploadDialogVisible(page) {
