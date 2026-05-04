@@ -68,13 +68,32 @@ function scanAllFiles(folderPath) {
 
   const files = fs.readdirSync(folderPath);
 
-  // Build text file map by stem
+  // Build text file map by stem (lowercased) for exact lookups.
   const textMap = {};
+  const textStems = []; // sorted by length desc for fuzzy prefix matching
   for (const file of files) {
     if (path.extname(file).toLowerCase() === '.txt') {
       const stem = file.replace(/\.[^.]+$/, '').toLowerCase();
       textMap[stem] = file;
+      textStems.push(stem);
     }
+  }
+  textStems.sort((a, b) => b.length - a.length); // longest first → best match wins
+
+  // Pick the best .txt for a given video stem: exact match if available,
+  // otherwise the longest .txt-stem that is a delimited prefix of the video
+  // stem. The boundary check ('_' / '-' / '.') prevents "Roman_History_4.txt"
+  // from incorrectly matching "Roman_History_43_<date>.mp4".
+  function pickTextFor(videoStemLower) {
+    if (textMap[videoStemLower]) return textMap[videoStemLower];
+    for (const ts of textStems) {
+      if (ts.length >= videoStemLower.length) continue;
+      if (!videoStemLower.startsWith(ts)) continue;
+      const next = videoStemLower.charAt(ts.length);
+      if (next !== '_' && next !== '-' && next !== '.') continue;
+      return textMap[ts];
+    }
+    return null;
   }
 
   // Collect all videos with matched text files
@@ -89,7 +108,7 @@ function scanAllFiles(folderPath) {
 
     pairs.push({
       videoFile: file,
-      textFile: textMap[stem] || null,
+      textFile: pickTextFor(stem),
       mtimeMs: stat.mtimeMs,
     });
   }
