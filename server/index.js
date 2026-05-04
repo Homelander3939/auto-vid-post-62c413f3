@@ -2561,20 +2561,15 @@ async function pollFolderWatchers() {
     }
   } catch (e) { console.error('[FolderWatch] schedules read failed:', e.message); }
 
-  // 3. Pending campaign folders (scheduled_uploads with [folder|N] paths)
-  try {
-    const { data: pending } = await supabase
-      .from('scheduled_uploads').select('video_file_name,target_platforms,id')
-      .eq('status', 'scheduled');
-    for (const item of pending || []) {
-      if (typeof item.video_file_name === 'string' && /^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(item.video_file_name)) {
-        const folderPath = normalizeFolderPath(item.video_file_name);
-        const intensity = parseFolderIntensity(item.video_file_name) || 0;
-        const sel = getScheduledAccountSelections(item.id) || {};
-        addFolder(folderPath, item.target_platforms || ['youtube','tiktok','instagram'], sel, intensity);
-      }
-    }
-  } catch (e) { console.error('[FolderWatch] scheduled_uploads read failed:', e.message); }
+  // NOTE: We intentionally do NOT add folders from pending one-shot campaigns
+  // (scheduled_uploads with [folder|N] markers). Those campaigns fan themselves
+  // out into individual scheduled rows when their scheduled_at fires. Watching
+  // their folders here would race the fan-out: the watcher would queue the same
+  // videos as plain folder-watch upload_jobs (often with empty platform/account
+  // selections), producing duplicate "New file detected" notifications followed
+  // by spurious "Upload Failed" messages once credentials don't resolve. The
+  // global default folder (#1) and enabled recurring schedules (#2) are still
+  // watched, which covers all true "drop new files in and auto-upload" cases.
 
   if (folders.size === 0) return;
 
