@@ -1966,30 +1966,34 @@ async function processScheduledUploads() {
             continue;
           }
 
-          // If user requested only the last N videos, take the N highest-numbered
-          // pairs (scanAllFiles is sorted ascending by series #), then keep ascending
-          // order so uploads still go 25 → 26 → 27.
+          // If user requested "last N", interpret as the next N episodes in
+          // story order — i.e. the LOWEST-numbered N pairs. scanAllFiles is
+          // already sorted ascending by series #, so take the first N.
           if (maxCount && allPairs.length > maxCount) {
-            allPairs = allPairs.slice(-maxCount);
+            allPairs = allPairs.slice(0, maxCount);
           }
 
           const baseTime = new Date(item.scheduled_at).getTime();
           const fanoutRows = allPairs.map((pair, idx) => {
-            let entryTitle = item.title;
+            // Always derive a real title from the video filename as the floor,
+            // so we never queue a row labelled "(auto from folder)" even when
+            // no sibling .txt exists.
+            const cleanVideoStem = pair.videoFile.replace(/\.[^.]+$/, '');
+            let entryTitle = item.title && item.title !== '(auto from folder)' ? item.title : cleanVideoStem;
             let entryDesc = item.description;
             let entryTags = item.tags;
             if (pair.textFile) {
               const meta = parseTextFile(path.join(folderPath, pair.textFile));
-              if (!entryTitle || entryTitle === '(auto from folder)') entryTitle = meta.title || pair.videoFile;
-              if (!entryDesc) entryDesc = meta.description || '';
-              if (!entryTags?.length) entryTags = meta.tags || [];
+              if (meta.title) entryTitle = meta.title;
+              if (!entryDesc && meta.description) entryDesc = meta.description;
+              if ((!entryTags || !entryTags.length) && meta.tags?.length) entryTags = meta.tags;
             }
             return {
               // Store the absolute path so the worker resolves it regardless of
               // the global default folder (handled by the path.isAbsolute branch).
               video_file_name: path.resolve(path.join(folderPath, pair.videoFile)),
               video_storage_path: null,
-              title: entryTitle || pair.videoFile,
+              title: entryTitle || cleanVideoStem,
               description: entryDesc || '',
               tags: entryTags || [],
               target_platforms: item.target_platforms,
