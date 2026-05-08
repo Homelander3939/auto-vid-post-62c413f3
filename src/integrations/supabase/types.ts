@@ -631,6 +631,7 @@ export type Database = {
           hashtags: string[]
           id: string
           image_path: string | null
+          image_paths: string[]
           platform_results: Json
           platform_variants: Json
           scheduled_at: string | null
@@ -647,6 +648,7 @@ export type Database = {
           hashtags?: string[]
           id?: string
           image_path?: string | null
+          image_paths?: string[]
           platform_results?: Json
           platform_variants?: Json
           scheduled_at?: string | null
@@ -663,6 +665,7 @@ export type Database = {
           hashtags?: string[]
           id?: string
           image_path?: string | null
+          image_paths?: string[]
           platform_results?: Json
           platform_variants?: Json
           scheduled_at?: string | null
