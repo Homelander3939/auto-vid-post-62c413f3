@@ -42,6 +42,10 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [aiImagePath, setAiImagePath] = useState<string | null>(null);
+  // Extra images attached on top of the primary one — populated by Upload Post imports.
+  // Pre-uploaded paths (from importer) bypass the File reupload and ride along in image_paths.
+  const [extraImageFiles, setExtraImageFiles] = useState<File[]>([]);
+  const [extraImagePreviews, setExtraImagePreviews] = useState<string[]>([]);
   const [scheduledAt, setScheduledAt] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [aiPrompt, setAiPrompt] = useState<string | null>(null);
