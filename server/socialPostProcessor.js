@@ -19,23 +19,40 @@ async function loadAccounts(supabase, ids) {
   return new Map((data || []).map((a) => [a.id, a]));
 }
 
-async function downloadImage(supabase, imagePath) {
+async function downloadImage(supabase, imagePath, idx = 0) {
   if (!imagePath) return null;
   const { data, error } = await supabase.storage.from('social-media').download(imagePath);
   if (error || !data) throw new Error(`Image download failed: ${error?.message || 'unknown'}`);
   const tempDir = path.join(__dirname, 'data', 'temp');
   fs.mkdirSync(tempDir, { recursive: true });
   const ext = path.extname(imagePath) || '.png';
-  const localPath = path.join(tempDir, `social-${Date.now()}${ext}`);
+  const localPath = path.join(tempDir, `social-${Date.now()}-${idx}${ext}`);
   fs.writeFileSync(localPath, Buffer.from(await data.arrayBuffer()));
   return localPath;
+}
+
+async function downloadImages(supabase, post) {
+  // Prefer multi-image bundle (image_paths). Fall back to single image_path for legacy posts.
+  const list = Array.isArray(post.image_paths) && post.image_paths.length
+    ? post.image_paths
+    : (post.image_path ? [post.image_path] : []);
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    try {
+      const local = await downloadImage(supabase, list[i], i);
+      if (local) out.push(local);
+    } catch (e) {
+      console.error('[SocialPosts] Image download failed:', e.message);
+    }
+  }
+  return out;
 }
 
 async function processSocialPost(supabase, postId, notify) {
   if (processing.has(postId)) return;
   processing.add(postId);
 
-  let localImage = null;
+  let localImages = [];
   try {
     const { data: post } = await supabase.from('social_posts').select('*').eq('id', postId).single();
     if (!post) return;
@@ -47,11 +64,7 @@ async function processSocialPost(supabase, postId, notify) {
     const accountIds = Object.values(selections).filter(Boolean);
     const accountsById = await loadAccounts(supabase, accountIds);
 
-    try {
-      localImage = await downloadImage(supabase, post.image_path);
-    } catch (e) {
-      console.error('[SocialPosts] Image download failed:', e.message);
-    }
+    localImages = await downloadImages(supabase, post);
 
     const results = post.platform_results && post.platform_results.length
       ? post.platform_results
@@ -81,7 +94,10 @@ async function processSocialPost(supabase, postId, notify) {
         const platformHashtags = (variant && variant.hashtags && variant.hashtags.length)
           ? variant.hashtags
           : (post.hashtags || []);
-        const out = await uploader(localImage, {
+        // Pass an array when we have a multi-image bundle, single path otherwise
+        // (uploaders normalise both forms — keeps legacy single-image posts working).
+        const imageArg = localImages.length > 1 ? localImages : (localImages[0] || null);
+        const out = await uploader(imageArg, {
           description: platformDescription,
           hashtags: platformHashtags,
         }, {
@@ -122,7 +138,7 @@ async function processSocialPost(supabase, postId, notify) {
     console.error('[SocialPosts] processor error:', e.message);
     await supabase.from('social_posts').update({ status: 'failed' }).eq('id', postId);
   } finally {
-    if (localImage) { try { fs.unlinkSync(localImage); } catch {} }
+    for (const p of localImages) { try { fs.unlinkSync(p); } catch {} }
     processing.delete(postId);
   }
 }
