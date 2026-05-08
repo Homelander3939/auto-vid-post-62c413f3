@@ -266,7 +266,10 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
       // Reset
       setDescription(''); setHashtagsRaw(''); setImageFile(null); setAiImagePath(null);
       if (imagePreview) URL.revokeObjectURL(imagePreview);
-      setImagePreview(null); setScheduledAt(''); setAiPrompt(null); setAiSources([]);
+      setImagePreview(null);
+      extraImagePreviews.forEach((u) => URL.revokeObjectURL(u));
+      setExtraImageFiles([]); setExtraImagePreviews([]);
+      setScheduledAt(''); setAiPrompt(null); setAiSources([]);
       setPlatformVariants({});
       onCreated();
     } catch (e: any) {
@@ -277,6 +280,8 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
   return (
     <div className="space-y-6">
       <AIPostComposer platforms={[...SOCIAL_PLATFORMS]} onUse={handleAIUse} />
+
+      <UploadPostImporter onLoad={handleImportedBundle} onSendToQueue={sendBundleToQueue} />
 
       <Card>
         <CardHeader>
@@ -406,14 +411,36 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
           </div>
 
           <div className="space-y-2">
-            <Label>Image</Label>
+            <Label>Image{extraImagePreviews.length > 0 && ` (1 + ${extraImagePreviews.length} extra)`}</Label>
             {imagePreview ? (
-              <div className="relative inline-block">
-                <img src={imagePreview} alt="" className="max-h-60 rounded-lg border" />
-                <button type="button" onClick={() => handleImageChange(null)}
-                  className="absolute top-2 right-2 bg-background/90 rounded-full p-1 hover:bg-destructive hover:text-destructive-foreground">
-                  <X className="w-3.5 h-3.5" />
-                </button>
+              <div className="space-y-2">
+                <div className="relative inline-block">
+                  <img src={imagePreview} alt="" className="max-h-60 rounded-lg border" />
+                  <button type="button" onClick={() => handleImageChange(null)}
+                    className="absolute top-2 right-2 bg-background/90 rounded-full p-1 hover:bg-destructive hover:text-destructive-foreground">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {extraImagePreviews.length > 0 && (
+                  <div className="flex gap-2 flex-wrap">
+                    {extraImagePreviews.map((u, i) => (
+                      <div key={i} className="relative">
+                        <img src={u} alt="" className="w-20 h-20 object-cover rounded border" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            URL.revokeObjectURL(u);
+                            setExtraImagePreviews((prev) => prev.filter((_, idx) => idx !== i));
+                            setExtraImageFiles((prev) => prev.filter((_, idx) => idx !== i));
+                          }}
+                          className="absolute -top-1 -right-1 bg-background/90 rounded-full p-0.5 hover:bg-destructive hover:text-destructive-foreground"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
               <label className="flex items-center justify-center gap-2 border-2 border-dashed border-border rounded-lg p-6 cursor-pointer hover:border-primary/50 transition-colors">
