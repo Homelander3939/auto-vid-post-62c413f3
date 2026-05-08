@@ -78,6 +78,48 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
     setAiImagePath(null);
     if (imagePreview) URL.revokeObjectURL(imagePreview);
     setImagePreview(file ? URL.createObjectURL(file) : null);
+    // Clear bundle extras whenever the user picks a manual single image.
+    extraImagePreviews.forEach((u) => URL.revokeObjectURL(u));
+    setExtraImageFiles([]);
+    setExtraImagePreviews([]);
+  };
+
+  // Loads a parsed TechPulse bundle into the composer form (no upload yet — user clicks Post Now).
+  const handleImportedBundle = (b: ImportedBundle) => {
+    // Pick primary text from the first available platform variant.
+    const variants: Record<string, { description: string; hashtags: string[] }> = {};
+    for (const p of b.platforms) {
+      if (b.texts[p]) variants[p] = { description: b.texts[p], hashtags: [] };
+    }
+    setSelectedPlatforms(b.platforms);
+    setPlatformVariants(variants);
+    setPreviewPlatform(b.platforms[0] || 'x');
+    setDescription(b.texts[b.platforms[0]] || '');
+    setHashtagsRaw('');
+    setAiPrompt(null);
+    setAiSources([]);
+
+    // Image: first one is "primary", rest go in extras.
+    const [first, ...rest] = b.images;
+    if (imagePreview) URL.revokeObjectURL(imagePreview);
+    extraImagePreviews.forEach((u) => URL.revokeObjectURL(u));
+    setAiImagePath(null);
+    setImageFile(first ? first.file : null);
+    setImagePreview(first ? URL.createObjectURL(first.file) : null);
+    setExtraImageFiles(rest.map((r) => r.file));
+    setExtraImagePreviews(rest.map((r) => URL.createObjectURL(r.file)));
+
+    // Auto-pick default accounts for each platform when available.
+    setAccountSelections((prev) => {
+      const next = { ...prev };
+      for (const p of b.platforms) {
+        if (next[p]) continue;
+        const list = accountsByPlatform[p] || [];
+        const def = list.find((a) => a.is_default) || list[0];
+        if (def) next[p] = def.id;
+      }
+      return next;
+    });
   };
 
   const handleAIUse = (out: AIGenerateOutput, prompt: string) => {
