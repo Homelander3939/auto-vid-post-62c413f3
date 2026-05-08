@@ -2,6 +2,7 @@
 const { launchPersistent, safeClose } = require('./social-post-base');
 
 async function uploadToFacebook(imagePath, { description, hashtags = [] }, opts = {}) {
+  const imageFiles = Array.isArray(imagePath) ? imagePath.filter(Boolean) : (imagePath ? [imagePath] : []);
   const context = await launchPersistent('facebook', opts);
   try {
     const page = context.pages()[0] || await context.newPage();
@@ -30,13 +31,13 @@ async function uploadToFacebook(imagePath, { description, hashtags = [] }, opts 
     await page.keyboard.insertText(fullText);
     await page.waitForTimeout(1000);
 
-    if (imagePath) {
+    if (imageFiles.length) {
       // Click "Photo/video" button to reveal file input
       await page.locator('[aria-label="Photo/video"], [aria-label*="Photo" i]').first().click().catch(() => {});
       await page.waitForTimeout(1500);
       const fileInput = page.locator('input[type="file"][accept*="image"]').first();
-      await fileInput.setInputFiles(imagePath);
-      await page.waitForTimeout(5000);
+      await fileInput.setInputFiles(imageFiles);
+      await page.waitForTimeout(5000 + (imageFiles.length - 1) * 1500);
     }
 
     const postBtn = page.locator('[aria-label="Post"][role="button"], div[role="button"]:has-text("Post")').last();

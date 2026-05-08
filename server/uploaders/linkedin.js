@@ -7,6 +7,7 @@ const { launchPersistent, safeClose } = require('./social-post-base');
 const LI_FEED_URL = 'https://www.linkedin.com/feed/';
 
 async function uploadToLinkedIn(imagePath, { description, hashtags = [] }, opts = {}) {
+  const imageFiles = Array.isArray(imagePath) ? imagePath.filter(Boolean) : (imagePath ? [imagePath] : []);
   const context = await launchPersistent('linkedin', opts);
   try {
     const page = context.pages()[0] || await context.newPage();
@@ -36,15 +37,15 @@ async function uploadToLinkedIn(imagePath, { description, hashtags = [] }, opts 
     await page.keyboard.insertText(fullText);
     await page.waitForTimeout(800);
 
-    if (imagePath) {
-      // Click the image attach button inside the dialog, then set the file.
+    if (imageFiles.length) {
+      // Click the image attach button inside the dialog, then set the files.
       const attachBtn = page.locator(
         'div[role="dialog"] button[aria-label*="photo" i], div[role="dialog"] button[aria-label*="image" i]'
       ).first();
       await attachBtn.click({ trial: false }).catch(() => {});
       const fileInput = page.locator('input[type="file"][accept*="image"]').first();
-      await fileInput.setInputFiles(imagePath);
-      await page.waitForTimeout(2500);
+      await fileInput.setInputFiles(imageFiles);
+      await page.waitForTimeout(2500 + (imageFiles.length - 1) * 1500);
       // Some LinkedIn flows pop a "Next" / "Done" button to confirm the image before
       // returning to the post composer.
       const nextBtn = page.locator(
