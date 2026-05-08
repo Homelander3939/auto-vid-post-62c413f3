@@ -26,6 +26,7 @@ import {
   type AIGenerateOutput,
 } from '@/lib/socialPosts';
 import AIPostComposer from '@/components/AIPostComposer';
+import UploadPostImporter, { type ImportedBundle } from '@/components/UploadPostImporter';
 import GenerationScheduler from '@/components/GenerationScheduler';
 import { saveLocalJobAccountSelections } from '@/lib/localBrowserProfiles';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
@@ -41,6 +42,10 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [aiImagePath, setAiImagePath] = useState<string | null>(null);
+  // Extra images attached on top of the primary one — populated by Upload Post imports.
+  // Pre-uploaded paths (from importer) bypass the File reupload and ride along in image_paths.
+  const [extraImageFiles, setExtraImageFiles] = useState<File[]>([]);
+  const [extraImagePreviews, setExtraImagePreviews] = useState<string[]>([]);
   const [scheduledAt, setScheduledAt] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [aiPrompt, setAiPrompt] = useState<string | null>(null);
@@ -73,6 +78,48 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
     setAiImagePath(null);
     if (imagePreview) URL.revokeObjectURL(imagePreview);
     setImagePreview(file ? URL.createObjectURL(file) : null);
+    // Clear bundle extras whenever the user picks a manual single image.
+    extraImagePreviews.forEach((u) => URL.revokeObjectURL(u));
+    setExtraImageFiles([]);
+    setExtraImagePreviews([]);
+  };
+
+  // Loads a parsed TechPulse bundle into the composer form (no upload yet — user clicks Post Now).
+  const handleImportedBundle = (b: ImportedBundle) => {
+    // Pick primary text from the first available platform variant.
+    const variants: Record<string, { description: string; hashtags: string[] }> = {};
+    for (const p of b.platforms) {
+      if (b.texts[p]) variants[p] = { description: b.texts[p], hashtags: [] };
+    }
+    setSelectedPlatforms(b.platforms);
+    setPlatformVariants(variants);
+    setPreviewPlatform(b.platforms[0] || 'x');
+    setDescription(b.texts[b.platforms[0]] || '');
+    setHashtagsRaw('');
+    setAiPrompt(null);
+    setAiSources([]);
+
+    // Image: first one is "primary", rest go in extras.
+    const [first, ...rest] = b.images;
+    if (imagePreview) URL.revokeObjectURL(imagePreview);
+    extraImagePreviews.forEach((u) => URL.revokeObjectURL(u));
+    setAiImagePath(null);
+    setImageFile(first ? first.file : null);
+    setImagePreview(first ? URL.createObjectURL(first.file) : null);
+    setExtraImageFiles(rest.map((r) => r.file));
+    setExtraImagePreviews(rest.map((r) => URL.createObjectURL(r.file)));
+
+    // Auto-pick default accounts for each platform when available.
+    setAccountSelections((prev) => {
+      const next = { ...prev };
+      for (const p of b.platforms) {
+        if (next[p]) continue;
+        const list = accountsByPlatform[p] || [];
+        const def = list.find((a) => a.is_default) || list[0];
+        if (def) next[p] = def.id;
+      }
+      return next;
+    });
   };
 
   const handleAIUse = (out: AIGenerateOutput, prompt: string) => {
@@ -118,12 +165,18 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
     let imagePath: string | null = aiImagePath;
     if (imageFile) imagePath = await uploadSocialImage(imageFile);
 
+    // Upload any extra bundle images alongside the primary one.
+    const extraPaths: string[] = [];
+    for (const f of extraImageFiles) extraPaths.push(await uploadSocialImage(f));
+    const allPaths = [imagePath, ...extraPaths].filter((p): p is string => !!p);
+
     const hashtags = hashtagsRaw
       .split(/[\s,]+/).map((t) => t.replace(/^#/, '').trim()).filter(Boolean);
 
     const post = await createSocialPost({
       description,
       imagePath,
+      imagePaths: allPaths,
       hashtags,
       platforms: selectedPlatforms,
       accountSelections: mode === 'draft' ? {} : accountSelections,
@@ -151,6 +204,44 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
     return post;
   };
 
+  // Direct path from the importer to the queue — bypasses the form so the user can
+  // ship one bundle without scrolling down. Mirrors persistPost but takes the bundle.
+  const sendBundleToQueue = async (b: ImportedBundle, mode: 'now' | 'schedule' | 'draft', scheduledIso?: string) => {
+    const paths: string[] = [];
+    for (const img of b.images) paths.push(await uploadSocialImage(img.file));
+    const accountsForBundle: Record<string, string> = {};
+    if (mode !== 'draft') {
+      for (const p of b.platforms) {
+        const list = accountsByPlatform[p] || [];
+        const def = list.find((a) => a.is_default) || list[0];
+        if (def) accountsForBundle[p] = def.id;
+      }
+    }
+    const variants: Record<string, { description: string; hashtags: string[] }> = {};
+    for (const p of b.platforms) if (b.texts[p]) variants[p] = { description: b.texts[p], hashtags: [] };
+
+    const post = await createSocialPost({
+      description: b.texts[b.platforms[0]] || '',
+      imagePath: paths[0] || null,
+      imagePaths: paths,
+      hashtags: [],
+      platforms: b.platforms,
+      accountSelections: accountsForBundle,
+      scheduledAt: mode === 'schedule' ? (scheduledIso || null) : null,
+      platformVariants: variants,
+    });
+    if (mode === 'draft') {
+      try { await (await import('@/integrations/supabase/client')).supabase
+        .from('social_posts').update({ status: 'draft' } as any).eq('id', post.id); } catch {}
+    } else {
+      try { await saveLocalJobAccountSelections(post.id, accountsForBundle); } catch {}
+    }
+    if (mode === 'now') {
+      try { await fetch(`http://localhost:3001/api/social-posts/process/${post.id}`, { method: 'POST' }); } catch {}
+    }
+    onCreated();
+  };
+
   const handleSubmit = async (mode: 'now' | 'schedule' | 'draft') => {
     if (!description.trim()) { toast({ title: 'Description is required', variant: 'destructive' }); return; }
     if (selectedPlatforms.length === 0) { toast({ title: 'Pick at least one platform', variant: 'destructive' }); return; }
@@ -175,7 +266,10 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
       // Reset
       setDescription(''); setHashtagsRaw(''); setImageFile(null); setAiImagePath(null);
       if (imagePreview) URL.revokeObjectURL(imagePreview);
-      setImagePreview(null); setScheduledAt(''); setAiPrompt(null); setAiSources([]);
+      setImagePreview(null);
+      extraImagePreviews.forEach((u) => URL.revokeObjectURL(u));
+      setExtraImageFiles([]); setExtraImagePreviews([]);
+      setScheduledAt(''); setAiPrompt(null); setAiSources([]);
       setPlatformVariants({});
       onCreated();
     } catch (e: any) {
@@ -186,6 +280,8 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
   return (
     <div className="space-y-6">
       <AIPostComposer platforms={[...SOCIAL_PLATFORMS]} onUse={handleAIUse} />
+
+      <UploadPostImporter onLoad={handleImportedBundle} onSendToQueue={sendBundleToQueue} />
 
       <Card>
         <CardHeader>
@@ -315,14 +411,36 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
           </div>
 
           <div className="space-y-2">
-            <Label>Image</Label>
+            <Label>Image{extraImagePreviews.length > 0 && ` (1 + ${extraImagePreviews.length} extra)`}</Label>
             {imagePreview ? (
-              <div className="relative inline-block">
-                <img src={imagePreview} alt="" className="max-h-60 rounded-lg border" />
-                <button type="button" onClick={() => handleImageChange(null)}
-                  className="absolute top-2 right-2 bg-background/90 rounded-full p-1 hover:bg-destructive hover:text-destructive-foreground">
-                  <X className="w-3.5 h-3.5" />
-                </button>
+              <div className="space-y-2">
+                <div className="relative inline-block">
+                  <img src={imagePreview} alt="" className="max-h-60 rounded-lg border" />
+                  <button type="button" onClick={() => handleImageChange(null)}
+                    className="absolute top-2 right-2 bg-background/90 rounded-full p-1 hover:bg-destructive hover:text-destructive-foreground">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {extraImagePreviews.length > 0 && (
+                  <div className="flex gap-2 flex-wrap">
+                    {extraImagePreviews.map((u, i) => (
+                      <div key={i} className="relative">
+                        <img src={u} alt="" className="w-20 h-20 object-cover rounded border" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            URL.revokeObjectURL(u);
+                            setExtraImagePreviews((prev) => prev.filter((_, idx) => idx !== i));
+                            setExtraImageFiles((prev) => prev.filter((_, idx) => idx !== i));
+                          }}
+                          className="absolute -top-1 -right-1 bg-background/90 rounded-full p-0.5 hover:bg-destructive hover:text-destructive-foreground"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
               <label className="flex items-center justify-center gap-2 border-2 border-dashed border-border rounded-lg p-6 cursor-pointer hover:border-primary/50 transition-colors">

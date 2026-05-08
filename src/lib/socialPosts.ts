@@ -30,6 +30,7 @@ export interface SocialPost {
   id: string;
   description: string;
   image_path: string | null;
+  image_paths: string[];
   hashtags: string[];
   target_platforms: string[];
   status: string;
@@ -277,6 +278,7 @@ export async function listSocialPosts(): Promise<SocialPost[]> {
     ...row,
     hashtags: row.hashtags || [],
     target_platforms: row.target_platforms || [],
+    image_paths: row.image_paths || [],
     account_selections: row.account_selections || {},
     ai_sources: row.ai_sources || [],
     platform_results: row.platform_results || [],
@@ -287,6 +289,7 @@ export async function listSocialPosts(): Promise<SocialPost[]> {
 export async function createSocialPost(input: {
   description: string;
   imagePath: string | null;
+  imagePaths?: string[];
   hashtags: string[];
   platforms: string[];
   accountSelections: Record<string, string>;
@@ -300,6 +303,7 @@ export async function createSocialPost(input: {
   const payload: any = {
     description: input.description,
     image_path: input.imagePath,
+    image_paths: input.imagePaths && input.imagePaths.length ? input.imagePaths : (input.imagePath ? [input.imagePath] : []),
     hashtags: input.hashtags,
     target_platforms: input.platforms,
     account_selections: input.accountSelections,

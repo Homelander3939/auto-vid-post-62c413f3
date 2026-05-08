@@ -4,6 +4,8 @@ const { launchPersistent, safeClose } = require('./social-post-base');
 const X_COMPOSE_URL = 'https://x.com/compose/post';
 
 async function uploadToX(imagePath, { description, hashtags = [] }, opts = {}) {
+  // Accept either a single path (legacy) or an array (multi-image bundle).
+  const imageFiles = Array.isArray(imagePath) ? imagePath.filter(Boolean) : (imagePath ? [imagePath] : []);
   const context = await launchPersistent('x', opts);
   try {
     const page = context.pages()[0] || await context.newPage();
@@ -28,15 +30,14 @@ async function uploadToX(imagePath, { description, hashtags = [] }, opts = {}) {
     await page.keyboard.insertText(fullText);
     await page.waitForTimeout(1000);
 
-    if (imagePath) {
+    if (imageFiles.length) {
       const fileInput = page.locator('input[type="file"][accept*="image"]').first();
-      await fileInput.setInputFiles(imagePath).catch(async () => {
-        // Some flows lazy-mount the input; click attach button first
+      await fileInput.setInputFiles(imageFiles).catch(async () => {
         const attach = page.locator('[data-testid="fileInput"], [aria-label*="media" i], [data-testid="attachments"]').first();
         await attach.click({ trial: true }).catch(() => {});
-        await fileInput.setInputFiles(imagePath);
+        await fileInput.setInputFiles(imageFiles);
       });
-      await page.waitForTimeout(4000);
+      await page.waitForTimeout(4000 + (imageFiles.length - 1) * 1500);
     }
 
     const postBtn = page.locator('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]').first();
