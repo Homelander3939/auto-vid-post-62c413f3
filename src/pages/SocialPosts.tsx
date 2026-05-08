@@ -165,12 +165,18 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
     let imagePath: string | null = aiImagePath;
     if (imageFile) imagePath = await uploadSocialImage(imageFile);
 
+    // Upload any extra bundle images alongside the primary one.
+    const extraPaths: string[] = [];
+    for (const f of extraImageFiles) extraPaths.push(await uploadSocialImage(f));
+    const allPaths = [imagePath, ...extraPaths].filter((p): p is string => !!p);
+
     const hashtags = hashtagsRaw
       .split(/[\s,]+/).map((t) => t.replace(/^#/, '').trim()).filter(Boolean);
 
     const post = await createSocialPost({
       description,
       imagePath,
+      imagePaths: allPaths,
       hashtags,
       platforms: selectedPlatforms,
       accountSelections: mode === 'draft' ? {} : accountSelections,
@@ -196,6 +202,44 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
       } catch {}
     }
     return post;
+  };
+
+  // Direct path from the importer to the queue — bypasses the form so the user can
+  // ship one bundle without scrolling down. Mirrors persistPost but takes the bundle.
+  const sendBundleToQueue = async (b: ImportedBundle, mode: 'now' | 'schedule' | 'draft', scheduledIso?: string) => {
+    const paths: string[] = [];
+    for (const img of b.images) paths.push(await uploadSocialImage(img.file));
+    const accountsForBundle: Record<string, string> = {};
+    if (mode !== 'draft') {
+      for (const p of b.platforms) {
+        const list = accountsByPlatform[p] || [];
+        const def = list.find((a) => a.is_default) || list[0];
+        if (def) accountsForBundle[p] = def.id;
+      }
+    }
+    const variants: Record<string, { description: string; hashtags: string[] }> = {};
+    for (const p of b.platforms) if (b.texts[p]) variants[p] = { description: b.texts[p], hashtags: [] };
+
+    const post = await createSocialPost({
+      description: b.texts[b.platforms[0]] || '',
+      imagePath: paths[0] || null,
+      imagePaths: paths,
+      hashtags: [],
+      platforms: b.platforms,
+      accountSelections: accountsForBundle,
+      scheduledAt: mode === 'schedule' ? (scheduledIso || null) : null,
+      platformVariants: variants,
+    });
+    if (mode === 'draft') {
+      try { await (await import('@/integrations/supabase/client')).supabase
+        .from('social_posts').update({ status: 'draft' } as any).eq('id', post.id); } catch {}
+    } else {
+      try { await saveLocalJobAccountSelections(post.id, accountsForBundle); } catch {}
+    }
+    if (mode === 'now') {
+      try { await fetch(`http://localhost:3001/api/social-posts/process/${post.id}`, { method: 'POST' }); } catch {}
+    }
+    onCreated();
   };
 
   const handleSubmit = async (mode: 'now' | 'schedule' | 'draft') => {
