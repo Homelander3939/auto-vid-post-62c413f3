@@ -1,0 +1,529 @@
+// Imports already-generated TechPulse social post bundles from a local folder.
+// Sits between AI Post Generator and Compose Post on the Social Posts page.
+//
+// Bundle = 1 .txt manifest + N image files in the same folder. The manifest
+// follows the TECHPULSE_SOCIAL_POST_V1 format with platform-specific text
+// sections and an explicit image filename list.
+//
+// User flow:
+//   1. Pick a folder (showDirectoryPicker) or `<input webkitdirectory>` or a single .txt
+//   2. We parse all .txt manifests, match images by filename, validate
+//   3. Bundles render as cards with thumbs + text preview
+//   4. Click "Load into Composer" → preloads ComposeTab; user clicks Post Now / Schedule there
+//
+// Duplicate detection: filename + content hash stored in localStorage.
+
+import { useMemo, useRef, useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { useToast } from '@/hooks/use-toast';
+import {
+  FolderOpen, FileText, Upload, AlertTriangle, CheckCircle2, RefreshCw,
+  Image as ImageIcon, Send,
+} from 'lucide-react';
+
+const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
+const SUPPORTED_IMG = /\.(jpe?g|png|webp)$/i;
+const X_LIMIT = 280;
+const IMPORTED_KEY = 'techpulse_imported_bundles_v1';
+
+export interface ImportedBundle {
+  id: string;                 // hash key for dedupe
+  manifestName: string;
+  folderHint: string;
+  session: string;            // morning | evening | unknown
+  postIndex: number | null;
+  createdAt: string;
+  platforms: string[];        // x, linkedin, facebook
+  imageCount: number;         // declared
+  images: { name: string; file: File; previewUrl: string }[];
+  texts: Record<string, string>;   // platform → text
+  articleUrls: string[];
+  errors: string[];
+  warnings: string[];
+}
+
+interface Props {
+  onLoad: (bundle: ImportedBundle) => void;
+  onSendToQueue?: (bundle: ImportedBundle, mode: 'now' | 'schedule' | 'draft', scheduledAt?: string) => Promise<void>;
+}
+
+// Read previously imported keys from localStorage so we can flag duplicates.
+function readImportedKeys(): Set<string> {
+  try {
+    const raw = localStorage.getItem(IMPORTED_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch { return new Set(); }
+}
+function rememberImported(id: string) {
+  try {
+    const cur = Array.from(readImportedKeys());
+    if (!cur.includes(id)) cur.push(id);
+    localStorage.setItem(IMPORTED_KEY, JSON.stringify(cur.slice(-500)));
+  } catch {}
+}
+
+async function sha1(text: string): Promise<string> {
+  const buf = new TextEncoder().encode(text);
+  const hash = await crypto.subtle.digest('SHA-1', buf);
+  return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Parses a TECHPULSE_SOCIAL_POST_V1 manifest. Returns headers, declared image
+// filenames, and per-section text bodies keyed by section name.
+function parseManifest(text: string) {
+  const headers: Record<string, string> = {};
+  const declaredImages: string[] = [];
+  const sections: Record<string, string> = {};
+
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  let i = 0;
+
+  // Header block: simple `key: value` pairs until first `---SECTION---` or `images:`
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^---[A-Z_]+---$/.test(line.trim())) break;
+    const match = line.match(/^([a-zA-Z_]+):\s*(.+)?$/);
+    if (match) {
+      headers[match[1].toLowerCase()] = (match[2] || '').trim();
+    } else if (/^images:\s*$/i.test(line.trim())) {
+      i++;
+      // Numbered list of filenames
+      while (i < lines.length) {
+        const l = lines[i].trim();
+        if (!l || /^---[A-Z_]+---$/.test(l)) break;
+        const m = l.match(/^\d+\.\s*(.+)$/);
+        if (m) declaredImages.push(m[1].trim());
+        else break;
+        i++;
+      }
+      continue;
+    }
+    i++;
+  }
+
+  // Walk sections: ---SECTION_NAME--- ... ---END_SECTION_NAME---
+  while (i < lines.length) {
+    const open = lines[i].trim().match(/^---([A-Z_]+)---$/);
+    if (open) {
+      const name = open[1];
+      const close = `---END_${name}---`;
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && lines[i].trim() !== close) {
+        buf.push(lines[i]);
+        i++;
+      }
+      sections[name] = buf.join('\n').trim();
+    }
+    i++;
+  }
+
+  return { headers, declaredImages, sections };
+}
+
+// Map a manifest's platforms list ("x.com, linkedin, facebook") to our keys.
+function normalisePlatform(p: string): string | null {
+  const t = p.toLowerCase().trim();
+  if (t === 'x' || t === 'x.com' || t === 'twitter') return 'x';
+  if (t === 'linkedin') return 'linkedin';
+  if (t === 'facebook' || t === 'fb') return 'facebook';
+  return null;
+}
+
+// Build text per platform from parsed sections.
+// LinkedIn + Facebook share LINKEDIN_FACEBOOK_POST.
+// X uses X_THREAD_OR_LONG_POST (already the right shape — left as-is).
+function buildPlatformTexts(sections: Record<string, string>, articleUrlsBlock: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const liFb = sections['LINKEDIN_FACEBOOK_POST'] || '';
+  const xText = sections['X_THREAD_OR_LONG_POST'] || liFb;
+  const links = articleUrlsBlock
+    ? '\n\n' + articleUrlsBlock.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+        const m = l.match(/^[^:]+:\s*(https?:\/\/.+)$/);
+        return m ? m[1] : l;
+      }).join('\n')
+    : '';
+  if (liFb) out.linkedin = (liFb + links).trim();
+  if (liFb) out.facebook = (liFb + links).trim();
+  if (xText) out.x = xText.trim();
+  return out;
+}
+
+async function processManifest(
+  manifestFile: File,
+  imageFiles: Map<string, File>,
+  importedKeys: Set<string>,
+): Promise<ImportedBundle> {
+  const text = await manifestFile.text();
+  const { headers, declaredImages, sections } = parseManifest(text);
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (!/TECHPULSE_SOCIAL_POST_V1/.test(text)) errors.push('Missing TECHPULSE_SOCIAL_POST_V1 marker');
+
+  const platforms = (headers.platforms || '')
+    .split(',').map((p) => normalisePlatform(p)).filter((p): p is string => !!p);
+  if (platforms.length === 0) errors.push('No valid platforms declared');
+
+  const declaredCount = parseInt(headers.image_count || `${declaredImages.length}`, 10) || declaredImages.length;
+  if (declaredImages.length === 0) errors.push('No images listed in manifest');
+
+  // Match images by filename (case-insensitive). Files come from the same folder.
+  const images: { name: string; file: File; previewUrl: string }[] = [];
+  for (const name of declaredImages) {
+    if (!SUPPORTED_IMG.test(name)) {
+      errors.push(`Unsupported image type: ${name}`);
+      continue;
+    }
+    const file = imageFiles.get(name.toLowerCase());
+    if (!file) {
+      errors.push(`Missing image file: ${name}`);
+      continue;
+    }
+    images.push({ name, file, previewUrl: URL.createObjectURL(file) });
+  }
+  if (declaredImages.length !== declaredCount) {
+    warnings.push(`Header image_count=${declaredCount} but ${declaredImages.length} listed`);
+  }
+
+  const texts = buildPlatformTexts(sections, sections['ARTICLE_URLS'] || '');
+  for (const p of platforms) {
+    if (!texts[p]) errors.push(`Missing text section for ${PLATFORM_LABELS[p] || p}`);
+  }
+
+  // Article URLs as plain list
+  const articleUrls = (sections['ARTICLE_URLS'] || '').split('\n')
+    .map((l) => l.trim()).filter(Boolean)
+    .map((l) => {
+      const m = l.match(/(https?:\/\/\S+)/);
+      return m ? m[1] : '';
+    }).filter(Boolean);
+
+  const id = await sha1(`${manifestFile.name}::${text}`);
+  if (importedKeys.has(id)) warnings.push('Already imported previously');
+
+  const folderHint = ((manifestFile as any).webkitRelativePath || manifestFile.name).split('/').slice(0, -1).join('/') || '(local)';
+
+  return {
+    id,
+    manifestName: manifestFile.name,
+    folderHint,
+    session: (headers.session || 'unknown').toLowerCase(),
+    postIndex: parseInt(headers.post_index || '0', 10) || null,
+    createdAt: headers.created_at || '',
+    platforms,
+    imageCount: declaredCount,
+    images,
+    texts,
+    articleUrls,
+    errors,
+    warnings,
+  };
+}
+
+export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
+  const { toast } = useToast();
+  const [bundles, setBundles] = useState<ImportedBundle[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [defaultPath] = useState('D:\\news posts');
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const txtInputRef = useRef<HTMLInputElement | null>(null);
+  const imgInputRef = useRef<HTMLInputElement | null>(null);
+
+  const importedKeys = useMemo(() => readImportedKeys(), [bundles.length]);
+
+  // Build map of image filename → File (case-insensitive). Images can come
+  // from the same folder picker or, in the manual fallback, a separate input.
+  const buildImageMap = (files: File[]) => {
+    const m = new Map<string, File>();
+    for (const f of files) {
+      if (SUPPORTED_IMG.test(f.name)) m.set(f.name.toLowerCase(), f);
+    }
+    return m;
+  };
+
+  const ingest = async (manifests: File[], images: File[]) => {
+    if (!manifests.length) {
+      toast({ title: 'No .txt manifests found', variant: 'destructive' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const imgMap = buildImageMap(images);
+      const keys = readImportedKeys();
+      const out: ImportedBundle[] = [];
+      for (const m of manifests) out.push(await processManifest(m, imgMap, keys));
+      // Newest / lowest post_index first, then by name
+      out.sort((a, b) => (a.session === b.session
+        ? (a.postIndex || 99) - (b.postIndex || 99)
+        : a.session.localeCompare(b.session)));
+      setBundles(out);
+      const ok = out.filter((b) => b.errors.length === 0).length;
+      toast({
+        title: `Detected ${out.length} bundle${out.length === 1 ? '' : 's'}`,
+        description: `${ok} ready · ${out.length - ok} with issues`,
+      });
+    } catch (e: any) {
+      toast({ title: 'Import failed', description: e.message, variant: 'destructive' });
+    } finally { setLoading(false); }
+  };
+
+  // Modern Chromium API — lets the user pick a real folder by handle.
+  const pickWithFsAccess = async () => {
+    const anyWin = window as any;
+    if (!anyWin.showDirectoryPicker) {
+      toast({ title: 'Folder picker not supported', description: 'Use the folder upload button instead.' });
+      return;
+    }
+    try {
+      const dir = await anyWin.showDirectoryPicker();
+      const txts: File[] = []; const imgs: File[] = [];
+      // Walk one level — TechPulse drops bundles flat in the folder.
+      for await (const [name, handle] of (dir as any).entries()) {
+        if (handle.kind !== 'file') continue;
+        const file: File = await handle.getFile();
+        if (name.toLowerCase().endsWith('.txt')) txts.push(file);
+        else if (SUPPORTED_IMG.test(name)) imgs.push(file);
+      }
+      await ingest(txts, imgs);
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') toast({ title: 'Folder pick failed', description: e?.message, variant: 'destructive' });
+    }
+  };
+
+  const onFolderInput = async (files: FileList | null) => {
+    if (!files) return;
+    const arr = Array.from(files);
+    const txts = arr.filter((f) => f.name.toLowerCase().endsWith('.txt'));
+    const imgs = arr.filter((f) => SUPPORTED_IMG.test(f.name));
+    await ingest(txts, imgs);
+  };
+
+  const onTxtInput = async (files: FileList | null) => {
+    if (!files || !files.length) return;
+    const txts = Array.from(files).filter((f) => f.name.toLowerCase().endsWith('.txt'));
+    const existingImgs = imgInputRef.current?.files
+      ? Array.from(imgInputRef.current.files).filter((f) => SUPPORTED_IMG.test(f.name))
+      : [];
+    if (txts.length && existingImgs.length === 0) {
+      toast({
+        title: 'Now select the matching images',
+        description: 'Browser security blocks automatic folder reads from a single .txt — pick the 3 images next.',
+      });
+    }
+    if (existingImgs.length) await ingest(txts, existingImgs);
+  };
+
+  const onImgInput = async (files: FileList | null) => {
+    if (!files || !files.length) return;
+    const imgs = Array.from(files).filter((f) => SUPPORTED_IMG.test(f.name));
+    const txts = txtInputRef.current?.files
+      ? Array.from(txtInputRef.current.files).filter((f) => f.name.toLowerCase().endsWith('.txt'))
+      : [];
+    if (txts.length) await ingest(txts, imgs);
+    else toast({ title: 'Select a .txt manifest first', variant: 'destructive' });
+  };
+
+  const reset = () => {
+    bundles.forEach((b) => b.images.forEach((i) => URL.revokeObjectURL(i.previewUrl)));
+    setBundles([]);
+  };
+
+  const handleLoad = (b: ImportedBundle) => {
+    if (b.errors.length) {
+      toast({ title: 'Bundle has errors', description: b.errors[0], variant: 'destructive' });
+      return;
+    }
+    onLoad(b);
+    rememberImported(b.id);
+    toast({
+      title: `Loaded post ${b.postIndex ?? ''}`,
+      description: 'Review in Compose Post below, then click Post Now / Schedule.',
+    });
+  };
+
+  const handleQuick = async (b: ImportedBundle, mode: 'now' | 'schedule' | 'draft') => {
+    if (!onSendToQueue) return;
+    if (b.errors.length) {
+      toast({ title: 'Bundle has errors', description: b.errors[0], variant: 'destructive' });
+      return;
+    }
+    let scheduledAt: string | undefined;
+    if (mode === 'schedule') {
+      const v = window.prompt('Schedule at (YYYY-MM-DD HH:MM, local time):', '');
+      if (!v) return;
+      const d = new Date(v.replace(' ', 'T'));
+      if (isNaN(d.getTime())) { toast({ title: 'Invalid date', variant: 'destructive' }); return; }
+      scheduledAt = d.toISOString();
+    }
+    try {
+      await onSendToQueue(b, mode, scheduledAt);
+      rememberImported(b.id);
+      toast({ title: mode === 'now' ? 'Sent to queue' : mode === 'schedule' ? 'Scheduled' : 'Saved as draft' });
+    } catch (e: any) {
+      toast({ title: 'Failed', description: e.message, variant: 'destructive' });
+    }
+  };
+
+  return (
+    <Card className="border-primary/20 bg-gradient-to-br from-secondary/40 to-transparent">
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2">
+          <Upload className="w-4 h-4 text-primary" /> Upload Post
+        </CardTitle>
+        <CardDescription>
+          Import already-generated TechPulse post bundles from your PC. Each bundle = 1 .txt manifest + matching images.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-1.5">
+          <Label className="text-xs">Default folder (info only)</Label>
+          <Input value={defaultPath} disabled className="font-mono text-xs h-8" />
+          <p className="text-[11px] text-muted-foreground">
+            Browsers can't read this path directly — use one of the picker buttons below.
+          </p>
+        </div>
+
+        <div className="grid sm:grid-cols-3 gap-2">
+          <Button variant="outline" onClick={pickWithFsAccess} className="gap-2">
+            <FolderOpen className="w-4 h-4" /> Pick folder (Chromium)
+          </Button>
+          <Button variant="outline" onClick={() => folderInputRef.current?.click()} className="gap-2">
+            <FolderOpen className="w-4 h-4" /> Upload folder
+          </Button>
+          <Button variant="outline" onClick={() => txtInputRef.current?.click()} className="gap-2">
+            <FileText className="w-4 h-4" /> Single .txt + images
+          </Button>
+        </div>
+
+        {/* Hidden file inputs covering each fallback path */}
+        <input
+          ref={folderInputRef}
+          type="file"
+          // @ts-expect-error non-standard but supported in Chromium/Firefox
+          webkitdirectory=""
+          directory=""
+          multiple
+          className="hidden"
+          onChange={(e) => onFolderInput(e.target.files)}
+        />
+        <input
+          ref={txtInputRef}
+          type="file"
+          accept=".txt"
+          multiple
+          className="hidden"
+          onChange={(e) => { onTxtInput(e.target.files); imgInputRef.current?.click(); }}
+        />
+        <input
+          ref={imgInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          multiple
+          className="hidden"
+          onChange={(e) => onImgInput(e.target.files)}
+        />
+
+        {loading && (
+          <div className="text-sm text-muted-foreground flex items-center gap-2">
+            <RefreshCw className="w-4 h-4 animate-spin" /> Parsing bundles…
+          </div>
+        )}
+
+        {bundles.length > 0 && (
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">
+              {bundles.length} bundle{bundles.length === 1 ? '' : 's'} detected
+            </span>
+            <Button size="sm" variant="ghost" onClick={reset}>Clear</Button>
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {bundles.map((b) => {
+            const dup = importedKeys.has(b.id);
+            const ok = b.errors.length === 0;
+            return (
+              <Card key={b.id} className={ok ? 'border-border' : 'border-destructive/40'}>
+                <CardContent className="p-3 space-y-2.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {ok
+                      ? <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                      : <AlertTriangle className="w-4 h-4 text-destructive" />}
+                    <Badge variant="outline" className="capitalize">{b.session}</Badge>
+                    {b.postIndex !== null && <Badge variant="secondary">#{b.postIndex}</Badge>}
+                    {b.platforms.map((p) => (
+                      <Badge key={p} variant="secondary" className="text-[10px]">{PLATFORM_LABELS[p] || p}</Badge>
+                    ))}
+                    <span className="text-[11px] text-muted-foreground ml-auto truncate max-w-[40%]" title={b.manifestName}>
+                      {b.manifestName}
+                    </span>
+                  </div>
+
+                  {b.images.length > 0 && (
+                    <div className="flex gap-2">
+                      {b.images.map((img) => (
+                        <img
+                          key={img.name}
+                          src={img.previewUrl}
+                          alt={img.name}
+                          title={img.name}
+                          className="w-20 h-20 object-cover rounded border"
+                        />
+                      ))}
+                      {b.images.length < b.imageCount && (
+                        <div className="w-20 h-20 flex items-center justify-center rounded border border-dashed border-destructive/40 text-[10px] text-destructive text-center px-1">
+                          <ImageIcon className="w-4 h-4 mr-1" /> missing
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {b.texts[b.platforms[0]] && (
+                    <p className="text-xs text-muted-foreground line-clamp-3 whitespace-pre-wrap">
+                      {b.texts[b.platforms[0]]}
+                    </p>
+                  )}
+
+                  {(b.errors.length > 0 || b.warnings.length > 0 || dup) && (
+                    <Alert variant={b.errors.length ? 'destructive' : 'default'} className="py-2">
+                      <AlertDescription className="text-[11px] space-y-0.5">
+                        {dup && <div>⚠ Already imported previously (filename + content match)</div>}
+                        {b.errors.map((e, i) => <div key={`e${i}`}>✗ {e}</div>)}
+                        {b.warnings.map((w, i) => <div key={`w${i}`}>⚠ {w}</div>)}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <Button size="sm" onClick={() => handleLoad(b)} disabled={!ok} className="gap-1.5">
+                      <Upload className="w-3.5 h-3.5" /> Load into Composer
+                    </Button>
+                    {onSendToQueue && (
+                      <>
+                        <Button size="sm" variant="outline" onClick={() => handleQuick(b, 'now')} disabled={!ok} className="gap-1.5">
+                          <Send className="w-3.5 h-3.5" /> Post Now
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => handleQuick(b, 'schedule')} disabled={!ok}>
+                          Schedule
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => handleQuick(b, 'draft')} disabled={!ok}>
+                          Send to Queue (draft)
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
