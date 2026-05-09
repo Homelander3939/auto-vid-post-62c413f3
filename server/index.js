@@ -1727,64 +1727,137 @@ app.post('/api/social-posts/process/:id', (req, res) => {
   res.json({ started: true });
 });
 
-// --- Scan a local folder for TechPulse social-post bundles ---
-// Returns parsed manifests + images as base64 so the browser (which can't read
-// arbitrary local paths) can present the same Upload Post UX as videos do.
+// --- Helpers for TechPulse social-post bundles ---
+// A bundle = 1 .txt manifest (TECHPULSE_SOCIAL_POST_V1 format) + N image files
+// in the same folder. Used by both the manual scan endpoint and the recurring
+// folder schedule processor.
+const SOCIAL_BUNDLE_IMG_RE = /\.(jpe?g|png|webp)$/i;
+
+function parseBundleManifest(content) {
+  const headers = {};
+  const declaredImages = [];
+  const sections = {};
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^---[A-Z_]+---$/.test(line.trim())) break;
+    const m = line.match(/^([a-zA-Z_]+):\s*(.+)?$/);
+    if (m) headers[m[1].toLowerCase()] = (m[2] || '').trim();
+    else if (/^images:\s*$/i.test(line.trim())) {
+      i++;
+      while (i < lines.length) {
+        const l = lines[i].trim();
+        if (!l || /^---[A-Z_]+---$/.test(l)) break;
+        const mm = l.match(/^\d+\.\s*(.+)$/);
+        if (mm) declaredImages.push(mm[1].trim()); else break;
+        i++;
+      }
+      continue;
+    }
+    i++;
+  }
+  while (i < lines.length) {
+    const open = lines[i].trim().match(/^---([A-Z_]+)---$/);
+    if (open) {
+      const name = open[1];
+      const close = `---END_${name}---`;
+      const buf = [];
+      i++;
+      while (i < lines.length && lines[i].trim() !== close) { buf.push(lines[i]); i++; }
+      sections[name] = buf.join('\n').trim();
+    }
+    i++;
+  }
+  return { headers, declaredImages, sections };
+}
+
+function normalizePlatformName(p) {
+  const t = String(p || '').toLowerCase().trim();
+  if (t === 'x' || t === 'x.com' || t === 'twitter') return 'x';
+  if (t === 'linkedin') return 'linkedin';
+  if (t === 'facebook' || t === 'fb') return 'facebook';
+  return null;
+}
+
+// Scan a folder, return parsed bundles. Each entry includes raw image bytes so
+// the caller can either base64-encode them (browser scan) or upload them to
+// Supabase storage (recurring schedule processor).
+function scanLocalBundles(folderPath) {
+  if (!fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
+    throw new Error(`Folder not found: ${folderPath}`);
+  }
+  const entries = fs.readdirSync(folderPath);
+  const txts = entries.filter((n) => n.toLowerCase().endsWith('.txt')).sort();
+  const imgs = entries.filter((n) => SOCIAL_BUNDLE_IMG_RE.test(n));
+  const bundles = [];
+  for (const txt of txts) {
+    let content = '';
+    try { content = fs.readFileSync(path.join(folderPath, txt), 'utf-8'); } catch { continue; }
+    if (!/TECHPULSE_SOCIAL_POST_V1/.test(content)) continue;
+    const { headers, declaredImages, sections } = parseBundleManifest(content);
+    const platforms = (headers.platforms || '')
+      .split(',').map((p) => normalizePlatformName(p)).filter(Boolean);
+    const liFb = sections['LINKEDIN_FACEBOOK_POST'] || '';
+    const xText = sections['X_THREAD_OR_LONG_POST'] || liFb;
+    const articleUrls = sections['ARTICLE_URLS'] || '';
+    const tail = articleUrls
+      ? '\n\n' + articleUrls.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+          const m = l.match(/^[^:]+:\s*(https?:\/\/.+)$/); return m ? m[1] : l;
+        }).join('\n')
+      : '';
+    const texts = {};
+    if (liFb) { texts.linkedin = (liFb + tail).trim(); texts.facebook = (liFb + tail).trim(); }
+    if (xText) texts.x = xText.trim();
+    const images = [];
+    for (const name of declaredImages) {
+      const match = imgs.find((f) => f.toLowerCase() === name.toLowerCase());
+      if (!match) { images.push({ name, missing: true }); continue; }
+      try {
+        const buf = fs.readFileSync(path.join(folderPath, match));
+        const ext = (match.match(/\.([a-z0-9]+)$/i) || [, 'jpg'])[1].toLowerCase();
+        const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+        images.push({ name: match, mime, buffer: buf });
+      } catch { images.push({ name, missing: true }); }
+    }
+    bundles.push({ manifestName: txt, content, platforms, texts, images });
+  }
+  return bundles;
+}
+
+// --- Scan a local folder for TechPulse social-post bundles (browser-facing) ---
 app.post('/api/social-posts/scan-bundles', (req, res) => {
   try {
-    let folderPath = String(req.body?.folderPath || '').trim();
+    let folderPath = String(req.body?.folderPath || '').trim().replace(/^["']|["']$/g, '');
     if (!folderPath) return res.status(400).json({ error: 'folderPath required' });
-    // Allow forward + backward slashes; expand env-style if user typed quotes
-    folderPath = folderPath.replace(/^["']|["']$/g, '');
-    if (!fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
-      return res.status(404).json({ error: `Folder not found: ${folderPath}` });
-    }
-    const SUPPORTED_IMG = /\.(jpe?g|png|webp)$/i;
-    const entries = fs.readdirSync(folderPath);
-    const txts = entries.filter((n) => n.toLowerCase().endsWith('.txt'));
-    const imgs = entries.filter((n) => SUPPORTED_IMG.test(n));
-
-    const bundles = [];
-    for (const txt of txts) {
-      const full = path.join(folderPath, txt);
-      let content = '';
-      try { content = fs.readFileSync(full, 'utf-8'); } catch (e) { continue; }
-      // Only consider TechPulse manifests
-      if (!/TECHPULSE_SOCIAL_POST_V1/.test(content)) continue;
-      // Find declared images by parsing the `images:` list
-      const declared = [];
-      const lines = content.replace(/\r\n/g, '\n').split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        if (/^images:\s*$/i.test(lines[i].trim())) {
-          for (let j = i + 1; j < lines.length; j++) {
-            const l = lines[j].trim();
-            if (!l || /^---[A-Z_]+---$/.test(l)) break;
-            const m = l.match(/^\d+\.\s*(.+)$/);
-            if (m) declared.push(m[1].trim()); else break;
-          }
-          break;
-        }
-      }
-      const images = [];
-      for (const name of declared) {
-        const match = imgs.find((f) => f.toLowerCase() === name.toLowerCase());
-        if (!match) { images.push({ name, missing: true }); continue; }
-        try {
-          const buf = fs.readFileSync(path.join(folderPath, match));
-          const ext = (match.match(/\.([a-z0-9]+)$/i) || [, 'jpg'])[1].toLowerCase();
-          const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
-          images.push({ name: match, mime, dataBase64: buf.toString('base64') });
-        } catch (e) {
-          images.push({ name, missing: true });
-        }
-      }
-      bundles.push({ manifestName: txt, content, images });
-    }
+    const bundles = scanLocalBundles(folderPath).map((b) => ({
+      manifestName: b.manifestName,
+      content: b.content,
+      images: b.images.map((img) => img.missing
+        ? { name: img.name, missing: true }
+        : { name: img.name, mime: img.mime, dataBase64: img.buffer.toString('base64') }),
+    }));
     res.json({ folderPath, count: bundles.length, bundles });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
+
+// Upload a bundle's images to the social-media storage bucket and return their paths.
+async function uploadBundleImagesToStorage(bundle) {
+  const paths = [];
+  for (const img of bundle.images) {
+    if (img.missing) continue;
+    const key = `folder-schedule/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${img.name}`;
+    const { error } = await supabase.storage.from('social-media').upload(key, img.buffer, {
+      contentType: img.mime, upsert: false,
+    });
+    if (error) throw new Error(`Image upload failed: ${error.message}`);
+    paths.push(key);
+  }
+  return paths;
+}
+
 app.post('/api/check-stats', async (req, res) => {
   const { platform } = req.body || {};
   if (!platform || !['youtube', 'tiktok', 'instagram'].includes(platform)) {
