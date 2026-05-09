@@ -77,7 +77,20 @@ function describe(cron: string): string {
   return `Daily at ${pad(hour)}:${pad(minute)}`;
 }
 
-  const load = async () => {
+export default function FolderPostScheduler() {
+  const { toast } = useToast();
+  const [schedules, setSchedules] = useState<FolderSchedule[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [name, setName] = useState('News posts');
+  const [folderPath, setFolderPath] = useState('D:\\news posts');
+  const [frequency, setFrequency] = useState<Frequency>('daily');
+  const [hour, setHour] = useState(9);
+  const [minute, setMinute] = useState(0);
+  const [postsPerRun, setPostsPerRun] = useState(1);
+  const [enabled, setEnabled] = useState(true);
+  const [saving, setSaving] = useState(false);
+
     setLoading(true);
     const { data, error } = await supabase
       .from('social_post_schedules')
