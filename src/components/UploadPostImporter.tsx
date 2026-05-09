@@ -404,7 +404,6 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   const reset = () => {
     bundles.forEach((b) => b.images.forEach((i) => URL.revokeObjectURL(i.previewUrl)));
     setBundles([]);
-    setScheduleAt({});
   };
 
   const handleLoad = (b: ImportedBundle) => {
@@ -426,16 +425,8 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
       toast({ title: 'Bundle has errors', description: b.errors[0], variant: 'destructive' });
       return;
     }
-    let scheduledAt: string | undefined;
-    if (mode === 'schedule') {
-      const v = scheduleAt[b.id];
-      if (!v) { toast({ title: 'Pick a date/time first', description: 'Use the schedule input on the bundle card.', variant: 'destructive' }); return; }
-      const d = new Date(v);
-      if (isNaN(d.getTime())) { toast({ title: 'Invalid date', variant: 'destructive' }); return; }
-      scheduledAt = d.toISOString();
-    }
     try {
-      await onSendToQueue(b, mode, scheduledAt);
+      await onSendToQueue(b, mode);
       rememberImported(b.id);
       toast({ title: mode === 'now' ? 'Sent to queue' : mode === 'schedule' ? 'Scheduled' : 'Saved as draft' });
     } catch (e: any) {
