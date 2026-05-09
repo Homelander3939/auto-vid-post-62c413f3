@@ -571,11 +571,15 @@ export type Database = {
           cron_expression: string
           enabled: boolean
           end_at: string | null
+          folder_path: string
           id: number
+          imported_files: string[]
           include_image: boolean
           last_run_at: string | null
           name: string
+          posts_per_run: number
           run_count: number
+          source_type: string
           target_platforms: string[]
           topic_mode: boolean
           updated_at: string
@@ -589,11 +593,15 @@ export type Database = {
           cron_expression?: string
           enabled?: boolean
           end_at?: string | null
+          folder_path?: string
           id?: number
+          imported_files?: string[]
           include_image?: boolean
           last_run_at?: string | null
           name?: string
+          posts_per_run?: number
           run_count?: number
+          source_type?: string
           target_platforms?: string[]
           topic_mode?: boolean
           updated_at?: string
@@ -607,11 +615,15 @@ export type Database = {
           cron_expression?: string
           enabled?: boolean
           end_at?: string | null
+          folder_path?: string
           id?: number
+          imported_files?: string[]
           include_image?: boolean
           last_run_at?: string | null
           name?: string
+          posts_per_run?: number
           run_count?: number
+          source_type?: string
           target_platforms?: string[]
           topic_mode?: boolean
           updated_at?: string
