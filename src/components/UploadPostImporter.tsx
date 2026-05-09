@@ -465,17 +465,9 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
           </p>
         </div>
 
-        <div className="grid sm:grid-cols-3 gap-2">
-          <Button variant="outline" onClick={pickWithFsAccess} className="gap-2">
-            <FolderOpen className="w-4 h-4" /> Pick folder (Chromium)
-          </Button>
-          <Button variant="outline" onClick={() => folderInputRef.current?.click()} className="gap-2">
-            <FolderOpen className="w-4 h-4" /> Upload folder
-          </Button>
-          <Button variant="outline" onClick={() => txtInputRef.current?.click()} className="gap-2">
-            <FileText className="w-4 h-4" /> Single .txt + images
-          </Button>
-        </div>
+        <Button variant="outline" onClick={() => txtInputRef.current?.click()} className="gap-2 w-full">
+          <FileText className="w-4 h-4" /> Manual fallback: pick one .txt + its images
+        </Button>
 
         {/* Hidden file inputs covering each fallback path */}
         <input
