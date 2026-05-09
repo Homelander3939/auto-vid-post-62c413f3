@@ -91,6 +91,7 @@ export default function FolderPostScheduler() {
   const [enabled, setEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  const load = async () => {
     setLoading(true);
     const { data, error } = await supabase
       .from('social_post_schedules')
