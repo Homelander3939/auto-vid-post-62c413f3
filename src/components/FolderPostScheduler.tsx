@@ -34,38 +34,48 @@ interface FolderSchedule {
   imported_files: string[];
 }
 
-const FREQ_TO_CRON: Record<Frequency, string> = {
-  hourly: '0 * * * *',
-  every_6h: '0 */6 * * *',
-  daily: '0 9 * * *',
-  weekly: '0 9 * * 1',
-};
+function buildCron(freq: Frequency, hour: number, minute: number): string {
+  const m = String(minute);
+  const h = String(hour);
+  switch (freq) {
+    case 'hourly':    return `${m} * * * *`;
+    case 'every_6h':  return `${m} */6 * * *`;
+    case 'every_12h': return `${m} */12 * * *`;
+    case 'daily':     return `${m} ${h} * * *`;
+    case 'weekly':    return `${m} ${h} * * 1`;
+  }
+}
 
-function cronToFrequency(cron: string): Frequency {
-  if (cron === '0 */6 * * *') return 'every_6h';
-  if (cron === '0 9 * * 1') return 'weekly';
-  if (cron.endsWith(' * * *') && cron.split(' ')[1] !== '*') return 'daily';
-  return 'hourly';
+function parseCron(cron: string): { freq: Frequency; hour: number; minute: number } {
+  const parts = (cron || '').split(' ');
+  const [mStr, hStr, , , dowStr] = parts;
+  const minute = parseInt(mStr) || 0;
+  if (hStr === '*') return { freq: 'hourly', hour: 0, minute };
+  if (hStr === '*/6') return { freq: 'every_6h', hour: 0, minute };
+  if (hStr === '*/12') return { freq: 'every_12h', hour: 0, minute };
+  const hour = parseInt(hStr) || 0;
+  if (dowStr && dowStr !== '*') return { freq: 'weekly', hour, minute };
+  return { freq: 'daily', hour, minute };
 }
 
 const FREQ_LABELS: Record<Frequency, string> = {
   hourly: 'Every hour',
   every_6h: 'Every 6 hours',
-  daily: 'Once a day (09:00)',
-  weekly: 'Once a week (Mon 09:00)',
+  every_12h: 'Every 12 hours',
+  daily: 'Once a day',
+  weekly: 'Once a week (Monday)',
 };
 
-export default function FolderPostScheduler() {
-  const { toast } = useToast();
-  const [schedules, setSchedules] = useState<FolderSchedule[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [showForm, setShowForm] = useState(false);
-  const [name, setName] = useState('News posts');
-  const [folderPath, setFolderPath] = useState('D:\\news posts');
-  const [frequency, setFrequency] = useState<Frequency>('daily');
-  const [postsPerRun, setPostsPerRun] = useState(1);
-  const [enabled, setEnabled] = useState(true);
-  const [saving, setSaving] = useState(false);
+const pad = (n: number) => String(n).padStart(2, '0');
+
+function describe(cron: string): string {
+  const { freq, hour, minute } = parseCron(cron);
+  if (freq === 'hourly') return `Every hour at :${pad(minute)}`;
+  if (freq === 'every_6h') return `Every 6 hours at :${pad(minute)}`;
+  if (freq === 'every_12h') return `Every 12 hours at :${pad(minute)}`;
+  if (freq === 'weekly') return `Mondays at ${pad(hour)}:${pad(minute)}`;
+  return `Daily at ${pad(hour)}:${pad(minute)}`;
+}
 
   const load = async () => {
     setLoading(true);
