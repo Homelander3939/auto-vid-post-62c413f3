@@ -1809,8 +1809,18 @@ function scanLocalBundles(folderPath) {
     const texts = {};
     if (liFb) { texts.linkedin = (liFb + tail).trim(); texts.facebook = (liFb + tail).trim(); }
     if (xText) texts.x = xText.trim();
+    // Auto-discover images by filename prefix when manifest doesn't list them.
+    // Bundles like `2026-05-08-morning-post-01.txt` ↔
+    // `2026-05-08-morning-post-01-story-01-*.jpg`.
+    let imageNames = declaredImages.slice();
+    if (imageNames.length === 0) {
+      const stem = txt.replace(/\.[^.]+$/, '').toLowerCase();
+      imageNames = imgs
+        .filter((f) => f.toLowerCase().startsWith(stem))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    }
     const images = [];
-    for (const name of declaredImages) {
+    for (const name of imageNames) {
       const match = imgs.find((f) => f.toLowerCase() === name.toLowerCase());
       if (!match) { images.push({ name, missing: true }); continue; }
       try {
