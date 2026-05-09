@@ -2430,7 +2430,123 @@ async function processRecurringSchedule(opts = {}) {
   }
 }
 
-// --- Stale job cleanup ---
+// --- Recurring social-post folder schedules ---
+// At each cron tick, finds enabled social_post_schedules with source_type='folder'
+// whose cron expression matches now. For each, scans the configured folder, picks
+// up to posts_per_run unprocessed bundles (tracked in imported_files), uploads
+// the images to Supabase storage, and creates social_posts rows so the existing
+// social-post poller publishes them immediately.
+async function processSocialFolderSchedules(opts = {}) {
+  const { onlyId = null, force = false } = opts;
+  try {
+    let query = supabase.from('social_post_schedules').select('*').eq('source_type', 'folder');
+    if (onlyId) query = query.eq('id', onlyId); else query = query.eq('enabled', true);
+    const { data: schedules } = await query;
+    if (!schedules || !schedules.length) return;
+
+    const now = new Date();
+    const currentMinute = now.getMinutes();
+    const currentHour = now.getHours();
+    const currentDow = now.getDay();
+
+    for (const sched of schedules) {
+      try {
+        if (sched.end_at && new Date(sched.end_at) < now) {
+          await supabase.from('social_post_schedules').update({ enabled: false }).eq('id', sched.id);
+          continue;
+        }
+        if (!force) {
+          const [cMin, cHr, , , cDow] = String(sched.cron_expression || '0 9 * * *').split(' ');
+          const prevMin = (currentMinute + 59) % 60;
+          const minMatch = cMin === '*' || parseInt(cMin) === currentMinute || parseInt(cMin) === prevMin;
+          const hrMatch = cHr === '*'
+            || (cHr.startsWith('*/') ? currentHour % parseInt(cHr.replace('*/', '')) === 0 : parseInt(cHr) === currentHour);
+          const dowMatch = cDow === '*' || cDow.split(',').map(Number).includes(currentDow);
+          if (!minMatch || !hrMatch || !dowMatch) continue;
+          if (sched.last_run_at) {
+            const last = new Date(sched.last_run_at);
+            if (now.getTime() - last.getTime() < 90_000) continue;
+          }
+        }
+
+        const folderPath = String(sched.folder_path || '').trim();
+        if (!folderPath) {
+          console.log(`[FolderSched] Schedule ${sched.id} has no folder_path, skipping`);
+          continue;
+        }
+
+        let bundles = [];
+        try { bundles = scanLocalBundles(folderPath); }
+        catch (e) {
+          console.error(`[FolderSched] Scan failed: ${e.message}`);
+          continue;
+        }
+
+        const already = new Set(sched.imported_files || []);
+        const ready = bundles.filter((b) => !already.has(b.manifestName)
+          && b.images.length > 0 && b.images.every((i) => !i.missing));
+        const perRun = Math.max(1, Number(sched.posts_per_run) || 1);
+        const pick = ready.slice(0, perRun);
+
+        // Stamp last_run_at + run_count immediately so a restart doesn't re-fire.
+        await supabase.from('social_post_schedules').update({
+          last_run_at: now.toISOString(),
+          run_count: (Number(sched.run_count) || 0) + 1,
+        }).eq('id', sched.id);
+
+        if (pick.length === 0) {
+          console.log(`[FolderSched] "${sched.name}": nothing new in ${folderPath}`);
+          continue;
+        }
+
+        const requestedPlatforms = Array.isArray(sched.target_platforms) && sched.target_platforms.length
+          ? sched.target_platforms
+          : ['x', 'linkedin', 'facebook'];
+        const accountSelections = (sched.account_selections && typeof sched.account_selections === 'object')
+          ? sched.account_selections
+          : {};
+
+        const newlyImported = [];
+        for (const bundle of pick) {
+          try {
+            const paths = await uploadBundleImagesToStorage(bundle);
+            const platforms = bundle.platforms.length ? bundle.platforms : requestedPlatforms;
+            const variants = {};
+            for (const p of platforms) if (bundle.texts[p]) variants[p] = { description: bundle.texts[p], hashtags: [] };
+            const description = bundle.texts[platforms[0]] || bundle.texts.x || bundle.texts.linkedin || '';
+
+            await supabase.from('social_posts').insert({
+              description,
+              image_path: paths[0] || null,
+              image_paths: paths,
+              hashtags: [],
+              target_platforms: platforms,
+              account_selections: accountSelections,
+              platform_variants: variants,
+              status: 'pending',
+              scheduled_at: null,
+            });
+            newlyImported.push(bundle.manifestName);
+            console.log(`[FolderSched] Queued post from ${bundle.manifestName}`);
+          } catch (e) {
+            console.error(`[FolderSched] Failed to queue ${bundle.manifestName}:`, e.message);
+          }
+        }
+
+        if (newlyImported.length) {
+          const merged = Array.from(new Set([...(sched.imported_files || []), ...newlyImported])).slice(-2000);
+          await supabase.from('social_post_schedules').update({ imported_files: merged }).eq('id', sched.id);
+        }
+      } catch (e) {
+        console.error(`[FolderSched] Schedule ${sched.id} error:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('[FolderSched] Error:', e.message);
+  }
+}
+
+
 async function fixStaleJobs() {
   const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const { data: staleJobs } = await supabase
