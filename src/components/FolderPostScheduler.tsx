@@ -18,7 +18,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Calendar, FolderOpen, Play, Trash2, Plus, RefreshCw } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
-type Frequency = 'hourly' | 'every_6h' | 'daily' | 'weekly';
+type Frequency = 'hourly' | 'every_6h' | 'every_12h' | 'daily' | 'weekly';
 
 interface FolderSchedule {
   id: number;
@@ -34,26 +34,48 @@ interface FolderSchedule {
   imported_files: string[];
 }
 
-const FREQ_TO_CRON: Record<Frequency, string> = {
-  hourly: '0 * * * *',
-  every_6h: '0 */6 * * *',
-  daily: '0 9 * * *',
-  weekly: '0 9 * * 1',
-};
+function buildCron(freq: Frequency, hour: number, minute: number): string {
+  const m = String(minute);
+  const h = String(hour);
+  switch (freq) {
+    case 'hourly':    return `${m} * * * *`;
+    case 'every_6h':  return `${m} */6 * * *`;
+    case 'every_12h': return `${m} */12 * * *`;
+    case 'daily':     return `${m} ${h} * * *`;
+    case 'weekly':    return `${m} ${h} * * 1`;
+  }
+}
 
-function cronToFrequency(cron: string): Frequency {
-  if (cron === '0 */6 * * *') return 'every_6h';
-  if (cron === '0 9 * * 1') return 'weekly';
-  if (cron.endsWith(' * * *') && cron.split(' ')[1] !== '*') return 'daily';
-  return 'hourly';
+function parseCron(cron: string): { freq: Frequency; hour: number; minute: number } {
+  const parts = (cron || '').split(' ');
+  const [mStr, hStr, , , dowStr] = parts;
+  const minute = parseInt(mStr) || 0;
+  if (hStr === '*') return { freq: 'hourly', hour: 0, minute };
+  if (hStr === '*/6') return { freq: 'every_6h', hour: 0, minute };
+  if (hStr === '*/12') return { freq: 'every_12h', hour: 0, minute };
+  const hour = parseInt(hStr) || 0;
+  if (dowStr && dowStr !== '*') return { freq: 'weekly', hour, minute };
+  return { freq: 'daily', hour, minute };
 }
 
 const FREQ_LABELS: Record<Frequency, string> = {
   hourly: 'Every hour',
   every_6h: 'Every 6 hours',
-  daily: 'Once a day (09:00)',
-  weekly: 'Once a week (Mon 09:00)',
+  every_12h: 'Every 12 hours',
+  daily: 'Once a day',
+  weekly: 'Once a week (Monday)',
 };
+
+const pad = (n: number) => String(n).padStart(2, '0');
+
+function describe(cron: string): string {
+  const { freq, hour, minute } = parseCron(cron);
+  if (freq === 'hourly') return `Every hour at :${pad(minute)}`;
+  if (freq === 'every_6h') return `Every 6 hours at :${pad(minute)}`;
+  if (freq === 'every_12h') return `Every 12 hours at :${pad(minute)}`;
+  if (freq === 'weekly') return `Mondays at ${pad(hour)}:${pad(minute)}`;
+  return `Daily at ${pad(hour)}:${pad(minute)}`;
+}
 
 export default function FolderPostScheduler() {
   const { toast } = useToast();
@@ -63,6 +85,8 @@ export default function FolderPostScheduler() {
   const [name, setName] = useState('News posts');
   const [folderPath, setFolderPath] = useState('D:\\news posts');
   const [frequency, setFrequency] = useState<Frequency>('daily');
+  const [hour, setHour] = useState(9);
+  const [minute, setMinute] = useState(0);
   const [postsPerRun, setPostsPerRun] = useState(1);
   const [enabled, setEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -86,7 +110,7 @@ export default function FolderPostScheduler() {
     setSaving(true);
     const { error } = await supabase.from('social_post_schedules').insert({
       name, enabled,
-      cron_expression: FREQ_TO_CRON[frequency],
+      cron_expression: buildCron(frequency, hour, minute),
       folder_path: folderPath.trim(),
       posts_per_run: Math.max(1, postsPerRun),
       source_type: 'folder',
@@ -176,6 +200,28 @@ export default function FolderPostScheduler() {
                   <Label className="text-xs">Posts per run</Label>
                   <Input type="number" min={1} value={postsPerRun} onChange={(e) => setPostsPerRun(Number(e.target.value) || 1)} className="h-8 text-xs" />
                 </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Hour {frequency === 'hourly' || frequency === 'every_6h' || frequency === 'every_12h' ? '(ignored)' : ''}</Label>
+                  <Select value={String(hour)} onValueChange={(v) => setHour(Number(v))} disabled={frequency === 'hourly' || frequency === 'every_6h' || frequency === 'every_12h'}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      {Array.from({ length: 24 }, (_, i) => (
+                        <SelectItem key={i} value={String(i)}>{pad(i)}:00</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Minute</Label>
+                  <Select value={String(minute)} onValueChange={(v) => setMinute(Number(v))}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      {Array.from({ length: 60 }, (_, i) => (
+                        <SelectItem key={i} value={String(i)}>:{pad(i)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -203,7 +249,7 @@ export default function FolderPostScheduler() {
               <div className="flex items-center gap-2 flex-wrap">
                 <Switch checked={s.enabled} onCheckedChange={() => toggle(s)} />
                 <span className="font-medium text-sm">{s.name}</span>
-                <Badge variant="outline" className="text-[10px]">{FREQ_LABELS[cronToFrequency(s.cron_expression)] || s.cron_expression}</Badge>
+                <Badge variant="outline" className="text-[10px]">{describe(s.cron_expression)}</Badge>
                 <Badge variant="secondary" className="text-[10px]">{s.posts_per_run} per run</Badge>
                 <span className="text-[11px] text-muted-foreground ml-auto">
                   Runs: {s.run_count} · Imported: {s.imported_files?.length || 0}
