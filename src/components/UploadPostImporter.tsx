@@ -252,9 +252,42 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   const txtInputRef = useRef<HTMLInputElement | null>(null);
   const imgInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Bulk-schedule controls — fan out every detected bundle into a staggered
+  // queue of social_posts so the local worker picks them up at run time.
+  const [bulkStart, setBulkStart] = useState<string>('');
+  const [bulkInterval, setBulkInterval] = useState<number>(60);
+  const [bulkScheduling, setBulkScheduling] = useState(false);
+
   const persistFolder = (v: string) => {
     setFolderPath(v);
     try { localStorage.setItem(FOLDER_KEY, v); } catch {}
+  };
+
+  const scheduleAll = async () => {
+    if (!onSendToQueue) return;
+    if (!bulkStart) { toast({ title: 'Pick a start time', variant: 'destructive' }); return; }
+    const startMs = new Date(bulkStart).getTime();
+    if (isNaN(startMs)) { toast({ title: 'Invalid start time', variant: 'destructive' }); return; }
+    const ready = bundles.filter((b) => b.errors.length === 0);
+    if (!ready.length) { toast({ title: 'No ready bundles to schedule', variant: 'destructive' }); return; }
+    setBulkScheduling(true);
+    let okCount = 0; const failed: string[] = [];
+    for (let i = 0; i < ready.length; i++) {
+      const at = new Date(startMs + i * bulkInterval * 60_000).toISOString();
+      try {
+        await onSendToQueue(ready[i], 'schedule', at);
+        rememberImported(ready[i].id);
+        okCount++;
+      } catch (e: any) {
+        failed.push(`${ready[i].manifestName}: ${e.message}`);
+      }
+    }
+    setBulkScheduling(false);
+    toast({
+      title: `Scheduled ${okCount}/${ready.length} bundles`,
+      description: failed.length ? failed[0] : 'Check Upload Queue to monitor progress.',
+      variant: failed.length ? 'destructive' : 'default',
+    });
   };
 
   const importedKeys = useMemo(() => readImportedKeys(), [bundles.length]);
