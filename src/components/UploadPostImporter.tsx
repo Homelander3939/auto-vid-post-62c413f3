@@ -23,7 +23,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
 import {
   FolderOpen, FileText, Upload, AlertTriangle, CheckCircle2, RefreshCw,
-  Image as ImageIcon, Send,
+  Image as ImageIcon, Send, Clock,
 } from 'lucide-react';
 
 const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
