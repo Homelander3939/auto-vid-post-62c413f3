@@ -226,14 +226,36 @@ async function processManifest(
   };
 }
 
+const FOLDER_KEY = 'techpulse_news_folder_v1';
+const LOCAL_SERVER = 'http://localhost:3001';
+
+// Convert base64 string returned by the local server into a real File object
+// so the rest of the pipeline (uploadSocialImage etc.) treats it like any
+// browser-picked file.
+function base64ToFile(name: string, mime: string, b64: string): File {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new File([arr], name, { type: mime });
+}
+
 export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   const { toast } = useToast();
   const [bundles, setBundles] = useState<ImportedBundle[]>([]);
   const [loading, setLoading] = useState(false);
-  const [defaultPath] = useState('D:\\news posts');
+  const [folderPath, setFolderPath] = useState<string>(() => {
+    try { return localStorage.getItem(FOLDER_KEY) || 'D:\\news posts'; } catch { return 'D:\\news posts'; }
+  });
+  // Per-bundle scheduled time so the user picks once instead of via window.prompt.
+  const [scheduleAt, setScheduleAt] = useState<Record<string, string>>({});
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const txtInputRef = useRef<HTMLInputElement | null>(null);
   const imgInputRef = useRef<HTMLInputElement | null>(null);
+
+  const persistFolder = (v: string) => {
+    setFolderPath(v);
+    try { localStorage.setItem(FOLDER_KEY, v); } catch {}
+  };
 
   const importedKeys = useMemo(() => readImportedKeys(), [bundles.length]);
 
