@@ -1727,7 +1727,64 @@ app.post('/api/social-posts/process/:id', (req, res) => {
   res.json({ started: true });
 });
 
-// --- Stats check endpoint ---
+// --- Scan a local folder for TechPulse social-post bundles ---
+// Returns parsed manifests + images as base64 so the browser (which can't read
+// arbitrary local paths) can present the same Upload Post UX as videos do.
+app.post('/api/social-posts/scan-bundles', (req, res) => {
+  try {
+    let folderPath = String(req.body?.folderPath || '').trim();
+    if (!folderPath) return res.status(400).json({ error: 'folderPath required' });
+    // Allow forward + backward slashes; expand env-style if user typed quotes
+    folderPath = folderPath.replace(/^["']|["']$/g, '');
+    if (!fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
+      return res.status(404).json({ error: `Folder not found: ${folderPath}` });
+    }
+    const SUPPORTED_IMG = /\.(jpe?g|png|webp)$/i;
+    const entries = fs.readdirSync(folderPath);
+    const txts = entries.filter((n) => n.toLowerCase().endsWith('.txt'));
+    const imgs = entries.filter((n) => SUPPORTED_IMG.test(n));
+
+    const bundles = [];
+    for (const txt of txts) {
+      const full = path.join(folderPath, txt);
+      let content = '';
+      try { content = fs.readFileSync(full, 'utf-8'); } catch (e) { continue; }
+      // Only consider TechPulse manifests
+      if (!/TECHPULSE_SOCIAL_POST_V1/.test(content)) continue;
+      // Find declared images by parsing the `images:` list
+      const declared = [];
+      const lines = content.replace(/\r\n/g, '\n').split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (/^images:\s*$/i.test(lines[i].trim())) {
+          for (let j = i + 1; j < lines.length; j++) {
+            const l = lines[j].trim();
+            if (!l || /^---[A-Z_]+---$/.test(l)) break;
+            const m = l.match(/^\d+\.\s*(.+)$/);
+            if (m) declared.push(m[1].trim()); else break;
+          }
+          break;
+        }
+      }
+      const images = [];
+      for (const name of declared) {
+        const match = imgs.find((f) => f.toLowerCase() === name.toLowerCase());
+        if (!match) { images.push({ name, missing: true }); continue; }
+        try {
+          const buf = fs.readFileSync(path.join(folderPath, match));
+          const ext = (match.match(/\.([a-z0-9]+)$/i) || [, 'jpg'])[1].toLowerCase();
+          const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+          images.push({ name: match, mime, dataBase64: buf.toString('base64') });
+        } catch (e) {
+          images.push({ name, missing: true });
+        }
+      }
+      bundles.push({ manifestName: txt, content, images });
+    }
+    res.json({ folderPath, count: bundles.length, bundles });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 app.post('/api/check-stats', async (req, res) => {
   const { platform } = req.body || {};
   if (!platform || !['youtube', 'tiktok', 'instagram'].includes(platform)) {
