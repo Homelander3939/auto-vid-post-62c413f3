@@ -282,7 +282,18 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
     <div className="space-y-6">
       <AIPostComposer platforms={[...SOCIAL_PLATFORMS]} onUse={handleAIUse} />
 
-      <UploadPostImporter onLoad={handleImportedBundle} onSendToQueue={sendBundleToQueue} />
+      <Tabs defaultValue="single" className="w-full">
+        <TabsList>
+          <TabsTrigger value="single">Single upload</TabsTrigger>
+          <TabsTrigger value="schedule">Schedule recurring</TabsTrigger>
+        </TabsList>
+        <TabsContent value="single" className="mt-3">
+          <UploadPostImporter onLoad={handleImportedBundle} onSendToQueue={sendBundleToQueue} />
+        </TabsContent>
+        <TabsContent value="schedule" className="mt-3">
+          <FolderPostScheduler />
+        </TabsContent>
+      </Tabs>
 
       <Card>
         <CardHeader>
