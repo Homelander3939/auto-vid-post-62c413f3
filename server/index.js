@@ -2948,6 +2948,7 @@ function setupCron() {
       await fixStaleJobs();
       await processScheduledUploads();
       await processRecurringSchedule();
+      await processSocialFolderSchedules();
     } catch (e) {
       console.error('[Cron] Error:', e.message);
     }
