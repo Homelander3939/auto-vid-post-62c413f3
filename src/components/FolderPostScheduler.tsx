@@ -110,7 +110,7 @@ export default function FolderPostScheduler() {
     setSaving(true);
     const { error } = await supabase.from('social_post_schedules').insert({
       name, enabled,
-      cron_expression: FREQ_TO_CRON[frequency],
+      cron_expression: buildCron(frequency, hour, minute),
       folder_path: folderPath.trim(),
       posts_per_run: Math.max(1, postsPerRun),
       source_type: 'folder',
@@ -227,7 +227,7 @@ export default function FolderPostScheduler() {
               <div className="flex items-center gap-2 flex-wrap">
                 <Switch checked={s.enabled} onCheckedChange={() => toggle(s)} />
                 <span className="font-medium text-sm">{s.name}</span>
-                <Badge variant="outline" className="text-[10px]">{FREQ_LABELS[cronToFrequency(s.cron_expression)] || s.cron_expression}</Badge>
+                <Badge variant="outline" className="text-[10px]">{describe(s.cron_expression)}</Badge>
                 <Badge variant="secondary" className="text-[10px]">{s.posts_per_run} per run</Badge>
                 <span className="text-[11px] text-muted-foreground ml-auto">
                   Runs: {s.run_count} · Imported: {s.imported_files?.length || 0}
