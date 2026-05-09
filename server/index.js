@@ -2987,7 +2987,7 @@ app.post('/api/social-folder-schedules/run-now', async (req, res) => {
   }
 });
 
-
+app.post('/api/generation-schedules/run-now', async (req, res) => {
   try {
     const { scheduleId } = req.body || {};
     const { data: schedule, error } = await supabase.from('social_post_schedules').select('*').eq('id', scheduleId).single();
