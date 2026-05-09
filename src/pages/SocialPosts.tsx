@@ -27,6 +27,7 @@ import {
 } from '@/lib/socialPosts';
 import AIPostComposer from '@/components/AIPostComposer';
 import UploadPostImporter, { type ImportedBundle } from '@/components/UploadPostImporter';
+import FolderPostScheduler from '@/components/FolderPostScheduler';
 import GenerationScheduler from '@/components/GenerationScheduler';
 import { saveLocalJobAccountSelections } from '@/lib/localBrowserProfiles';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
