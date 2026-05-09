@@ -200,6 +200,28 @@ export default function FolderPostScheduler() {
                   <Label className="text-xs">Posts per run</Label>
                   <Input type="number" min={1} value={postsPerRun} onChange={(e) => setPostsPerRun(Number(e.target.value) || 1)} className="h-8 text-xs" />
                 </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Hour {frequency === 'hourly' || frequency === 'every_6h' || frequency === 'every_12h' ? '(ignored)' : ''}</Label>
+                  <Select value={String(hour)} onValueChange={(v) => setHour(Number(v))} disabled={frequency === 'hourly' || frequency === 'every_6h' || frequency === 'every_12h'}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      {Array.from({ length: 24 }, (_, i) => (
+                        <SelectItem key={i} value={String(i)}>{pad(i)}:00</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Minute</Label>
+                  <Select value={String(minute)} onValueChange={(v) => setMinute(Number(v))}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      {Array.from({ length: 60 }, (_, i) => (
+                        <SelectItem key={i} value={String(i)}>:{pad(i)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
