@@ -547,49 +547,11 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
         )}
 
         {bundles.length > 0 && (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">
-                {bundles.length} bundle{bundles.length === 1 ? '' : 's'} detected · matched by filename + date
-              </span>
-              <Button size="sm" variant="ghost" onClick={reset}>Clear</Button>
-            </div>
-            {onSendToQueue && (
-              <Card className="bg-secondary/30 border-dashed">
-                <CardContent className="p-3 space-y-2">
-                  <Label className="text-xs uppercase tracking-wider text-muted-foreground">
-                    Schedule all detected bundles
-                  </Label>
-                  <div className="grid sm:grid-cols-[1fr,120px,auto] gap-2 items-end">
-                    <div className="space-y-1">
-                      <Label className="text-[11px]">First post at</Label>
-                      <Input
-                        type="datetime-local"
-                        value={bulkStart}
-                        onChange={(e) => setBulkStart(e.target.value)}
-                        className="h-8 text-xs"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-[11px]">Every (min)</Label>
-                      <Input
-                        type="number"
-                        min={1}
-                        value={bulkInterval}
-                        onChange={(e) => setBulkInterval(Number(e.target.value) || 1)}
-                        className="h-8 text-xs"
-                      />
-                    </div>
-                    <Button size="sm" disabled={bulkScheduling} onClick={scheduleAll} className="gap-1.5 h-8">
-                      <Clock className="w-3.5 h-3.5" /> Schedule {bundles.filter((b) => b.errors.length === 0).length}
-                    </Button>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    Each ready bundle is uploaded to the queue with a staggered scheduled time and appears in Upload Queue. The local worker posts each one when its time arrives — even if accounts aren't configured yet (those stay queued until you add accounts).
-                  </p>
-                </CardContent>
-              </Card>
-            )}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">
+              {bundles.length} bundle{bundles.length === 1 ? '' : 's'} detected · matched by filename + date
+            </span>
+            <Button size="sm" variant="ghost" onClick={reset}>Clear</Button>
           </div>
         )}
 
@@ -599,79 +561,69 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
             const ok = b.errors.length === 0;
             return (
               <Card key={b.id} className={ok ? 'border-border' : 'border-destructive/40'}>
-                <CardContent className="p-3 space-y-2.5">
+                <CardContent className="p-3 space-y-3">
                   <div className="flex items-center gap-2 flex-wrap">
                     {ok
                       ? <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                       : <AlertTriangle className="w-4 h-4 text-destructive" />}
                     <Badge variant="outline" className="capitalize">{b.session}</Badge>
                     {b.postIndex !== null && <Badge variant="secondary">#{b.postIndex}</Badge>}
-                    {b.platforms.map((p) => (
-                      <Badge key={p} variant="secondary" className="text-[10px]">{PLATFORM_LABELS[p] || p}</Badge>
-                    ))}
-                    <span className="text-[11px] text-muted-foreground ml-auto truncate max-w-[40%]" title={b.manifestName}>
+                    <span className="text-[11px] text-muted-foreground ml-auto truncate max-w-[50%]" title={b.manifestName}>
                       {b.manifestName}
                     </span>
                   </div>
 
-                  {b.images.length > 0 && (
-                    <div className="flex gap-2">
-                      {b.images.map((img) => (
-                        <img
-                          key={img.name}
-                          src={img.previewUrl}
-                          alt={img.name}
-                          title={img.name}
-                          className="w-20 h-20 object-cover rounded border"
-                        />
-                      ))}
-                      {b.images.length < b.imageCount && (
-                        <div className="w-20 h-20 flex items-center justify-center rounded border border-dashed border-destructive/40 text-[10px] text-destructive text-center px-1">
-                          <ImageIcon className="w-4 h-4 mr-1" /> missing
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {b.texts[b.platforms[0]] && (
-                    <p className="text-xs text-muted-foreground line-clamp-3 whitespace-pre-wrap">
-                      {b.texts[b.platforms[0]]}
-                    </p>
-                  )}
-
                   {(b.errors.length > 0 || b.warnings.length > 0 || dup) && (
                     <Alert variant={b.errors.length ? 'destructive' : 'default'} className="py-2">
                       <AlertDescription className="text-[11px] space-y-0.5">
-                        {dup && <div>⚠ Already imported previously (filename + content match)</div>}
+                        {dup && <div>⚠ Already imported previously</div>}
                         {b.errors.map((e, i) => <div key={`e${i}`}>✗ {e}</div>)}
                         {b.warnings.map((w, i) => <div key={`w${i}`}>⚠ {w}</div>)}
                       </AlertDescription>
                     </Alert>
                   )}
 
+                  {/* Per-platform preview cards: how the post will look on each network */}
+                  {ok && (
+                    <div className="grid sm:grid-cols-3 gap-2">
+                      {b.platforms.map((p) => (
+                        <div key={p} className="rounded border border-border bg-background/40 p-2 space-y-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <Badge variant="secondary" className="text-[10px]">{PLATFORM_LABELS[p] || p}</Badge>
+                            <span className="text-[10px] text-muted-foreground">
+                              {(b.texts[p] || '').length} chars
+                            </span>
+                          </div>
+                          {b.images.length > 0 && (
+                            <div className="flex gap-1 overflow-x-auto">
+                              {b.images.map((img) => (
+                                <img
+                                  key={img.name}
+                                  src={img.previewUrl}
+                                  alt={img.name}
+                                  title={img.name}
+                                  className="w-12 h-12 object-cover rounded border shrink-0"
+                                />
+                              ))}
+                            </div>
+                          )}
+                          <p className="text-[11px] text-muted-foreground line-clamp-6 whitespace-pre-wrap">
+                            {b.texts[p] || '(no text)'}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <Button size="sm" onClick={() => handleLoad(b)} disabled={!ok} className="gap-1.5">
+                    {onSendToQueue && (
+                      <Button size="sm" onClick={() => handleQuick(b, 'now')} disabled={!ok} className="gap-1.5">
+                        <Send className="w-3.5 h-3.5" /> Upload now
+                      </Button>
+                    )}
+                    <Button size="sm" variant="outline" onClick={() => handleLoad(b)} disabled={!ok} className="gap-1.5">
                       <Upload className="w-3.5 h-3.5" /> Load into Composer
                     </Button>
-                    {onSendToQueue && (
-                      <>
-                        <Button size="sm" variant="outline" onClick={() => handleQuick(b, 'now')} disabled={!ok} className="gap-1.5">
-                          <Send className="w-3.5 h-3.5" /> Post Now
-                        </Button>
-                        <Input
-                          type="datetime-local"
-                          value={scheduleAt[b.id] || ''}
-                          onChange={(e) => setScheduleAt((s) => ({ ...s, [b.id]: e.target.value }))}
-                          className="h-8 text-xs w-[180px]"
-                        />
-                        <Button size="sm" variant="outline" onClick={() => handleQuick(b, 'schedule')} disabled={!ok}>
-                          Schedule
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => handleQuick(b, 'draft')} disabled={!ok}>
-                          Send to Queue (draft)
-                        </Button>
-                      </>
-                    )}
                   </div>
                 </CardContent>
               </Card>
