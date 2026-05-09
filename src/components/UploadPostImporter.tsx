@@ -226,14 +226,36 @@ async function processManifest(
   };
 }
 
+const FOLDER_KEY = 'techpulse_news_folder_v1';
+const LOCAL_SERVER = 'http://localhost:3001';
+
+// Convert base64 string returned by the local server into a real File object
+// so the rest of the pipeline (uploadSocialImage etc.) treats it like any
+// browser-picked file.
+function base64ToFile(name: string, mime: string, b64: string): File {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new File([arr], name, { type: mime });
+}
+
 export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   const { toast } = useToast();
   const [bundles, setBundles] = useState<ImportedBundle[]>([]);
   const [loading, setLoading] = useState(false);
-  const [defaultPath] = useState('D:\\news posts');
+  const [folderPath, setFolderPath] = useState<string>(() => {
+    try { return localStorage.getItem(FOLDER_KEY) || 'D:\\news posts'; } catch { return 'D:\\news posts'; }
+  });
+  // Per-bundle scheduled time so the user picks once instead of via window.prompt.
+  const [scheduleAt, setScheduleAt] = useState<Record<string, string>>({});
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const txtInputRef = useRef<HTMLInputElement | null>(null);
   const imgInputRef = useRef<HTMLInputElement | null>(null);
+
+  const persistFolder = (v: string) => {
+    setFolderPath(v);
+    try { localStorage.setItem(FOLDER_KEY, v); } catch {}
+  };
 
   const importedKeys = useMemo(() => readImportedKeys(), [bundles.length]);
 
@@ -329,9 +351,53 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
     else toast({ title: 'Select a .txt manifest first', variant: 'destructive' });
   };
 
+  // Ask the local Node worker to scan the configured folder. This mirrors the
+  // video uploader path: bypass browser sandboxing by going through localhost.
+  const scanLocalFolder = async () => {
+    if (!folderPath.trim()) {
+      toast({ title: 'Set a folder path first', variant: 'destructive' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const r = await fetch(`${LOCAL_SERVER}/api/social-posts/scan-bundles`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ folderPath }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || `Scan failed (${r.status})`);
+      }
+      const data = await r.json();
+      const txts: File[] = [];
+      const imgs: File[] = [];
+      for (const b of data.bundles || []) {
+        txts.push(new File([b.content], b.manifestName, { type: 'text/plain' }));
+        for (const img of b.images || []) {
+          if (img.dataBase64 && img.mime) imgs.push(base64ToFile(img.name, img.mime, img.dataBase64));
+        }
+      }
+      if (!txts.length) {
+        toast({ title: 'No TechPulse bundles found', description: `Folder: ${data.folderPath}`, variant: 'destructive' });
+        setLoading(false);
+        return;
+      }
+      await ingest(txts, imgs);
+    } catch (e: any) {
+      toast({
+        title: 'Local scan failed',
+        description: `${e.message}. Is the local worker running on ${LOCAL_SERVER}?`,
+        variant: 'destructive',
+      });
+      setLoading(false);
+    }
+  };
+
   const reset = () => {
     bundles.forEach((b) => b.images.forEach((i) => URL.revokeObjectURL(i.previewUrl)));
     setBundles([]);
+    setScheduleAt({});
   };
 
   const handleLoad = (b: ImportedBundle) => {
@@ -355,9 +421,9 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
     }
     let scheduledAt: string | undefined;
     if (mode === 'schedule') {
-      const v = window.prompt('Schedule at (YYYY-MM-DD HH:MM, local time):', '');
-      if (!v) return;
-      const d = new Date(v.replace(' ', 'T'));
+      const v = scheduleAt[b.id];
+      if (!v) { toast({ title: 'Pick a date/time first', description: 'Use the schedule input on the bundle card.', variant: 'destructive' }); return; }
+      const d = new Date(v);
       if (isNaN(d.getTime())) { toast({ title: 'Invalid date', variant: 'destructive' }); return; }
       scheduledAt = d.toISOString();
     }
@@ -382,10 +448,20 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-1.5">
-          <Label className="text-xs">Default folder (info only)</Label>
-          <Input value={defaultPath} disabled className="font-mono text-xs h-8" />
+          <Label className="text-xs">Local folder on this PC</Label>
+          <div className="flex gap-2">
+            <Input
+              value={folderPath}
+              onChange={(e) => persistFolder(e.target.value)}
+              placeholder="D:\news posts"
+              className="font-mono text-xs h-9"
+            />
+            <Button onClick={scanLocalFolder} disabled={loading} className="gap-2 h-9 shrink-0">
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Scan folder
+            </Button>
+          </div>
           <p className="text-[11px] text-muted-foreground">
-            Browsers can't read this path directly — use one of the picker buttons below.
+            Reads .txt manifests + images directly through your local worker (port 3001) — no browser file dialogs needed.
           </p>
         </div>
 
@@ -500,7 +576,7 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
                     </Alert>
                   )}
 
-                  <div className="flex flex-wrap gap-2 pt-1">
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
                     <Button size="sm" onClick={() => handleLoad(b)} disabled={!ok} className="gap-1.5">
                       <Upload className="w-3.5 h-3.5" /> Load into Composer
                     </Button>
@@ -509,6 +585,12 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
                         <Button size="sm" variant="outline" onClick={() => handleQuick(b, 'now')} disabled={!ok} className="gap-1.5">
                           <Send className="w-3.5 h-3.5" /> Post Now
                         </Button>
+                        <Input
+                          type="datetime-local"
+                          value={scheduleAt[b.id] || ''}
+                          onChange={(e) => setScheduleAt((s) => ({ ...s, [b.id]: e.target.value }))}
+                          className="h-8 text-xs w-[180px]"
+                        />
                         <Button size="sm" variant="outline" onClick={() => handleQuick(b, 'schedule')} disabled={!ok}>
                           Schedule
                         </Button>
