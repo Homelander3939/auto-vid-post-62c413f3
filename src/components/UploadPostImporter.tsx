@@ -351,9 +351,53 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
     else toast({ title: 'Select a .txt manifest first', variant: 'destructive' });
   };
 
+  // Ask the local Node worker to scan the configured folder. This mirrors the
+  // video uploader path: bypass browser sandboxing by going through localhost.
+  const scanLocalFolder = async () => {
+    if (!folderPath.trim()) {
+      toast({ title: 'Set a folder path first', variant: 'destructive' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const r = await fetch(`${LOCAL_SERVER}/api/social-posts/scan-bundles`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ folderPath }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || `Scan failed (${r.status})`);
+      }
+      const data = await r.json();
+      const txts: File[] = [];
+      const imgs: File[] = [];
+      for (const b of data.bundles || []) {
+        txts.push(new File([b.content], b.manifestName, { type: 'text/plain' }));
+        for (const img of b.images || []) {
+          if (img.dataBase64 && img.mime) imgs.push(base64ToFile(img.name, img.mime, img.dataBase64));
+        }
+      }
+      if (!txts.length) {
+        toast({ title: 'No TechPulse bundles found', description: `Folder: ${data.folderPath}`, variant: 'destructive' });
+        setLoading(false);
+        return;
+      }
+      await ingest(txts, imgs);
+    } catch (e: any) {
+      toast({
+        title: 'Local scan failed',
+        description: `${e.message}. Is the local worker running on ${LOCAL_SERVER}?`,
+        variant: 'destructive',
+      });
+      setLoading(false);
+    }
+  };
+
   const reset = () => {
     bundles.forEach((b) => b.images.forEach((i) => URL.revokeObjectURL(i.previewUrl)));
     setBundles([]);
+    setScheduleAt({});
   };
 
   const handleLoad = (b: ImportedBundle) => {
@@ -377,9 +421,9 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
     }
     let scheduledAt: string | undefined;
     if (mode === 'schedule') {
-      const v = window.prompt('Schedule at (YYYY-MM-DD HH:MM, local time):', '');
-      if (!v) return;
-      const d = new Date(v.replace(' ', 'T'));
+      const v = scheduleAt[b.id];
+      if (!v) { toast({ title: 'Pick a date/time first', description: 'Use the schedule input on the bundle card.', variant: 'destructive' }); return; }
+      const d = new Date(v);
       if (isNaN(d.getTime())) { toast({ title: 'Invalid date', variant: 'destructive' }); return; }
       scheduledAt = d.toISOString();
     }
