@@ -50,7 +50,7 @@ const {
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '60mb' }));
 
 // --- Supabase client ---
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://mgcfeddzbgpcnzdgxzfp.supabase.co';
