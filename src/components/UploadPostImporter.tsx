@@ -576,7 +576,7 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
                     </Alert>
                   )}
 
-                  <div className="flex flex-wrap gap-2 pt-1">
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
                     <Button size="sm" onClick={() => handleLoad(b)} disabled={!ok} className="gap-1.5">
                       <Upload className="w-3.5 h-3.5" /> Load into Composer
                     </Button>
@@ -585,6 +585,12 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
                         <Button size="sm" variant="outline" onClick={() => handleQuick(b, 'now')} disabled={!ok} className="gap-1.5">
                           <Send className="w-3.5 h-3.5" /> Post Now
                         </Button>
+                        <Input
+                          type="datetime-local"
+                          value={scheduleAt[b.id] || ''}
+                          onChange={(e) => setScheduleAt((s) => ({ ...s, [b.id]: e.target.value }))}
+                          className="h-8 text-xs w-[180px]"
+                        />
                         <Button size="sm" variant="outline" onClick={() => handleQuick(b, 'schedule')} disabled={!ok}>
                           Schedule
                         </Button>
