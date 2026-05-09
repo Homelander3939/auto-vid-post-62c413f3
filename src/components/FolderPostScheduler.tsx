@@ -18,7 +18,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Calendar, FolderOpen, Play, Trash2, Plus, RefreshCw } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
-type Frequency = 'hourly' | 'every_6h' | 'daily' | 'weekly';
+type Frequency = 'hourly' | 'every_6h' | 'every_12h' | 'daily' | 'weekly';
 
 interface FolderSchedule {
   id: number;
