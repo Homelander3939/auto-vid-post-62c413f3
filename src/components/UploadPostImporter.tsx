@@ -504,11 +504,49 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
         )}
 
         {bundles.length > 0 && (
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">
-              {bundles.length} bundle{bundles.length === 1 ? '' : 's'} detected
-            </span>
-            <Button size="sm" variant="ghost" onClick={reset}>Clear</Button>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                {bundles.length} bundle{bundles.length === 1 ? '' : 's'} detected · matched by filename + date
+              </span>
+              <Button size="sm" variant="ghost" onClick={reset}>Clear</Button>
+            </div>
+            {onSendToQueue && (
+              <Card className="bg-secondary/30 border-dashed">
+                <CardContent className="p-3 space-y-2">
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground">
+                    Schedule all detected bundles
+                  </Label>
+                  <div className="grid sm:grid-cols-[1fr,120px,auto] gap-2 items-end">
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">First post at</Label>
+                      <Input
+                        type="datetime-local"
+                        value={bulkStart}
+                        onChange={(e) => setBulkStart(e.target.value)}
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">Every (min)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={bulkInterval}
+                        onChange={(e) => setBulkInterval(Number(e.target.value) || 1)}
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                    <Button size="sm" disabled={bulkScheduling} onClick={scheduleAll} className="gap-1.5 h-8">
+                      <Clock className="w-3.5 h-3.5" /> Schedule {bundles.filter((b) => b.errors.length === 0).length}
+                    </Button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Each ready bundle is uploaded to the queue with a staggered scheduled time and appears in Upload Queue. The local worker posts each one when its time arrives — even if accounts aren't configured yet (those stay queued until you add accounts).
+                  </p>
+                </CardContent>
+              </Card>
+            )}
           </div>
         )}
 
