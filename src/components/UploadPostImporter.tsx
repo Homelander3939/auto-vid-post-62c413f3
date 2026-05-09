@@ -171,11 +171,21 @@ async function processManifest(
   if (platforms.length === 0) errors.push('No valid platforms declared');
 
   const declaredCount = parseInt(headers.image_count || `${declaredImages.length}`, 10) || declaredImages.length;
-  if (declaredImages.length === 0) errors.push('No images listed in manifest');
 
-  // Match images by filename (case-insensitive). Files come from the same folder.
+  // Fallback: when the manifest doesn't list images, discover them by filename
+  // prefix — e.g. `2026-05-08-morning-post-01-story-01-*.jpg` for manifest
+  // `2026-05-08-morning-post-01.txt`.
+  let effectiveDeclared = declaredImages.slice();
+  if (effectiveDeclared.length === 0) {
+    const stem = manifestFile.name.replace(/\.[^.]+$/, '').toLowerCase();
+    effectiveDeclared = Array.from(imageFiles.keys())
+      .filter((n) => n.startsWith(stem))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }
+  if (effectiveDeclared.length === 0) errors.push('No images found for this manifest');
+
   const images: { name: string; file: File; previewUrl: string }[] = [];
-  for (const name of declaredImages) {
+  for (const name of effectiveDeclared) {
     if (!SUPPORTED_IMG.test(name)) {
       errors.push(`Unsupported image type: ${name}`);
       continue;
@@ -187,7 +197,7 @@ async function processManifest(
     }
     images.push({ name, file, previewUrl: URL.createObjectURL(file) });
   }
-  if (declaredImages.length !== declaredCount) {
+  if (declaredImages.length && declaredImages.length !== declaredCount) {
     warnings.push(`Header image_count=${declaredCount} but ${declaredImages.length} listed`);
   }
 
