@@ -23,7 +23,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
 import {
   FolderOpen, FileText, Upload, AlertTriangle, CheckCircle2, RefreshCw,
-  Image as ImageIcon, Send,
+  Image as ImageIcon, Send, Clock,
 } from 'lucide-react';
 
 const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
@@ -252,9 +252,42 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   const txtInputRef = useRef<HTMLInputElement | null>(null);
   const imgInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Bulk-schedule controls — fan out every detected bundle into a staggered
+  // queue of social_posts so the local worker picks them up at run time.
+  const [bulkStart, setBulkStart] = useState<string>('');
+  const [bulkInterval, setBulkInterval] = useState<number>(60);
+  const [bulkScheduling, setBulkScheduling] = useState(false);
+
   const persistFolder = (v: string) => {
     setFolderPath(v);
     try { localStorage.setItem(FOLDER_KEY, v); } catch {}
+  };
+
+  const scheduleAll = async () => {
+    if (!onSendToQueue) return;
+    if (!bulkStart) { toast({ title: 'Pick a start time', variant: 'destructive' }); return; }
+    const startMs = new Date(bulkStart).getTime();
+    if (isNaN(startMs)) { toast({ title: 'Invalid start time', variant: 'destructive' }); return; }
+    const ready = bundles.filter((b) => b.errors.length === 0);
+    if (!ready.length) { toast({ title: 'No ready bundles to schedule', variant: 'destructive' }); return; }
+    setBulkScheduling(true);
+    let okCount = 0; const failed: string[] = [];
+    for (let i = 0; i < ready.length; i++) {
+      const at = new Date(startMs + i * bulkInterval * 60_000).toISOString();
+      try {
+        await onSendToQueue(ready[i], 'schedule', at);
+        rememberImported(ready[i].id);
+        okCount++;
+      } catch (e: any) {
+        failed.push(`${ready[i].manifestName}: ${e.message}`);
+      }
+    }
+    setBulkScheduling(false);
+    toast({
+      title: `Scheduled ${okCount}/${ready.length} bundles`,
+      description: failed.length ? failed[0] : 'Check Upload Queue to monitor progress.',
+      variant: failed.length ? 'destructive' : 'default',
+    });
   };
 
   const importedKeys = useMemo(() => readImportedKeys(), [bundles.length]);
@@ -465,17 +498,9 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
           </p>
         </div>
 
-        <div className="grid sm:grid-cols-3 gap-2">
-          <Button variant="outline" onClick={pickWithFsAccess} className="gap-2">
-            <FolderOpen className="w-4 h-4" /> Pick folder (Chromium)
-          </Button>
-          <Button variant="outline" onClick={() => folderInputRef.current?.click()} className="gap-2">
-            <FolderOpen className="w-4 h-4" /> Upload folder
-          </Button>
-          <Button variant="outline" onClick={() => txtInputRef.current?.click()} className="gap-2">
-            <FileText className="w-4 h-4" /> Single .txt + images
-          </Button>
-        </div>
+        <Button variant="outline" onClick={() => txtInputRef.current?.click()} className="gap-2 w-full">
+          <FileText className="w-4 h-4" /> Manual fallback: pick one .txt + its images
+        </Button>
 
         {/* Hidden file inputs covering each fallback path */}
         <input
@@ -512,11 +537,49 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
         )}
 
         {bundles.length > 0 && (
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">
-              {bundles.length} bundle{bundles.length === 1 ? '' : 's'} detected
-            </span>
-            <Button size="sm" variant="ghost" onClick={reset}>Clear</Button>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                {bundles.length} bundle{bundles.length === 1 ? '' : 's'} detected · matched by filename + date
+              </span>
+              <Button size="sm" variant="ghost" onClick={reset}>Clear</Button>
+            </div>
+            {onSendToQueue && (
+              <Card className="bg-secondary/30 border-dashed">
+                <CardContent className="p-3 space-y-2">
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground">
+                    Schedule all detected bundles
+                  </Label>
+                  <div className="grid sm:grid-cols-[1fr,120px,auto] gap-2 items-end">
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">First post at</Label>
+                      <Input
+                        type="datetime-local"
+                        value={bulkStart}
+                        onChange={(e) => setBulkStart(e.target.value)}
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">Every (min)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={bulkInterval}
+                        onChange={(e) => setBulkInterval(Number(e.target.value) || 1)}
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                    <Button size="sm" disabled={bulkScheduling} onClick={scheduleAll} className="gap-1.5 h-8">
+                      <Clock className="w-3.5 h-3.5" /> Schedule {bundles.filter((b) => b.errors.length === 0).length}
+                    </Button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Each ready bundle is uploaded to the queue with a staggered scheduled time and appears in Upload Queue. The local worker posts each one when its time arrives — even if accounts aren't configured yet (those stay queued until you add accounts).
+                  </p>
+                </CardContent>
+              </Card>
+            )}
           </div>
         )}
 
