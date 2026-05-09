@@ -2974,7 +2974,20 @@ app.post('/api/recurring/run-now', async (req, res) => {
   }
 });
 
-app.post('/api/generation-schedules/run-now', async (req, res) => {
+// Trigger a folder-based social post schedule immediately, regardless of cron.
+app.post('/api/social-folder-schedules/run-now', async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    if (!id) return res.status(400).json({ error: 'id required' });
+    processSocialFolderSchedules({ onlyId: id, force: true })
+      .catch((e) => console.error('[FolderSched] run-now error:', e.message));
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
   try {
     const { scheduleId } = req.body || {};
     const { data: schedule, error } = await supabase.from('social_post_schedules').select('*').eq('id', scheduleId).single();
