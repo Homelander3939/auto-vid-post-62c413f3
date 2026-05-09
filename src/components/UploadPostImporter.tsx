@@ -448,10 +448,20 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-1.5">
-          <Label className="text-xs">Default folder (info only)</Label>
-          <Input value={defaultPath} disabled className="font-mono text-xs h-8" />
+          <Label className="text-xs">Local folder on this PC</Label>
+          <div className="flex gap-2">
+            <Input
+              value={folderPath}
+              onChange={(e) => persistFolder(e.target.value)}
+              placeholder="D:\news posts"
+              className="font-mono text-xs h-9"
+            />
+            <Button onClick={scanLocalFolder} disabled={loading} className="gap-2 h-9 shrink-0">
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Scan folder
+            </Button>
+          </div>
           <p className="text-[11px] text-muted-foreground">
-            Browsers can't read this path directly — use one of the picker buttons below.
+            Reads .txt manifests + images directly through your local worker (port 3001) — no browser file dialogs needed.
           </p>
         </div>
 
