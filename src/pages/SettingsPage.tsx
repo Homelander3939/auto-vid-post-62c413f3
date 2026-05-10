@@ -68,7 +68,7 @@ function PlatformAccountCard({
   const { toast } = useToast();
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<AccountFormData>({ label: '', email: '', password: '' });
+  const [form, setForm] = useState<AccountFormData>({ label: '', email: '', password: '', recoveryPhone: '' });
   const [saving, setSaving] = useState(false);
   const [preparingId, setPreparingId] = useState<string | null>(null);
 
