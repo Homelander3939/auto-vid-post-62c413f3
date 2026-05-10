@@ -1222,6 +1222,19 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     }
 
     if (!loggedIn) {
+      const finalShot = await safeScreenshot(page);
+      await sendTelegram(
+        credentials?.telegram?.botToken,
+        credentials?.telegram?.chatId,
+        `❌ YouTube auto-login failed after ${MAX_LOGIN_ATTEMPTS} attempts. Open the Chrome profile and finish login manually.`,
+        credentials?.backend,
+      ).catch(() => {});
+      if (finalShot && credentials?.telegram?.chatId) {
+        try {
+          const { sendTelegramPhoto } = require('../telegram');
+          await sendTelegramPhoto(credentials.telegram.botToken, credentials.telegram.chatId, finalShot, '📸 YouTube blocked screen', credentials.backend);
+        } catch {}
+      }
       throw new Error('Login did not complete — still blocked on Google sign-in flow after multiple attempts.');
     }
 
