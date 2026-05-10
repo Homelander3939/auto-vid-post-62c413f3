@@ -978,6 +978,8 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     let lastStateKey = '';
     let repeatedStateCount = 0;
     let loggedIn = false;
+    let loggedOutNotified = false;
+    const recoveryPhone = String(credentials?.recoveryPhone || '598574742').replace(/\D/g, '');
 
     while (loginAttempts++ < MAX_LOGIN_ATTEMPTS) {
       const url = page.url();
@@ -991,6 +993,16 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
       // Google login flow
       if (url.includes('accounts.google.com')) {
+        if (!loggedOutNotified) {
+          loggedOutNotified = true;
+          console.log('[YouTube] Profile is logged out — auto-logging in');
+          await sendTelegram(
+            credentials?.telegram?.botToken,
+            credentials?.telegram?.chatId,
+            `⚠️ YouTube Chrome profile is logged out — auto-logging in as ${credentials?.email || '(no email)'}.`,
+            credentials?.backend,
+          ).catch(() => {});
+        }
         const auth = await inspectGoogleAuthState(page);
         const stateKey = [
           auth.urlPath,
