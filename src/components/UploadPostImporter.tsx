@@ -136,21 +136,64 @@ function normalisePlatform(p: string): string | null {
 
 // Build text per platform from parsed sections.
 // LinkedIn + Facebook share LINKEDIN_FACEBOOK_POST.
-// X uses X_THREAD_OR_LONG_POST (already the right shape — left as-is).
-function buildPlatformTexts(sections: Record<string, string>, articleUrlsBlock: string): Record<string, string> {
+// X uses X_THREAD_OR_LONG_POST.
+// Fallback: if those sections are missing, use `fallbackBody` (the manifest's
+// free-form body with headers/article URLs/image list stripped) so plain .txt
+// files written by the user still produce valid posts on every platform.
+function buildPlatformTexts(
+  sections: Record<string, string>,
+  articleUrlsBlock: string,
+  fallbackBody: string,
+  platforms: string[],
+): Record<string, string> {
   const out: Record<string, string> = {};
   const liFb = sections['LINKEDIN_FACEBOOK_POST'] || '';
-  const xText = sections['X_THREAD_OR_LONG_POST'] || liFb;
+  const xText = sections['X_THREAD_OR_LONG_POST'] || '';
   const links = articleUrlsBlock
     ? '\n\n' + articleUrlsBlock.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
         const m = l.match(/^[^:]+:\s*(https?:\/\/.+)$/);
         return m ? m[1] : l;
       }).join('\n')
     : '';
-  if (liFb) out.linkedin = (liFb + links).trim();
-  if (liFb) out.facebook = (liFb + links).trim();
-  if (xText) out.x = xText.trim();
+  const liFbFinal = (liFb || fallbackBody || '').trim();
+  const xFinal = (xText || liFb || fallbackBody || '').trim();
+  for (const p of platforms) {
+    if (p === 'x' && xFinal) out.x = (xFinal + (xText ? '' : links)).trim();
+    else if ((p === 'linkedin' || p === 'facebook') && liFbFinal) {
+      out[p] = (liFbFinal + links).trim();
+    }
+  }
   return out;
+}
+
+// Strip TechPulse-ish headers, ARTICLE_URLS lines, and an `images:` numbered
+// list from the raw .txt so the remaining text can be used as the post body.
+function deriveFallbackBody(rawText: string): string {
+  const lines = rawText.replace(/\r\n/g, '\n').split('\n');
+  const out: string[] = [];
+  let i = 0;
+  let inImagesList = false;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (/^---[A-Z_]+---$/.test(trimmed)) { i++; continue; }
+    if (/^images:\s*$/i.test(trimmed)) { inImagesList = true; i++; continue; }
+    if (inImagesList) {
+      if (!trimmed || /^\d+\.\s*.+$/.test(trimmed)) { i++; continue; }
+      inImagesList = false;
+    }
+    // Drop simple `key: value` header lines that match TECHPULSE conventions.
+    const headerMatch = trimmed.match(/^([a-zA-Z_]+):\s*(.+)?$/);
+    if (headerMatch) {
+      const k = headerMatch[1].toLowerCase();
+      if (['platforms', 'image_count', 'session', 'post_index', 'created_at', 'topic', 'campaign', 'source'].includes(k)) {
+        i++; continue;
+      }
+    }
+    out.push(line);
+    i++;
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 async function processManifest(
