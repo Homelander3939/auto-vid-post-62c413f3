@@ -552,6 +552,17 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     await dialog.dismiss().catch(() => {});
   });
 
+  // Background watcher: TikTok periodically shows promo modals like
+  // "New editing features added — Got it" that block the upload flow.
+  // Poll every ~2.5s and dismiss any visible "Got it / OK / Dismiss" button
+  // inside a dialog. Skip background-click to avoid accidental form clicks.
+  const promoWatcher = setInterval(() => {
+    dismissOverlayBlockingFlow(page, {
+      logPrefix: '[TikTok][PromoWatcher]',
+      clickBackground: false,
+    }).catch(() => {});
+  }, 2500);
+
   try {
     // ===== PHASE 1: NAVIGATE TO UPLOAD PAGE =====
     const navigated = await navigateToTikTokUpload(page);
@@ -1269,11 +1280,13 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
 
     // Dismiss any exit dialog before closing
     await dismissExitDialog(page);
+    clearInterval(promoWatcher);
     await context.close();
     return { url: videoUrl || '' };
   } catch (err) {
     console.error('[TikTok] Upload failed:', err.message);
     try { await dismissExitDialog(page); } catch {}
+    clearInterval(promoWatcher);
     await context.close();
     throw err;
   }
