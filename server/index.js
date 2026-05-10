@@ -510,7 +510,9 @@ async function processJob(jobId, options = {}) {
     // are cleaned separately below.
     let cleanupLine = '';
     const isLocalSource = !job.video_storage_path && videoPath && fs.existsSync(videoPath);
-    if (successCount > 0 && settings.deleteAfterUpload !== false && isLocalSource) {
+    // Only cleanup when ALL selected platforms succeeded — preserve files for retry on partial failures.
+    const allSucceeded = results.length > 0 && results.every(r => r.status === 'success');
+    if (allSucceeded && settings.deleteAfterUpload !== false && isLocalSource) {
       try {
         const folderDir = path.dirname(videoPath);
         const stem = path.basename(videoPath).replace(/\.[^.]+$/, '');
