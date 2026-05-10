@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
 const { smartClick, smartFill, analyzePage, waitForStateChange, runAgentTask } = require('./smart-agent');
-const { sendTelegramPhoto } = require('../telegram');
+const { sendTelegramPhoto, sendTelegram } = require('../telegram');
 const { getTikTokPageDescription, isTikTokPublishedUrl, isTikTokVideoUrl } = require('./tiktok-state');
 const { getSharedBrowserProfileDir } = require('../browserProfiles');
 const { dismissOverlayBlockingFlow } = require('./overlay-dismiss');
@@ -544,7 +544,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     viewport: { width: 1280, height: 900 },
   }, { label: `tiktok:${credentials?.browserProfileId || credentials?.accountId || 'default'}` });
 
-  const page = context.pages()[0] || await context.newPage();
+  let page = context.pages()[0] || await context.newPage();
 
   // Handle native browser beforeunload dialogs (auto-dismiss to stay on page)
   page.on('dialog', async (dialog) => {
@@ -651,6 +651,53 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
         }
       }
 
+      await page.waitForTimeout(3000);
+    }
+
+    // ===== PHASE 1c: RECOVER FROM "Something went wrong / Retry" =====
+    let recoveryAttempts = 0;
+    while (recoveryAttempts < 3) {
+      const hasFile = await page.$('input[type="file"]').catch(() => null);
+      if (hasFile) break;
+      const broken = await page.evaluate(() => {
+        const t = (document.body?.innerText || '').toLowerCase();
+        return t.includes('something went wrong') || t.includes('please try again');
+      }).catch(() => false);
+      if (!broken) break;
+
+      recoveryAttempts++;
+      console.log(`[TikTok] Detected "Something went wrong" — opening fresh tab (attempt ${recoveryAttempts})`);
+      await sendTelegram(
+        credentials?.telegram?.botToken,
+        credentials?.telegram?.chatId,
+        `⚠️ TikTok upload page hit an error — reopening in a new tab (attempt ${recoveryAttempts}/3).`,
+        credentials?.backend,
+      ).catch(() => {});
+
+      try {
+        const fresh = await context.newPage();
+        await fresh.goto(TIKTOK_UPLOAD_URL, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+        await fresh.waitForTimeout(4000);
+        const ok = await fresh.$('input[type="file"]').catch(() => null);
+        if (ok) {
+          try { await page.close(); } catch {}
+          page = fresh;
+          console.log('[TikTok] Recovered upload page in new tab');
+          break;
+        } else {
+          await fresh.goto('https://www.tiktok.com/creator-center/upload', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+          await fresh.waitForTimeout(4000);
+          const ok2 = await fresh.$('input[type="file"]').catch(() => null);
+          if (ok2) {
+            try { await page.close(); } catch {}
+            page = fresh;
+            break;
+          }
+          try { await fresh.close(); } catch {}
+        }
+      } catch (e) {
+        console.warn('[TikTok] Recovery tab failed:', e.message);
+      }
       await page.waitForTimeout(3000);
     }
 

@@ -51,6 +51,7 @@ interface AccountFormData {
   label: string;
   email: string;
   password: string;
+  recoveryPhone: string;
 }
 
 function PlatformAccountCard({
@@ -67,7 +68,7 @@ function PlatformAccountCard({
   const { toast } = useToast();
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<AccountFormData>({ label: '', email: '', password: '' });
+  const [form, setForm] = useState<AccountFormData>({ label: '', email: '', password: '', recoveryPhone: '' });
   const [saving, setSaving] = useState(false);
   const [preparingId, setPreparingId] = useState<string | null>(null);
 
@@ -81,7 +82,7 @@ function PlatformAccountCard({
   };
 
   const resetForm = () => {
-    setForm({ label: '', email: '', password: '' });
+    setForm({ label: '', email: '', password: '', recoveryPhone: '' });
     setAdding(false);
     setEditingId(null);
   };
@@ -100,6 +101,9 @@ function PlatformAccountCard({
         password: form.password,
         enabled: true,
       };
+      if (platform === 'youtube') {
+        payload.recovery_phone = form.recoveryPhone.replace(/\D/g, '') || null;
+      }
 
       if (editingId) {
         payload.id = editingId;
@@ -149,7 +153,7 @@ function PlatformAccountCard({
 
   const startEdit = (account: PlatformAccount) => {
     setEditingId(account.id);
-    setForm({ label: account.label, email: account.email, password: account.password });
+    setForm({ label: account.label, email: account.email, password: account.password, recoveryPhone: (account as any).recovery_phone || '' });
     setAdding(true);
   };
 
@@ -332,6 +336,20 @@ function PlatformAccountCard({
                 placeholder="••••••••"
               />
             </div>
+            {platform === 'youtube' && (
+              <div className="space-y-2">
+                <Label className="text-xs">Recovery phone (digits only)</Label>
+                <Input
+                  value={form.recoveryPhone}
+                  onChange={(e) => setForm((f) => ({ ...f, recoveryPhone: e.target.value }))}
+                  placeholder="e.g. 598574742"
+                  className="h-9"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Used when Google asks to confirm the phone ending in the last 2 digits of this number.
+                </p>
+              </div>
+            )}
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
                 <Check className="w-3.5 h-3.5" />

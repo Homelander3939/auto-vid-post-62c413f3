@@ -2,6 +2,7 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const { requestTelegramApproval, tryFillVerificationCode } = require('./approval');
+const { sendTelegram } = require('../telegram');
 const { smartClick, smartFill, waitForStateChange, analyzePage } = require('./smart-agent');
 const { getSharedBrowserProfileDir } = require('../browserProfiles');
 const { dismissOverlayBlockingFlow } = require('./overlay-dismiss');
@@ -39,6 +40,8 @@ async function inspectGoogleAuthState(page) {
     const emailInput = document.querySelector('#identifierId, input[type="email"], input[name="identifier"]');
     const passwordInput = document.querySelector('input[type="password"]:not([aria-hidden="true"])');
     const codeInput = document.querySelector('input[type="tel"], input[name*="code" i], input[autocomplete="one-time-code"]');
+    // Recovery-phone full-number input (Google asks user to type full number whose mask matches)
+    const phoneInput = document.querySelector('input[type="tel"][name*="phone" i], input[id*="phone" i], input[aria-label*="phone" i]');
 
     const accountChips = Array.from(document.querySelectorAll('[data-identifier], [data-email], div[role="link"], li[role="link"]'));
     const accountEmails = accountChips
@@ -61,6 +64,32 @@ async function inspectGoogleAuthState(page) {
       return textMatch?.[1] || '';
     })();
 
+    // Detect recovery phone screens. Examples:
+    //   "Confirm your recovery phone number"
+    //   "To continue, first verify it's you. Enter the phone number ending in •• 42"
+    //   "Enter the phone number associated with your account"
+    const isRecoveryPhonePrompt = (
+      text.includes('recovery phone') ||
+      text.includes('confirm your phone') ||
+      text.includes('verify your phone') ||
+      (text.includes('phone number') && (text.includes('ending in') || text.includes('to continue')))
+    ) && isVisible(phoneInput);
+
+    // Mask tail (last 2 digits Google shows, e.g. •• 42)
+    let recoveryPhoneTail = '';
+    const maskMatch = text.match(/[•·*\.]{1,3}\s*(\d{2,4})/);
+    if (maskMatch?.[1]) recoveryPhoneTail = maskMatch[1];
+    if (!recoveryPhoneTail) {
+      const endingMatch = text.match(/ending in[^\d]{0,10}(\d{2,4})/i);
+      if (endingMatch?.[1]) recoveryPhoneTail = endingMatch[1];
+    }
+
+    // Multiple "ends in XX" radio/list options for picking which phone to use
+    const phoneOptions = Array.from(document.querySelectorAll('[role="link"], [role="button"], li, div'))
+      .map((el) => (el.textContent || '').trim())
+      .filter((t) => /ending in|ends in|••\s*\d{2,4}|\.\.\.\s*\d{2,4}/i.test(t))
+      .slice(0, 6);
+
     return {
       urlPath: window.location.pathname || '',
       hasEmailInput: isVisible(emailInput),
@@ -68,6 +97,10 @@ async function inspectGoogleAuthState(page) {
       isIdentifierStep: (window.location.pathname || '').includes('/identifier'),
       isPasswordStep: (window.location.pathname || '').includes('/challenge/pwd') || text.includes('enter your password'),
       hasCodeInput: isVisible(codeInput),
+      hasPhoneInput: isVisible(phoneInput),
+      isRecoveryPhonePrompt,
+      recoveryPhoneTail,
+      phoneOptions,
       hasPhonePrompt: text.includes('check your phone') || text.includes('tap yes') || text.includes('confirm it') || text.includes('approve sign-in'),
       hasNumberMatchPrompt: text.includes('choose a number') || text.includes('match the number') || text.includes('try another way'),
       isChooseAccount: text.includes('choose an account') || text.includes('select an account'),
@@ -945,6 +978,8 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     let lastStateKey = '';
     let repeatedStateCount = 0;
     let loggedIn = false;
+    let loggedOutNotified = false;
+    const recoveryPhone = String(credentials?.recoveryPhone || '598574742').replace(/\D/g, '');
 
     while (loginAttempts++ < MAX_LOGIN_ATTEMPTS) {
       const url = page.url();
@@ -958,6 +993,16 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
 
       // Google login flow
       if (url.includes('accounts.google.com')) {
+        if (!loggedOutNotified) {
+          loggedOutNotified = true;
+          console.log('[YouTube] Profile is logged out — auto-logging in');
+          await sendTelegram(
+            credentials?.telegram?.botToken,
+            credentials?.telegram?.chatId,
+            `⚠️ YouTube Chrome profile is logged out — auto-logging in as ${credentials?.email || '(no email)'}.`,
+            credentials?.backend,
+          ).catch(() => {});
+        }
         const auth = await inspectGoogleAuthState(page);
         const stateKey = [
           auth.urlPath,
@@ -994,6 +1039,60 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
             await page.waitForTimeout(2200);
           }
           continue;
+        }
+
+        // Recovery phone screen — Google asks user to enter the full phone number
+        // matching the masked tail (e.g. "•• 42"). Auto-fill from credentials.recoveryPhone.
+        if (auth.isRecoveryPhonePrompt && auth.hasPhoneInput) {
+          const tail = (auth.recoveryPhoneTail || '').replace(/\D/g, '');
+          const matchesTail = !tail || recoveryPhone.endsWith(tail);
+          if (recoveryPhone && matchesTail) {
+            console.log(`[YouTube] Recovery-phone prompt detected (mask •• ${tail || '??'}) — auto-filling ${recoveryPhone}`);
+            await sendTelegram(
+              credentials?.telegram?.botToken,
+              credentials?.telegram?.chatId,
+              `📞 YouTube asked to confirm recovery phone (ending ${tail || '??'}). Auto-filling ${recoveryPhone}.`,
+              credentials?.backend,
+            ).catch(() => {});
+            await smartFill(page, [
+              'input[type="tel"][name*="phone" i]',
+              'input[id*="phone" i]',
+              'input[aria-label*="phone" i]',
+              'input[type="tel"]',
+            ], recoveryPhone);
+            await page.waitForTimeout(400);
+            const clicked = await smartClick(page, [
+              '#next button', '#identifierNext button', 'button[type="submit"]',
+              'button:has-text("Next")', 'button:has-text("Continue")',
+            ], 'Next');
+            if (!clicked) await page.keyboard.press('Enter').catch(() => {});
+            await page.waitForTimeout(3500);
+            continue;
+          } else {
+            console.log(`[YouTube] Recovery-phone tail mismatch (mask=${tail}, stored=${recoveryPhone}) — escalating to Telegram`);
+            // Fall through to Telegram request below
+          }
+        }
+
+        // Picking from a list of phones ("ending in XX" options)
+        if (auth.phoneOptions && auth.phoneOptions.length > 0 && recoveryPhone) {
+          const tail2 = recoveryPhone.slice(-2);
+          const picked = await page.evaluate((tail) => {
+            const nodes = Array.from(document.querySelectorAll('[role="link"], [role="button"], li, div'));
+            for (const n of nodes) {
+              const t = (n.textContent || '').trim();
+              if (/ending in|ends in|••|\.\.\./i.test(t) && t.includes(tail)) {
+                n.click();
+                return true;
+              }
+            }
+            return false;
+          }, tail2);
+          if (picked) {
+            console.log(`[YouTube] Picked phone option ending in ${tail2}`);
+            await page.waitForTimeout(2500);
+            continue;
+          }
         }
 
         if (auth.isChooseAccount || auth.accountEmails.length > 0) {
@@ -1123,6 +1222,19 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
     }
 
     if (!loggedIn) {
+      const finalShot = await safeScreenshot(page);
+      await sendTelegram(
+        credentials?.telegram?.botToken,
+        credentials?.telegram?.chatId,
+        `❌ YouTube auto-login failed after ${MAX_LOGIN_ATTEMPTS} attempts. Open the Chrome profile and finish login manually.`,
+        credentials?.backend,
+      ).catch(() => {});
+      if (finalShot && credentials?.telegram?.chatId) {
+        try {
+          const { sendTelegramPhoto } = require('../telegram');
+          await sendTelegramPhoto(credentials.telegram.botToken, credentials.telegram.chatId, finalShot, '📸 YouTube blocked screen', credentials.backend);
+        } catch {}
+      }
       throw new Error('Login did not complete — still blocked on Google sign-in flow after multiple attempts.');
     }
 

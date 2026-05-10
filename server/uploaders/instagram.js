@@ -1069,6 +1069,7 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
     await page.waitForTimeout(1000);
 
     let loginAttempts = 0;
+    let loginPageNavigated = false;
     while (loginAttempts++ < 15) {
       const isLoggedIn = await page.evaluate(() => {
         return !!(document.querySelector('[aria-label="New post"]') ||
@@ -1079,53 +1080,66 @@ async function uploadToInstagram(videoPath, metadata, credentials) {
       });
       if (isLoggedIn) { console.log('[Instagram] Logged in'); break; }
 
-      const url = page.url();
-      if (url.includes('login') || url.includes('accounts')) {
-        const pageState = await page.evaluate(() => ({
-          hasUsername: !!document.querySelector('input[name="username"]'),
-          hasPassword: !!document.querySelector('input[name="password"]'),
-          hasCode: !!document.querySelector('input[name="verificationCode"], input[name="security_code"]'),
-        }));
+      // Detect login form by DOM presence (URL may be "/" with the login modal)
+      const pageState = await page.evaluate(() => ({
+        hasUsername: !!document.querySelector('input[name="username"]'),
+        hasPassword: !!document.querySelector('input[name="password"]'),
+        hasCode: !!document.querySelector('input[name="verificationCode"], input[name="security_code"]'),
+      }));
 
-        if (pageState.hasUsername && pageState.hasPassword) {
-          console.log('[Instagram] Filling login...');
-          await smartFill(page, ['input[name="username"]'], credentials.email);
-          await page.waitForTimeout(300);
-          await smartFill(page, ['input[name="password"]'], credentials.password);
-          await page.waitForTimeout(300);
-          await smartClick(page, ['button[type="submit"]'], 'Log In');
-          await page.waitForTimeout(5000);
+      if (pageState.hasUsername && pageState.hasPassword) {
+        console.log('[Instagram] Filling login...');
+        await smartFill(page, ['input[name="username"]'], credentials.email);
+        await page.waitForTimeout(300);
+        await smartFill(page, ['input[name="password"]'], credentials.password);
+        await page.waitForTimeout(300);
+        await smartClick(page, ['button[type="submit"]'], 'Log In');
+        await page.waitForTimeout(5000);
 
-          // Dismiss popups ("Not Now" for save login, notifications, etc.)
-          for (let i = 0; i < 3; i++) {
-            await page.evaluate(() => {
-              const buttons = document.querySelectorAll('button');
-              for (const btn of buttons) {
-                if (btn.textContent?.toLowerCase().includes('not now')) { btn.click(); break; }
+        // Dismiss "Save login info", "Turn on notifications", cookie banners, etc.
+        for (let i = 0; i < 4; i++) {
+          await page.evaluate(() => {
+            const buttons = document.querySelectorAll('button');
+            for (const btn of buttons) {
+              const t = (btn.textContent || '').toLowerCase().trim();
+              if (t === 'not now' || t === 'cancel' || t === 'dismiss' || t === 'skip' ||
+                  t.includes('not right now') || t.includes('not now')) {
+                btn.click();
+                return;
               }
-            });
-            await page.waitForTimeout(1500);
-          }
-          continue;
-        }
-
-        if (pageState.hasCode) {
-          console.log('[Instagram] Verification code needed...');
-          const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
-          const approval = await requestTelegramApproval({
-            telegram: credentials.telegram,
-            platform: 'Instagram',
-            backend: credentials.backend,
-            screenshotBuffer,
-            customMessage: '🔐 <b>Instagram verification needed</b>\nReply with APPROVED after device confirmation or CODE 123456 if a code is required.',
+            }
           });
-          if (approval?.code) {
-            await tryFillVerificationCode(page, approval.code);
-            await page.waitForTimeout(5000);
-          }
-          continue;
+          await page.waitForTimeout(1500);
         }
+        continue;
       }
+
+      if (pageState.hasCode) {
+        console.log('[Instagram] Verification code needed...');
+        const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
+        const approval = await requestTelegramApproval({
+          telegram: credentials.telegram,
+          platform: 'Instagram',
+          backend: credentials.backend,
+          screenshotBuffer,
+          customMessage: '🔐 <b>Instagram verification needed</b>\nReply with APPROVED after device confirmation or CODE 123456 if a code is required.',
+        });
+        if (approval?.code) {
+          await tryFillVerificationCode(page, approval.code);
+          await page.waitForTimeout(5000);
+        }
+        continue;
+      }
+
+      // Neither logged-in markers nor a login form — explicitly navigate to login page once
+      if (!loginPageNavigated) {
+        loginPageNavigated = true;
+        console.log('[Instagram] No login form found — navigating to /accounts/login/');
+        await page.goto('https://www.instagram.com/accounts/login/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+        await page.waitForTimeout(3000);
+        continue;
+      }
+
       await page.waitForTimeout(3000);
     }
 

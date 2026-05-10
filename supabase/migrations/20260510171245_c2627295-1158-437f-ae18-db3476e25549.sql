@@ -1,0 +1,1 @@
+ALTER TABLE public.platform_accounts ADD COLUMN IF NOT EXISTS recovery_phone TEXT;
