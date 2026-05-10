@@ -127,7 +127,7 @@ export default function CampaignScheduler() {
   const [folderMaxVideos, setFolderMaxVideos] = useState<number | null>(null);
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({});
 
-  const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);
+  const { needsPicker, getDefaultAccountId, allAccounts } = useAccountsForPlatforms(platforms);
 
   // Initialize default accounts
   useEffect(() => {

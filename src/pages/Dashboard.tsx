@@ -102,7 +102,7 @@ export default function Dashboard() {
     queryFn: getSettings,
   });
 
-  const { accountsByPlatform, getDefaultAccountId, needsPicker } = useAccountsForPlatforms(['youtube', 'tiktok', 'instagram']);
+  const { accountsByPlatform, getDefaultAccountId, needsPicker, allAccounts } = useAccountsForPlatforms(['youtube', 'tiktok', 'instagram']);
 
   const platformStatuses = getPlatformStatuses(settings, accountsByPlatform);
 

@@ -82,7 +82,7 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   const [useMaxVideos, setUseMaxVideos] = useState<boolean>(config.maxVideos != null);
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>(config.accountSelections || {});
 
-  const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);
+  const { needsPicker, getDefaultAccountId, allAccounts } = useAccountsForPlatforms(platforms);
 
   // Initialize defaults for any platform without a saved selection
   useEffect(() => {
