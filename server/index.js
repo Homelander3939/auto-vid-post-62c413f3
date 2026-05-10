@@ -452,7 +452,7 @@ async function processJob(jobId, options = {}) {
         const selectedAccountId = accountContext.selections[platform.name];
         const selectedAccount = selectedAccountId ? accountContext.accountsById.get(selectedAccountId) : null;
         const platformCreds = selectedAccount
-          ? { email: selectedAccount.email, password: selectedAccount.password, enabled: true }
+          ? { email: selectedAccount.email, password: selectedAccount.password, enabled: true, recoveryPhone: selectedAccount.recovery_phone || '' }
           : settings[platform.name];
         const browserProfile = selectedAccount
           ? getBrowserProfileForAccount(selectedAccount.id) || findLinkedSiblingBrowserProfile(selectedAccount, accountContext.accounts)
