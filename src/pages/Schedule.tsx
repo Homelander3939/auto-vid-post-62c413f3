@@ -14,7 +14,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Clock, CalendarDays, Repeat, Save, FolderOpen, Timer, Plus, Trash2, ChevronDown, ChevronUp, CalendarClock, History, Hash } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import CampaignScheduler from '@/components/CampaignScheduler';
-import AccountPicker, { useAccountsForPlatforms } from '@/components/AccountPicker';
+import AccountPicker, { useAccountsForPlatforms, syncSelectionAcrossPlatforms } from '@/components/AccountPicker';
 import { format } from 'date-fns';
 
 type FrequencyMode = 'hourly' | 'daily' | 'weekly';
@@ -82,7 +82,7 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
   const [useMaxVideos, setUseMaxVideos] = useState<boolean>(config.maxVideos != null);
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>(config.accountSelections || {});
 
-  const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);
+  const { needsPicker, getDefaultAccountId, allAccounts } = useAccountsForPlatforms(platforms);
 
   // Initialize defaults for any platform without a saved selection
   useEffect(() => {
@@ -354,7 +354,7 @@ function ScheduleEditor({ config, onSave, onDelete }: { config: ScheduleConfig; 
                       key={p}
                       platform={p}
                       selectedAccountId={selectedAccounts[p]}
-                      onSelect={(id) => setSelectedAccounts((prev) => ({ ...prev, [p]: id }))}
+                      onSelect={(id) => setSelectedAccounts((prev) => syncSelectionAcrossPlatforms(allAccounts, platforms, p, id, prev))}
                     />
                   ))}
                 </div>

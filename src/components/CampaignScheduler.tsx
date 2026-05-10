@@ -13,7 +13,7 @@ import {
   type ScheduledUpload,
 } from '@/lib/storage';
 import { cleanVideoTitle, matchVideoTextFiles, INTENSITY_OPTIONS } from '@/lib/titleUtils';
-import AccountPicker, { useAccountsForPlatforms } from '@/components/AccountPicker';
+import AccountPicker, { useAccountsForPlatforms, syncSelectionAcrossPlatforms } from '@/components/AccountPicker';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
@@ -127,7 +127,7 @@ export default function CampaignScheduler() {
   const [folderMaxVideos, setFolderMaxVideos] = useState<number | null>(null);
   const [selectedAccounts, setSelectedAccounts] = useState<Record<string, string>>({});
 
-  const { needsPicker, getDefaultAccountId } = useAccountsForPlatforms(platforms);
+  const { needsPicker, getDefaultAccountId, allAccounts } = useAccountsForPlatforms(platforms);
 
   // Initialize default accounts
   useEffect(() => {
@@ -684,7 +684,7 @@ export default function CampaignScheduler() {
                     key={p}
                     platform={p}
                     selectedAccountId={selectedAccounts[p]}
-                    onSelect={(id) => setSelectedAccounts((prev) => ({ ...prev, [p]: id }))}
+                    onSelect={(id) => setSelectedAccounts((prev) => syncSelectionAcrossPlatforms(allAccounts, platforms, p, id, prev))}
                   />
                 ))}
               </div>
