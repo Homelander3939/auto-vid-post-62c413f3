@@ -544,7 +544,7 @@ async function uploadToTikTok(videoPath, metadata, credentials) {
     viewport: { width: 1280, height: 900 },
   }, { label: `tiktok:${credentials?.browserProfileId || credentials?.accountId || 'default'}` });
 
-  const page = context.pages()[0] || await context.newPage();
+  let page = context.pages()[0] || await context.newPage();
 
   // Handle native browser beforeunload dialogs (auto-dismiss to stay on page)
   page.on('dialog', async (dialog) => {
