@@ -39,6 +39,8 @@ async function inspectGoogleAuthState(page) {
     const emailInput = document.querySelector('#identifierId, input[type="email"], input[name="identifier"]');
     const passwordInput = document.querySelector('input[type="password"]:not([aria-hidden="true"])');
     const codeInput = document.querySelector('input[type="tel"], input[name*="code" i], input[autocomplete="one-time-code"]');
+    // Recovery-phone full-number input (Google asks user to type full number whose mask matches)
+    const phoneInput = document.querySelector('input[type="tel"][name*="phone" i], input[id*="phone" i], input[aria-label*="phone" i]');
 
     const accountChips = Array.from(document.querySelectorAll('[data-identifier], [data-email], div[role="link"], li[role="link"]'));
     const accountEmails = accountChips
@@ -61,6 +63,32 @@ async function inspectGoogleAuthState(page) {
       return textMatch?.[1] || '';
     })();
 
+    // Detect recovery phone screens. Examples:
+    //   "Confirm your recovery phone number"
+    //   "To continue, first verify it's you. Enter the phone number ending in •• 42"
+    //   "Enter the phone number associated with your account"
+    const isRecoveryPhonePrompt = (
+      text.includes('recovery phone') ||
+      text.includes('confirm your phone') ||
+      text.includes('verify your phone') ||
+      (text.includes('phone number') && (text.includes('ending in') || text.includes('to continue')))
+    ) && isVisible(phoneInput);
+
+    // Mask tail (last 2 digits Google shows, e.g. •• 42)
+    let recoveryPhoneTail = '';
+    const maskMatch = text.match(/[•·*\.]{1,3}\s*(\d{2,4})/);
+    if (maskMatch?.[1]) recoveryPhoneTail = maskMatch[1];
+    if (!recoveryPhoneTail) {
+      const endingMatch = text.match(/ending in[^\d]{0,10}(\d{2,4})/i);
+      if (endingMatch?.[1]) recoveryPhoneTail = endingMatch[1];
+    }
+
+    // Multiple "ends in XX" radio/list options for picking which phone to use
+    const phoneOptions = Array.from(document.querySelectorAll('[role="link"], [role="button"], li, div'))
+      .map((el) => (el.textContent || '').trim())
+      .filter((t) => /ending in|ends in|••\s*\d{2,4}|\.\.\.\s*\d{2,4}/i.test(t))
+      .slice(0, 6);
+
     return {
       urlPath: window.location.pathname || '',
       hasEmailInput: isVisible(emailInput),
@@ -68,6 +96,10 @@ async function inspectGoogleAuthState(page) {
       isIdentifierStep: (window.location.pathname || '').includes('/identifier'),
       isPasswordStep: (window.location.pathname || '').includes('/challenge/pwd') || text.includes('enter your password'),
       hasCodeInput: isVisible(codeInput),
+      hasPhoneInput: isVisible(phoneInput),
+      isRecoveryPhonePrompt,
+      recoveryPhoneTail,
+      phoneOptions,
       hasPhonePrompt: text.includes('check your phone') || text.includes('tap yes') || text.includes('confirm it') || text.includes('approve sign-in'),
       hasNumberMatchPrompt: text.includes('choose a number') || text.includes('match the number') || text.includes('try another way'),
       isChooseAccount: text.includes('choose an account') || text.includes('select an account'),
