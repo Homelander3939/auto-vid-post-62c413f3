@@ -1041,6 +1041,60 @@ async function uploadToYouTube(videoPath, metadata, credentials) {
           continue;
         }
 
+        // Recovery phone screen — Google asks user to enter the full phone number
+        // matching the masked tail (e.g. "•• 42"). Auto-fill from credentials.recoveryPhone.
+        if (auth.isRecoveryPhonePrompt && auth.hasPhoneInput) {
+          const tail = (auth.recoveryPhoneTail || '').replace(/\D/g, '');
+          const matchesTail = !tail || recoveryPhone.endsWith(tail);
+          if (recoveryPhone && matchesTail) {
+            console.log(`[YouTube] Recovery-phone prompt detected (mask •• ${tail || '??'}) — auto-filling ${recoveryPhone}`);
+            await sendTelegram(
+              credentials?.telegram?.botToken,
+              credentials?.telegram?.chatId,
+              `📞 YouTube asked to confirm recovery phone (ending ${tail || '??'}). Auto-filling ${recoveryPhone}.`,
+              credentials?.backend,
+            ).catch(() => {});
+            await smartFill(page, [
+              'input[type="tel"][name*="phone" i]',
+              'input[id*="phone" i]',
+              'input[aria-label*="phone" i]',
+              'input[type="tel"]',
+            ], recoveryPhone);
+            await page.waitForTimeout(400);
+            const clicked = await smartClick(page, [
+              '#next button', '#identifierNext button', 'button[type="submit"]',
+              'button:has-text("Next")', 'button:has-text("Continue")',
+            ], 'Next');
+            if (!clicked) await page.keyboard.press('Enter').catch(() => {});
+            await page.waitForTimeout(3500);
+            continue;
+          } else {
+            console.log(`[YouTube] Recovery-phone tail mismatch (mask=${tail}, stored=${recoveryPhone}) — escalating to Telegram`);
+            // Fall through to Telegram request below
+          }
+        }
+
+        // Picking from a list of phones ("ending in XX" options)
+        if (auth.phoneOptions && auth.phoneOptions.length > 0 && recoveryPhone) {
+          const tail2 = recoveryPhone.slice(-2);
+          const picked = await page.evaluate((tail) => {
+            const nodes = Array.from(document.querySelectorAll('[role="link"], [role="button"], li, div'));
+            for (const n of nodes) {
+              const t = (n.textContent || '').trim();
+              if (/ending in|ends in|••|\.\.\./i.test(t) && t.includes(tail)) {
+                n.click();
+                return true;
+              }
+            }
+            return false;
+          }, tail2);
+          if (picked) {
+            console.log(`[YouTube] Picked phone option ending in ${tail2}`);
+            await page.waitForTimeout(2500);
+            continue;
+          }
+        }
+
         if (auth.isChooseAccount || auth.accountEmails.length > 0) {
           console.log('[YouTube] Choosing Google account...');
           const chose = await chooseGoogleAccount(page, credentials.email);
