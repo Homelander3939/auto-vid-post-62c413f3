@@ -13,7 +13,7 @@ import {
 } from '@/lib/storage';
 import { cleanVideoTitle, matchVideoTextFiles, sortFilesBySeriesNumber, INTENSITY_OPTIONS } from '@/lib/titleUtils';
 import { supabase } from '@/integrations/supabase/client';
-import AccountPicker, { useAccountsForPlatforms } from '@/components/AccountPicker';
+import AccountPicker, { useAccountsForPlatforms, syncSelectionAcrossPlatforms } from '@/components/AccountPicker';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -554,7 +554,7 @@ export default function Dashboard() {
                         key={p}
                         platform={p}
                         selectedAccountId={selectedAccounts[p]}
-                        onSelect={(id) => setSelectedAccounts((prev) => ({ ...prev, [p]: id }))}
+                        onSelect={(id) => setSelectedAccounts((prev) => syncSelectionAcrossPlatforms(allAccounts, selectedPlatforms, p, id, prev))}
                       />
                     ))}
                   </div>
