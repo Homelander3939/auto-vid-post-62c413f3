@@ -336,6 +336,20 @@ function PlatformAccountCard({
                 placeholder="••••••••"
               />
             </div>
+            {platform === 'youtube' && (
+              <div className="space-y-2">
+                <Label className="text-xs">Recovery phone (digits only)</Label>
+                <Input
+                  value={form.recoveryPhone}
+                  onChange={(e) => setForm((f) => ({ ...f, recoveryPhone: e.target.value }))}
+                  placeholder="e.g. 598574742"
+                  className="h-9"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Used when Google asks to confirm the phone ending in the last 2 digits of this number.
+                </p>
+              </div>
+            )}
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
                 <Check className="w-3.5 h-3.5" />
