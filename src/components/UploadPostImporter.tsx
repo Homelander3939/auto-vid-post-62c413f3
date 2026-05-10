@@ -206,11 +206,17 @@ async function processManifest(
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  if (!/TECHPULSE_SOCIAL_POST_V1/.test(text)) errors.push('Missing TECHPULSE_SOCIAL_POST_V1 marker');
+  if (!/TECHPULSE_SOCIAL_POST_V1/.test(text)) {
+    warnings.push('No TECHPULSE_SOCIAL_POST_V1 marker — using plain-text fallback');
+  }
 
-  const platforms = (headers.platforms || '')
+  let platforms = (headers.platforms || '')
     .split(',').map((p) => normalisePlatform(p)).filter((p): p is string => !!p);
-  if (platforms.length === 0) errors.push('No valid platforms declared');
+  if (platforms.length === 0) {
+    // No platforms declared → assume all three (matches default schedule target).
+    platforms = ['x', 'linkedin', 'facebook'];
+    warnings.push('No platforms declared — defaulting to X, LinkedIn, Facebook');
+  }
 
   const declaredCount = parseInt(headers.image_count || `${declaredImages.length}`, 10) || declaredImages.length;
 
@@ -224,7 +230,9 @@ async function processManifest(
       .filter((n) => n.startsWith(stem))
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   }
-  if (effectiveDeclared.length === 0) errors.push('No images found for this manifest');
+  if (effectiveDeclared.length === 0) {
+    warnings.push('No images found for this manifest — text-only post');
+  }
 
   const images: { name: string; file: File; previewUrl: string }[] = [];
   for (const name of effectiveDeclared) {
@@ -243,9 +251,10 @@ async function processManifest(
     warnings.push(`Header image_count=${declaredCount} but ${declaredImages.length} listed`);
   }
 
-  const texts = buildPlatformTexts(sections, sections['ARTICLE_URLS'] || '');
+  const fallbackBody = deriveFallbackBody(text);
+  const texts = buildPlatformTexts(sections, sections['ARTICLE_URLS'] || '', fallbackBody, platforms);
   for (const p of platforms) {
-    if (!texts[p]) errors.push(`Missing text section for ${PLATFORM_LABELS[p] || p}`);
+    if (!texts[p] || !texts[p].trim()) errors.push(`Missing text section for ${PLATFORM_LABELS[p] || p}`);
   }
 
   // Article URLs as plain list
