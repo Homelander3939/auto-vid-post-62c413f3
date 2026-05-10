@@ -101,6 +101,9 @@ function PlatformAccountCard({
         password: form.password,
         enabled: true,
       };
+      if (platform === 'youtube') {
+        payload.recovery_phone = form.recoveryPhone.replace(/\D/g, '') || null;
+      }
 
       if (editingId) {
         payload.id = editingId;
