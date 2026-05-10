@@ -34,6 +34,34 @@ export function useAccountsForPlatforms(platforms: string[]) {
   return { allAccounts, accountsByPlatform, getDefaultAccountId, needsPicker };
 }
 
+// When user picks an account on one platform, auto-select the matching-label
+// account on all other platforms. Matching is by label (case-insensitive),
+// falling back to email local-part. If no match is found, the existing
+// selection for that platform is kept.
+export function syncSelectionAcrossPlatforms(
+  allAccounts: PlatformAccount[],
+  platforms: string[],
+  pickedPlatform: string,
+  pickedAccountId: string,
+  prev: Record<string, string>,
+): Record<string, string> {
+  const picked = allAccounts.find((a) => a.id === pickedAccountId);
+  if (!picked) return { ...prev, [pickedPlatform]: pickedAccountId };
+  const norm = (s: string | undefined | null) => (s || '').trim().toLowerCase();
+  const labelKey = norm(picked.label) || norm(picked.email).split('@')[0];
+  const next: Record<string, string> = { ...prev, [pickedPlatform]: pickedAccountId };
+  for (const p of platforms) {
+    if (p === pickedPlatform) continue;
+    const candidates = allAccounts.filter((a) => a.platform === p && a.enabled);
+    const match = candidates.find((a) => {
+      const k = norm(a.label) || norm(a.email).split('@')[0];
+      return k && k === labelKey;
+    });
+    if (match) next[p] = match.id;
+  }
+  return next;
+}
+
 export default function AccountPicker({ platform, selectedAccountId, onSelect }: AccountPickerProps) {
   const { data: allAccounts = [] } = useQuery({
     queryKey: ['platform_accounts'],
