@@ -12,6 +12,7 @@ export interface PlatformAccount {
   enabled: boolean;
   is_default: boolean;
   created_at: string;
+  recovery_phone?: string | null;
 }
 
 export interface AppSettings {
