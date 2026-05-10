@@ -396,6 +396,7 @@ export type Database = {
           label: string
           password: string
           platform: string
+          recovery_phone: string | null
         }
         Insert: {
           created_at?: string
@@ -406,6 +407,7 @@ export type Database = {
           label?: string
           password?: string
           platform: string
+          recovery_phone?: string | null
         }
         Update: {
           created_at?: string
@@ -416,6 +418,7 @@ export type Database = {
           label?: string
           password?: string
           platform?: string
+          recovery_phone?: string | null
         }
         Relationships: []
       }
