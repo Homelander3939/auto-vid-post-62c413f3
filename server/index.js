@@ -2460,10 +2460,11 @@ async function processRecurringSchedule(opts = {}) {
 
           if (i === 0) {
             // First video: create job and process immediately
+            const videoFileName = path.resolve(path.join(folderPath, pair.videoFile));
             const { data: job, error } = await supabase
               .from('upload_jobs')
               .insert({
-                video_file_name: pair.videoFile,
+                video_file_name: videoFileName,
                 video_storage_path: null,
                 title, description, tags,
                 target_platforms: platforms,
@@ -2485,10 +2486,11 @@ async function processRecurringSchedule(opts = {}) {
           } else {
             // Subsequent videos: create scheduled uploads with spacing
             const scheduledAt = new Date(now.getTime() + i * intervalMinutes * 60_000).toISOString();
+            const videoFileName = path.resolve(path.join(folderPath, pair.videoFile));
             const { data: schedRow, error } = await supabase
               .from('scheduled_uploads')
               .insert({
-                video_file_name: pair.videoFile,
+                video_file_name: videoFileName,
                 video_storage_path: null,
                 title, description, tags,
                 target_platforms: platforms,
