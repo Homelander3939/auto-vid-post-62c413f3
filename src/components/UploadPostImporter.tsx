@@ -29,7 +29,7 @@ import {
 
 const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
 const SUPPORTED_IMG = /\.(jpe?g|png|webp)$/i;
-const X_LIMIT = 280;
+const X_LIMIT = 25000; // X Premium long-form limit
 const IMPORTED_KEY = 'techpulse_imported_bundles_v1';
 
 export interface ImportedBundle {
@@ -201,21 +201,9 @@ function deriveFallbackBody(rawText: string): { body: string; xBody: string } {
     i++;
   }
   const cleaned = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-
-  // Detect a hashtag-only line that splits long (LI/FB) from short (X) version.
-  const cLines = cleaned.split('\n');
-  let splitIdx = -1;
-  for (let j = 0; j < cLines.length; j++) {
-    const t = cLines[j].trim();
-    // A line that is just hashtags (#a #b #c), 2+ tags
-    if (/^(#[\w\d_]+\s*){2,}$/.test(t)) { splitIdx = j; break; }
-  }
-  if (splitIdx > 0 && splitIdx < cLines.length - 1) {
-    const longBody = cLines.slice(0, splitIdx).join('\n').trim() + '\n\n' + cLines[splitIdx].trim();
-    const shortBody = cLines.slice(splitIdx + 1).join('\n').trim();
-    if (longBody && shortBody) return { body: longBody, xBody: shortBody };
-  }
-  return { body: cleaned, xBody: '' };
+  // X now supports long posts (Premium up to 25k chars), so we use the same
+  // full body for X as for LinkedIn/Facebook — no hashtag-line splitting.
+  return { body: cleaned, xBody: cleaned };
 }
 
 async function processManifest(
@@ -338,11 +326,13 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   const [previewBundleId, setPreviewBundleId] = useState<string | null>(null);
   const [previewPlatform, setPreviewPlatform] = useState<string>('x');
   const [previewDraft, setPreviewDraft] = useState('');
+  const [previewImgIdx, setPreviewImgIdx] = useState(0);
 
   const openPreview = (bundleId: string, platform: string, text: string) => {
     setPreviewBundleId(bundleId);
     setPreviewPlatform(platform);
     setPreviewDraft(text);
+    setPreviewImgIdx(0);
     setPreviewOpen(true);
   };
 
@@ -358,7 +348,7 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   };
 
   const previewBundle = bundles.find((b) => b.id === previewBundleId) || null;
-  const previewImage = previewBundle?.images[0]?.previewUrl;
+  const previewImages = previewBundle?.images || [];
 
   const persistFolder = (v: string) => {
     setFolderPath(v);
@@ -713,8 +703,52 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
             <div className="space-y-4">
               {/* Faux social-card preview */}
               <div className="rounded-lg border bg-card p-3 space-y-2">
-                {previewImage && (
-                  <img src={previewImage} alt="" className="rounded w-full max-h-72 object-cover" />
+                {previewImages.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="relative">
+                      <img
+                        src={previewImages[Math.min(previewImgIdx, previewImages.length - 1)].previewUrl}
+                        alt={previewImages[Math.min(previewImgIdx, previewImages.length - 1)].name}
+                        className="rounded w-full max-h-72 object-cover"
+                      />
+                      {previewImages.length > 1 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImgIdx((i) => (i - 1 + previewImages.length) % previewImages.length)}
+                            className="absolute left-2 top-1/2 -translate-y-1/2 bg-background/80 hover:bg-background rounded-full w-8 h-8 flex items-center justify-center border shadow"
+                            aria-label="Previous image"
+                          >‹</button>
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImgIdx((i) => (i + 1) % previewImages.length)}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 bg-background/80 hover:bg-background rounded-full w-8 h-8 flex items-center justify-center border shadow"
+                            aria-label="Next image"
+                          >›</button>
+                          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-background/80 rounded px-2 py-0.5 text-[10px] border">
+                            {Math.min(previewImgIdx, previewImages.length - 1) + 1} / {previewImages.length}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {previewImages.length > 1 && (
+                      <div className="flex gap-1.5 overflow-x-auto">
+                        {previewImages.map((img, idx) => (
+                          <button
+                            type="button"
+                            key={img.name}
+                            onClick={() => setPreviewImgIdx(idx)}
+                            className={`shrink-0 rounded border-2 transition-colors ${
+                              idx === previewImgIdx ? 'border-primary' : 'border-transparent opacity-70 hover:opacity-100'
+                            }`}
+                            title={img.name}
+                          >
+                            <img src={img.previewUrl} alt={img.name} className="w-14 h-14 object-cover rounded" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
                 <p className="text-sm whitespace-pre-wrap leading-relaxed">{previewDraft || '(no text)'}</p>
                 <div className="text-[11px] text-muted-foreground">
