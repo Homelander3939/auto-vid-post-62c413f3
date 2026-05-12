@@ -183,21 +183,65 @@ async function navigateToTikTokUpload(page) {
     if (hasFileInput) return true;
     return page.evaluate(() => {
       const text = (document.body?.innerText || '').toLowerCase();
-      return text.includes('select video') || text.includes('select file') || text.includes('drag and drop') || text.includes('upload video');
+      return (
+        text.includes('select video') ||
+        text.includes('select file') ||
+        text.includes('drag and drop') ||
+        text.includes('drop it here') ||
+        text.includes('upload video') ||
+        text.includes('size and duration')
+      );
     }).catch(() => false);
   };
 
-  for (const url of urls) {
-    console.log(`[TikTok] Navigating to upload page: ${url}`);
+  // Try to dismiss any blocking exit/leave dialog before navigating away
+  const dismissBlockingLeaveDialog = async () => {
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    } catch (e) {
-      console.warn('[TikTok] Upload URL navigation warning:', e.message);
+      await page.evaluate(() => {
+        const text = (document.body?.innerText || '').toLowerCase();
+        if (
+          text.includes('leave') || text.includes('exit') ||
+          text.includes('cancel your upload') || text.includes('discard')
+        ) {
+          const buttons = document.querySelectorAll('button, div[role="button"]');
+          for (const btn of buttons) {
+            const t = (btn.textContent || '').trim().toLowerCase();
+            if (['leave', 'discard', 'yes', 'ok', 'confirm'].includes(t)) {
+              btn.click();
+              return;
+            }
+          }
+        }
+      });
+    } catch {}
+  };
+
+  for (const url of urls) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      console.log(`[TikTok] Navigating to upload page: ${url} (attempt ${attempt})`);
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      } catch (e) {
+        console.warn('[TikTok] Upload URL navigation warning:', e.message);
+      }
+      // Wait progressively up to ~12s, polling for upload surface
+      for (let i = 0; i < 6; i++) {
+        await page.waitForTimeout(2000);
+        if (await hasUploadSurface()) {
+          console.log('[TikTok] Upload surface detected.');
+          return true;
+        }
+      }
+      await dismissBlockingLeaveDialog();
     }
-    await page.waitForTimeout(3500);
-    if (await hasUploadSurface()) return true;
   }
 
+  // Last-resort diagnostic
+  try {
+    const u = page.url();
+    const snippet = await page.evaluate(() => (document.body?.innerText || '').slice(0, 300)).catch(() => '');
+    console.warn(`[TikTok] Upload surface not found. URL=${u} | text="${snippet.replace(/\s+/g, ' ')}"`);
+  } catch {}
   return false;
 }
 
