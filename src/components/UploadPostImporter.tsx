@@ -639,16 +639,24 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
                     </Alert>
                   )}
 
-                  {/* Per-platform preview cards: how the post will look on each network */}
+                  {/* Per-platform preview cards: how the post will look on each network.
+                      Click any card to open the full-preview / edit dialog. */}
                   {ok && (
                     <div className="grid sm:grid-cols-3 gap-2">
                       {b.platforms.map((p) => (
-                        <div key={p} className="rounded border border-border bg-background/40 p-2 space-y-1.5">
+                        <button
+                          type="button"
+                          key={p}
+                          onClick={() => openPreview(b.id, p, b.texts[p] || '')}
+                          className="text-left rounded border border-border bg-background/40 p-2 space-y-1.5 hover:border-primary hover:bg-background/70 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/40"
+                          title={`Click to preview & edit ${PLATFORM_LABELS[p] || p} version`}
+                        >
                           <div className="flex items-center gap-1.5">
                             <Badge variant="secondary" className="text-[10px]">{PLATFORM_LABELS[p] || p}</Badge>
                             <span className="text-[10px] text-muted-foreground">
                               {(b.texts[p] || '').length} chars
                             </span>
+                            <Eye className="w-3 h-3 ml-auto text-muted-foreground" />
                           </div>
                           {b.images.length > 0 && (
                             <div className="flex gap-1 overflow-x-auto">
@@ -666,7 +674,7 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
                           <p className="text-[11px] text-muted-foreground line-clamp-6 whitespace-pre-wrap">
                             {b.texts[p] || '(no text)'}
                           </p>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -687,6 +695,85 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
           })}
         </div>
       </CardContent>
+
+      {/* Full preview + edit dialog for an individual platform's post. */}
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Badge variant="secondary">{PLATFORM_LABELS[previewPlatform] || previewPlatform}</Badge>
+              Preview &amp; edit post
+            </DialogTitle>
+            <DialogDescription>
+              How this will appear when posted. Edit the text and click Save — your changes apply to this platform only.
+            </DialogDescription>
+          </DialogHeader>
+
+          {previewBundle && (
+            <div className="space-y-4">
+              {/* Faux social-card preview */}
+              <div className="rounded-lg border bg-card p-3 space-y-2">
+                {previewImage && (
+                  <img src={previewImage} alt="" className="rounded w-full max-h-72 object-cover" />
+                )}
+                <p className="text-sm whitespace-pre-wrap leading-relaxed">{previewDraft || '(no text)'}</p>
+                <div className="text-[11px] text-muted-foreground">
+                  {previewDraft.length} chars
+                  {previewPlatform === 'x' && previewDraft.length > X_LIMIT && (
+                    <span className="text-destructive ml-2">· over X limit ({X_LIMIT})</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Editable text */}
+              <div className="space-y-1.5">
+                <Label className="text-xs">Edit {PLATFORM_LABELS[previewPlatform] || previewPlatform} text</Label>
+                <Textarea
+                  value={previewDraft}
+                  onChange={(e) => setPreviewDraft(e.target.value)}
+                  rows={10}
+                  className="font-mono text-xs"
+                />
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 flex-wrap">
+            <Button variant="outline" onClick={() => setPreviewOpen(false)}>Cancel</Button>
+            <Button onClick={saveEditedPreview} className="gap-1.5">
+              <Save className="w-4 h-4" /> Save changes
+            </Button>
+            {onSendToQueue && previewBundle && (
+              <Button
+                variant="default"
+                className="gap-1.5"
+                onClick={async () => {
+                  // Save edits first, then send the (single-platform) bundle to queue.
+                  const edited: ImportedBundle = {
+                    ...previewBundle,
+                    platforms: [previewPlatform],
+                    texts: { ...previewBundle.texts, [previewPlatform]: previewDraft },
+                  };
+                  setBundles((prev) => prev.map((b) =>
+                    b.id === previewBundle.id
+                      ? { ...b, texts: { ...b.texts, [previewPlatform]: previewDraft } }
+                      : b,
+                  ));
+                  setPreviewOpen(false);
+                  try {
+                    await onSendToQueue(edited, 'now');
+                    toast({ title: `Posted ${PLATFORM_LABELS[previewPlatform] || previewPlatform} version` });
+                  } catch (e: any) {
+                    toast({ title: 'Failed', description: e.message, variant: 'destructive' });
+                  }
+                }}
+              >
+                <Send className="w-4 h-4" /> Save &amp; post this version
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
