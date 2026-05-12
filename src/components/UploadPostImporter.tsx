@@ -201,21 +201,9 @@ function deriveFallbackBody(rawText: string): { body: string; xBody: string } {
     i++;
   }
   const cleaned = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-
-  // Detect a hashtag-only line that splits long (LI/FB) from short (X) version.
-  const cLines = cleaned.split('\n');
-  let splitIdx = -1;
-  for (let j = 0; j < cLines.length; j++) {
-    const t = cLines[j].trim();
-    // A line that is just hashtags (#a #b #c), 2+ tags
-    if (/^(#[\w\d_]+\s*){2,}$/.test(t)) { splitIdx = j; break; }
-  }
-  if (splitIdx > 0 && splitIdx < cLines.length - 1) {
-    const longBody = cLines.slice(0, splitIdx).join('\n').trim() + '\n\n' + cLines[splitIdx].trim();
-    const shortBody = cLines.slice(splitIdx + 1).join('\n').trim();
-    if (longBody && shortBody) return { body: longBody, xBody: shortBody };
-  }
-  return { body: cleaned, xBody: '' };
+  // X now supports long posts (Premium up to 25k chars), so we use the same
+  // full body for X as for LinkedIn/Facebook — no hashtag-line splitting.
+  return { body: cleaned, xBody: cleaned };
 }
 
 async function processManifest(
