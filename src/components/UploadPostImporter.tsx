@@ -150,21 +150,35 @@ function buildPlatformTexts(
   platforms: string[],
 ): Record<string, string> {
   const out: Record<string, string> = {};
+  // Per-platform sections (preferred new format).
+  const liPost = sections['LINKEDIN_POST'] || '';
+  const fbPost = sections['FACEBOOK_POST'] || '';
+  const xPost = sections['X_POST'] || '';
+  // Legacy combined sections.
   const liFb = sections['LINKEDIN_FACEBOOK_POST'] || '';
-  const xText = sections['X_THREAD_OR_LONG_POST'] || '';
+  const xLegacy = sections['X_THREAD_OR_LONG_POST'] || '';
+
   const links = articleUrlsBlock
     ? '\n\n' + articleUrlsBlock.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
         const m = l.match(/^[^:]+:\s*(https?:\/\/.+)$/);
         return m ? m[1] : l;
       }).join('\n')
     : '';
-  // Prefer explicit X section, else short fallback (post-hashtag block), else liFb body.
-  const liFbFinal = (liFb || fallbackBody || '').trim();
-  const xFinal = (xText || fallbackXBody || liFb || fallbackBody || '').trim();
+
+  const liFinal = (liPost || liFb || fallbackBody || '').trim();
+  const fbFinal = (fbPost || liFb || fallbackBody || '').trim();
+  const xFinal = (xPost || xLegacy || fallbackXBody || fallbackBody || '').trim();
+  const hasExplicitX = !!(xPost || xLegacy);
+  const hasExplicitLi = !!(liPost || liFb);
+  const hasExplicitFb = !!(fbPost || liFb);
+
   for (const p of platforms) {
-    if (p === 'x' && xFinal) out.x = (xFinal + (xText || fallbackXBody ? '' : links)).trim();
-    else if ((p === 'linkedin' || p === 'facebook') && liFbFinal) {
-      out[p] = (liFbFinal + links).trim();
+    if (p === 'x' && xFinal) {
+      out.x = (xFinal + (hasExplicitX ? '' : links)).trim();
+    } else if (p === 'linkedin' && liFinal) {
+      out.linkedin = (liFinal + (hasExplicitLi ? '' : links)).trim();
+    } else if (p === 'facebook' && fbFinal) {
+      out.facebook = (fbFinal + (hasExplicitFb ? '' : links)).trim();
     }
   }
   return out;
