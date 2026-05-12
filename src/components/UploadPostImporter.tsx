@@ -326,11 +326,13 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   const [previewBundleId, setPreviewBundleId] = useState<string | null>(null);
   const [previewPlatform, setPreviewPlatform] = useState<string>('x');
   const [previewDraft, setPreviewDraft] = useState('');
+  const [previewImgIdx, setPreviewImgIdx] = useState(0);
 
   const openPreview = (bundleId: string, platform: string, text: string) => {
     setPreviewBundleId(bundleId);
     setPreviewPlatform(platform);
     setPreviewDraft(text);
+    setPreviewImgIdx(0);
     setPreviewOpen(true);
   };
 
@@ -346,7 +348,7 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   };
 
   const previewBundle = bundles.find((b) => b.id === previewBundleId) || null;
-  const previewImage = previewBundle?.images[0]?.previewUrl;
+  const previewImages = previewBundle?.images || [];
 
   const persistFolder = (v: string) => {
     setFolderPath(v);
