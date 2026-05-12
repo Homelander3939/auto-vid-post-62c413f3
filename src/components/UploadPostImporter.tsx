@@ -273,8 +273,8 @@ async function processManifest(
     warnings.push(`Header image_count=${declaredCount} but ${declaredImages.length} listed`);
   }
 
-  const fallbackBody = deriveFallbackBody(text);
-  const texts = buildPlatformTexts(sections, sections['ARTICLE_URLS'] || '', fallbackBody, platforms);
+  const { body: fallbackBody, xBody: fallbackXBody } = deriveFallbackBody(text);
+  const texts = buildPlatformTexts(sections, sections['ARTICLE_URLS'] || '', fallbackBody, fallbackXBody, platforms);
   for (const p of platforms) {
     if (!texts[p] || !texts[p].trim()) errors.push(`Missing text section for ${PLATFORM_LABELS[p] || p}`);
   }
