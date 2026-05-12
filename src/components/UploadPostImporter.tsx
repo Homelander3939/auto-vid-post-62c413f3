@@ -333,6 +333,33 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   const txtInputRef = useRef<HTMLInputElement | null>(null);
   const imgInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Per-platform full-preview / edit dialog state.
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewBundleId, setPreviewBundleId] = useState<string | null>(null);
+  const [previewPlatform, setPreviewPlatform] = useState<string>('x');
+  const [previewDraft, setPreviewDraft] = useState('');
+
+  const openPreview = (bundleId: string, platform: string, text: string) => {
+    setPreviewBundleId(bundleId);
+    setPreviewPlatform(platform);
+    setPreviewDraft(text);
+    setPreviewOpen(true);
+  };
+
+  const saveEditedPreview = () => {
+    if (!previewBundleId) return;
+    setBundles((prev) => prev.map((b) =>
+      b.id === previewBundleId
+        ? { ...b, texts: { ...b.texts, [previewPlatform]: previewDraft } }
+        : b,
+    ));
+    setPreviewOpen(false);
+    toast({ title: `Saved ${PLATFORM_LABELS[previewPlatform] || previewPlatform} version` });
+  };
+
+  const previewBundle = bundles.find((b) => b.id === previewBundleId) || null;
+  const previewImage = previewBundle?.images[0]?.previewUrl;
+
   const persistFolder = (v: string) => {
     setFolderPath(v);
     try { localStorage.setItem(FOLDER_KEY, v); } catch {}
