@@ -229,6 +229,41 @@ function parseFolderMaxCount(marker) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function isFolderUploadMarker(value) {
+  return typeof value === 'string' && /^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(value);
+}
+
+function selectFolderPairsForUpload(folderPath, maxCount) {
+  let pairs = scanAllFiles(folderPath);
+  // "Number of last videos" means choose the highest-numbered N episodes,
+  // but keep scanAllFiles' ascending story order so uploads run 4 → 5 → 6,
+  // never 6 → 5 → 4.
+  if (maxCount && pairs.length > maxCount) pairs = pairs.slice(-maxCount);
+  return pairs;
+}
+
+function buildFolderPairMetadata(folderPath, pair, fallbackTitle = '', fallbackDescription = '', fallbackTags = []) {
+  const cleanVideoStem = pair.videoFile.replace(/\.[^.]+$/, '');
+  const generated = generateMetadataFromFilename(pair.videoFile);
+  let entryTitle = fallbackTitle && fallbackTitle !== '(auto from folder)' ? fallbackTitle : generated.title || cleanVideoStem;
+  let entryDesc = fallbackDescription || generated.description || '';
+  let entryTags = Array.isArray(fallbackTags) && fallbackTags.length ? fallbackTags : (generated.tags || []);
+
+  if (pair.textFile) {
+    const meta = parseTextFile(path.join(folderPath, pair.textFile));
+    if (meta.title) entryTitle = meta.title;
+    if (meta.description) entryDesc = meta.description;
+    if (meta.tags?.length) entryTags = meta.tags;
+  }
+
+  return {
+    videoFileName: path.resolve(path.join(folderPath, pair.videoFile)),
+    title: entryTitle || cleanVideoStem,
+    description: entryDesc || '',
+    tags: entryTags || [],
+  };
+}
+
 function getReadyPlatforms(settings, requestedPlatforms = []) {
   return (Array.isArray(requestedPlatforms) ? requestedPlatforms : []).filter((platform) => {
     const config = settings?.[platform];
@@ -319,7 +354,7 @@ async function processJob(jobId, options = {}) {
   processingJobs.add(jobId);
 
   try {
-    const { data: job } = await supabase.from('upload_jobs').select('*').eq('id', jobId).single();
+    let { data: job } = await supabase.from('upload_jobs').select('*').eq('id', jobId).single();
     if (!job || job.status !== 'pending') {
       processingJobs.delete(jobId);
       return;
@@ -328,6 +363,67 @@ async function processJob(jobId, options = {}) {
     const settings = await getSettings();
 
     const accountContext = await loadJobAccountContext(job);
+
+    if (isFolderUploadMarker(job.video_file_name) && parseFolderIntensity(job.video_file_name)) {
+      const folderPath = normalizeFolderPath(job.video_file_name);
+      const intensityMin = parseFolderIntensity(job.video_file_name);
+      const maxCount = parseFolderMaxCount(job.video_file_name);
+      const pairs = selectFolderPairsForUpload(folderPath, maxCount);
+
+      if (pairs.length === 0) {
+        console.error(`[Worker] No videos found in folder: ${folderPath}`);
+        await supabase.from('upload_jobs').update({ status: 'failed', completed_at: new Date().toISOString() }).eq('id', jobId);
+        await notifyTelegram(settings, `❌ Folder upload: no videos found in ${folderPath}`);
+        return;
+      }
+
+      const requestedPlatforms = Array.isArray(job.target_platforms) ? job.target_platforms : [];
+      const platformResults = requestedPlatforms.map((name) => ({ name, status: 'pending' }));
+      const firstMeta = buildFolderPairMetadata(folderPath, pairs[0], job.title, job.description, job.tags);
+
+      await supabase.from('upload_jobs').update({
+        video_file_name: firstMeta.videoFileName,
+        video_storage_path: null,
+        title: firstMeta.title,
+        description: firstMeta.description,
+        tags: firstMeta.tags,
+        platform_results: platformResults,
+      }).eq('id', jobId);
+
+      if (pairs.length > 1) {
+        const baseTime = Date.now();
+        const scheduledRows = pairs.slice(1).map((pair, idx) => {
+          const meta = buildFolderPairMetadata(folderPath, pair, job.title, job.description, job.tags);
+          return {
+            video_file_name: meta.videoFileName,
+            video_storage_path: null,
+            title: meta.title,
+            description: meta.description,
+            tags: meta.tags,
+            target_platforms: requestedPlatforms,
+            account_id: job.account_id,
+            scheduled_at: new Date(baseTime + (idx + 1) * intensityMin * 60_000).toISOString(),
+            status: 'scheduled',
+          };
+        });
+
+        const { data: scheduledChildren, error: scheduleError } = await supabase
+          .from('scheduled_uploads')
+          .insert(scheduledRows)
+          .select();
+        if (scheduleError) {
+          console.error('[Worker] Folder fan-out scheduling failed:', scheduleError.message);
+          await supabase.from('upload_jobs').update({ status: 'failed', completed_at: new Date().toISOString() }).eq('id', jobId);
+          return;
+        }
+        for (const child of scheduledChildren || []) {
+          try { saveScheduledAccountSelections(child.id, accountContext.selections); } catch {}
+        }
+      }
+
+      console.log(`[Worker] Folder upload expanded ${pairs.length} video(s), starting with ${path.basename(firstMeta.videoFileName)}`);
+      job = { ...job, video_file_name: firstMeta.videoFileName, video_storage_path: null, title: firstMeta.title, description: firstMeta.description, tags: firstMeta.tags, platform_results: platformResults };
+    }
 
     const folderPathOverride = normalizeFolderPath(options.folderPath);
     const results = job.platform_results || [];
