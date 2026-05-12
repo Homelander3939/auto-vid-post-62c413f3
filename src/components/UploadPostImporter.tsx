@@ -703,8 +703,52 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
             <div className="space-y-4">
               {/* Faux social-card preview */}
               <div className="rounded-lg border bg-card p-3 space-y-2">
-                {previewImage && (
-                  <img src={previewImage} alt="" className="rounded w-full max-h-72 object-cover" />
+                {previewImages.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="relative">
+                      <img
+                        src={previewImages[Math.min(previewImgIdx, previewImages.length - 1)].previewUrl}
+                        alt={previewImages[Math.min(previewImgIdx, previewImages.length - 1)].name}
+                        className="rounded w-full max-h-72 object-cover"
+                      />
+                      {previewImages.length > 1 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImgIdx((i) => (i - 1 + previewImages.length) % previewImages.length)}
+                            className="absolute left-2 top-1/2 -translate-y-1/2 bg-background/80 hover:bg-background rounded-full w-8 h-8 flex items-center justify-center border shadow"
+                            aria-label="Previous image"
+                          >‹</button>
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImgIdx((i) => (i + 1) % previewImages.length)}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 bg-background/80 hover:bg-background rounded-full w-8 h-8 flex items-center justify-center border shadow"
+                            aria-label="Next image"
+                          >›</button>
+                          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-background/80 rounded px-2 py-0.5 text-[10px] border">
+                            {Math.min(previewImgIdx, previewImages.length - 1) + 1} / {previewImages.length}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {previewImages.length > 1 && (
+                      <div className="flex gap-1.5 overflow-x-auto">
+                        {previewImages.map((img, idx) => (
+                          <button
+                            type="button"
+                            key={img.name}
+                            onClick={() => setPreviewImgIdx(idx)}
+                            className={`shrink-0 rounded border-2 transition-colors ${
+                              idx === previewImgIdx ? 'border-primary' : 'border-transparent opacity-70 hover:opacity-100'
+                            }`}
+                            title={img.name}
+                          >
+                            <img src={img.previewUrl} alt={img.name} className="w-14 h-14 object-cover rounded" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
                 <p className="text-sm whitespace-pre-wrap leading-relaxed">{previewDraft || '(no text)'}</p>
                 <div className="text-[11px] text-muted-foreground">
