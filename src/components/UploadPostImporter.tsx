@@ -29,7 +29,7 @@ import {
 
 const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
 const SUPPORTED_IMG = /\.(jpe?g|png|webp)$/i;
-const X_LIMIT = 25000; // X Premium long-form limit
+const X_LIMIT = 280; // X Free account standard post limit
 const IMPORTED_KEY = 'techpulse_imported_bundles_v1';
 
 export interface ImportedBundle {
