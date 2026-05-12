@@ -20,9 +20,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Textarea } from '@/components/ui/textarea';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import {
-  FileText, Upload, AlertTriangle, CheckCircle2, RefreshCw, Send,
+  FileText, Upload, AlertTriangle, CheckCircle2, RefreshCw, Send, Eye, Save,
 } from 'lucide-react';
 
 const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
@@ -144,6 +146,7 @@ function buildPlatformTexts(
   sections: Record<string, string>,
   articleUrlsBlock: string,
   fallbackBody: string,
+  fallbackXBody: string,
   platforms: string[],
 ): Record<string, string> {
   const out: Record<string, string> = {};
@@ -155,10 +158,11 @@ function buildPlatformTexts(
         return m ? m[1] : l;
       }).join('\n')
     : '';
+  // Prefer explicit X section, else short fallback (post-hashtag block), else liFb body.
   const liFbFinal = (liFb || fallbackBody || '').trim();
-  const xFinal = (xText || liFb || fallbackBody || '').trim();
+  const xFinal = (xText || fallbackXBody || liFb || fallbackBody || '').trim();
   for (const p of platforms) {
-    if (p === 'x' && xFinal) out.x = (xFinal + (xText ? '' : links)).trim();
+    if (p === 'x' && xFinal) out.x = (xFinal + (xText || fallbackXBody ? '' : links)).trim();
     else if ((p === 'linkedin' || p === 'facebook') && liFbFinal) {
       out[p] = (liFbFinal + links).trim();
     }
@@ -168,7 +172,9 @@ function buildPlatformTexts(
 
 // Strip TechPulse-ish headers, ARTICLE_URLS lines, and an `images:` numbered
 // list from the raw .txt so the remaining text can be used as the post body.
-function deriveFallbackBody(rawText: string): string {
+// Returns { body, xBody } — when the text contains a hashtag-only line acting
+// as a divider, body = pre-hashtag (long, LI/FB), xBody = post-hashtag (short, X).
+function deriveFallbackBody(rawText: string): { body: string; xBody: string } {
   const lines = rawText.replace(/\r\n/g, '\n').split('\n');
   const out: string[] = [];
   let i = 0;
@@ -182,18 +188,34 @@ function deriveFallbackBody(rawText: string): string {
       if (!trimmed || /^\d+\.\s*.+$/.test(trimmed)) { i++; continue; }
       inImagesList = false;
     }
-    // Drop simple `key: value` header lines that match TECHPULSE conventions.
     const headerMatch = trimmed.match(/^([a-zA-Z_]+):\s*(.+)?$/);
     if (headerMatch) {
       const k = headerMatch[1].toLowerCase();
-      if (['platforms', 'image_count', 'session', 'post_index', 'created_at', 'topic', 'campaign', 'source'].includes(k)) {
+      if (['platforms', 'image_count', 'session', 'post_index', 'created_at', 'topic', 'campaign', 'source', 'upload_mode'].includes(k)) {
         i++; continue;
       }
     }
+    // Drop the format marker line (TECHPULSE_SOCIAL_POST_V1)
+    if (/^TECHPULSE_SOCIAL_POST_V1$/i.test(trimmed)) { i++; continue; }
     out.push(line);
     i++;
   }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  const cleaned = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+  // Detect a hashtag-only line that splits long (LI/FB) from short (X) version.
+  const cLines = cleaned.split('\n');
+  let splitIdx = -1;
+  for (let j = 0; j < cLines.length; j++) {
+    const t = cLines[j].trim();
+    // A line that is just hashtags (#a #b #c), 2+ tags
+    if (/^(#[\w\d_]+\s*){2,}$/.test(t)) { splitIdx = j; break; }
+  }
+  if (splitIdx > 0 && splitIdx < cLines.length - 1) {
+    const longBody = cLines.slice(0, splitIdx).join('\n').trim() + '\n\n' + cLines[splitIdx].trim();
+    const shortBody = cLines.slice(splitIdx + 1).join('\n').trim();
+    if (longBody && shortBody) return { body: longBody, xBody: shortBody };
+  }
+  return { body: cleaned, xBody: '' };
 }
 
 async function processManifest(
@@ -251,8 +273,8 @@ async function processManifest(
     warnings.push(`Header image_count=${declaredCount} but ${declaredImages.length} listed`);
   }
 
-  const fallbackBody = deriveFallbackBody(text);
-  const texts = buildPlatformTexts(sections, sections['ARTICLE_URLS'] || '', fallbackBody, platforms);
+  const { body: fallbackBody, xBody: fallbackXBody } = deriveFallbackBody(text);
+  const texts = buildPlatformTexts(sections, sections['ARTICLE_URLS'] || '', fallbackBody, fallbackXBody, platforms);
   for (const p of platforms) {
     if (!texts[p] || !texts[p].trim()) errors.push(`Missing text section for ${PLATFORM_LABELS[p] || p}`);
   }
@@ -310,6 +332,33 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const txtInputRef = useRef<HTMLInputElement | null>(null);
   const imgInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Per-platform full-preview / edit dialog state.
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewBundleId, setPreviewBundleId] = useState<string | null>(null);
+  const [previewPlatform, setPreviewPlatform] = useState<string>('x');
+  const [previewDraft, setPreviewDraft] = useState('');
+
+  const openPreview = (bundleId: string, platform: string, text: string) => {
+    setPreviewBundleId(bundleId);
+    setPreviewPlatform(platform);
+    setPreviewDraft(text);
+    setPreviewOpen(true);
+  };
+
+  const saveEditedPreview = () => {
+    if (!previewBundleId) return;
+    setBundles((prev) => prev.map((b) =>
+      b.id === previewBundleId
+        ? { ...b, texts: { ...b.texts, [previewPlatform]: previewDraft } }
+        : b,
+    ));
+    setPreviewOpen(false);
+    toast({ title: `Saved ${PLATFORM_LABELS[previewPlatform] || previewPlatform} version` });
+  };
+
+  const previewBundle = bundles.find((b) => b.id === previewBundleId) || null;
+  const previewImage = previewBundle?.images[0]?.previewUrl;
 
   const persistFolder = (v: string) => {
     setFolderPath(v);
@@ -590,16 +639,24 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
                     </Alert>
                   )}
 
-                  {/* Per-platform preview cards: how the post will look on each network */}
+                  {/* Per-platform preview cards: how the post will look on each network.
+                      Click any card to open the full-preview / edit dialog. */}
                   {ok && (
                     <div className="grid sm:grid-cols-3 gap-2">
                       {b.platforms.map((p) => (
-                        <div key={p} className="rounded border border-border bg-background/40 p-2 space-y-1.5">
+                        <button
+                          type="button"
+                          key={p}
+                          onClick={() => openPreview(b.id, p, b.texts[p] || '')}
+                          className="text-left rounded border border-border bg-background/40 p-2 space-y-1.5 hover:border-primary hover:bg-background/70 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/40"
+                          title={`Click to preview & edit ${PLATFORM_LABELS[p] || p} version`}
+                        >
                           <div className="flex items-center gap-1.5">
                             <Badge variant="secondary" className="text-[10px]">{PLATFORM_LABELS[p] || p}</Badge>
                             <span className="text-[10px] text-muted-foreground">
                               {(b.texts[p] || '').length} chars
                             </span>
+                            <Eye className="w-3 h-3 ml-auto text-muted-foreground" />
                           </div>
                           {b.images.length > 0 && (
                             <div className="flex gap-1 overflow-x-auto">
@@ -617,7 +674,7 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
                           <p className="text-[11px] text-muted-foreground line-clamp-6 whitespace-pre-wrap">
                             {b.texts[p] || '(no text)'}
                           </p>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -638,6 +695,85 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
           })}
         </div>
       </CardContent>
+
+      {/* Full preview + edit dialog for an individual platform's post. */}
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Badge variant="secondary">{PLATFORM_LABELS[previewPlatform] || previewPlatform}</Badge>
+              Preview &amp; edit post
+            </DialogTitle>
+            <DialogDescription>
+              How this will appear when posted. Edit the text and click Save — your changes apply to this platform only.
+            </DialogDescription>
+          </DialogHeader>
+
+          {previewBundle && (
+            <div className="space-y-4">
+              {/* Faux social-card preview */}
+              <div className="rounded-lg border bg-card p-3 space-y-2">
+                {previewImage && (
+                  <img src={previewImage} alt="" className="rounded w-full max-h-72 object-cover" />
+                )}
+                <p className="text-sm whitespace-pre-wrap leading-relaxed">{previewDraft || '(no text)'}</p>
+                <div className="text-[11px] text-muted-foreground">
+                  {previewDraft.length} chars
+                  {previewPlatform === 'x' && previewDraft.length > X_LIMIT && (
+                    <span className="text-destructive ml-2">· over X limit ({X_LIMIT})</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Editable text */}
+              <div className="space-y-1.5">
+                <Label className="text-xs">Edit {PLATFORM_LABELS[previewPlatform] || previewPlatform} text</Label>
+                <Textarea
+                  value={previewDraft}
+                  onChange={(e) => setPreviewDraft(e.target.value)}
+                  rows={10}
+                  className="font-mono text-xs"
+                />
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 flex-wrap">
+            <Button variant="outline" onClick={() => setPreviewOpen(false)}>Cancel</Button>
+            <Button onClick={saveEditedPreview} className="gap-1.5">
+              <Save className="w-4 h-4" /> Save changes
+            </Button>
+            {onSendToQueue && previewBundle && (
+              <Button
+                variant="default"
+                className="gap-1.5"
+                onClick={async () => {
+                  // Save edits first, then send the (single-platform) bundle to queue.
+                  const edited: ImportedBundle = {
+                    ...previewBundle,
+                    platforms: [previewPlatform],
+                    texts: { ...previewBundle.texts, [previewPlatform]: previewDraft },
+                  };
+                  setBundles((prev) => prev.map((b) =>
+                    b.id === previewBundle.id
+                      ? { ...b, texts: { ...b.texts, [previewPlatform]: previewDraft } }
+                      : b,
+                  ));
+                  setPreviewOpen(false);
+                  try {
+                    await onSendToQueue(edited, 'now');
+                    toast({ title: `Posted ${PLATFORM_LABELS[previewPlatform] || previewPlatform} version` });
+                  } catch (e: any) {
+                    toast({ title: 'Failed', description: e.message, variant: 'destructive' });
+                  }
+                }}
+              >
+                <Send className="w-4 h-4" /> Save &amp; post this version
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
