@@ -467,7 +467,7 @@ async function processJob(jobId, options = {}) {
     let resolvedDescription = job.description;
     let resolvedTags = job.tags;
 
-    if (job.video_storage_path) {
+      if (job.video_storage_path) {
       const { data: fileData, error } = await supabase.storage.from('videos').download(job.video_storage_path);
       if (error || !fileData) {
         console.error('Failed to download video from storage:', error);
@@ -480,7 +480,7 @@ async function processJob(jobId, options = {}) {
       videoPath = path.join(tempDir, job.video_file_name);
       const buffer = Buffer.from(await fileData.arrayBuffer());
       fs.writeFileSync(videoPath, buffer);
-    } else if (typeof job.video_file_name === 'string' && /^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(job.video_file_name)) {
+    } else if (isFolderUploadMarker(job.video_file_name)) {
       const folderPath = normalizeFolderPath(job.video_file_name);
       const { videoFile, textFile } = scanFolder(folderPath);
 
@@ -2189,14 +2189,14 @@ async function processScheduledUploads() {
       let folderPathForJob = null;
 
       // Handle folder-based entries
-      if (/^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(videoFileName)) {
+      if (isFolderUploadMarker(videoFileName)) {
         const folderPath = normalizeFolderPath(videoFileName);
         const intensityMin = parseFolderIntensity(videoFileName);
         const maxCount = parseFolderMaxCount(videoFileName);
 
         // If an intensity is set, fan out: scan ALL videos and schedule them spaced by intensity.
         if (intensityMin) {
-          let allPairs = scanAllFiles(folderPath);
+          let allPairs = selectFolderPairsForUpload(folderPath, maxCount);
           if (allPairs.length === 0) {
             console.error(`[Scheduler] No videos found in folder: ${folderPath}`);
             await supabase.from('scheduled_uploads').update({ status: 'error' }).eq('id', item.id);
@@ -2204,36 +2204,17 @@ async function processScheduledUploads() {
             continue;
           }
 
-          // If user requested "last N", interpret as the next N episodes in
-          // story order — i.e. the LOWEST-numbered N pairs. scanAllFiles is
-          // already sorted ascending by series #, so take the first N.
-          if (maxCount && allPairs.length > maxCount) {
-            allPairs = allPairs.slice(0, maxCount);
-          }
-
           const baseTime = new Date(item.scheduled_at).getTime();
           const fanoutRows = allPairs.map((pair, idx) => {
-            // Always derive a real title from the video filename as the floor,
-            // so we never queue a row labelled "(auto from folder)" even when
-            // no sibling .txt exists.
-            const cleanVideoStem = pair.videoFile.replace(/\.[^.]+$/, '');
-            let entryTitle = item.title && item.title !== '(auto from folder)' ? item.title : cleanVideoStem;
-            let entryDesc = item.description;
-            let entryTags = item.tags;
-            if (pair.textFile) {
-              const meta = parseTextFile(path.join(folderPath, pair.textFile));
-              if (meta.title) entryTitle = meta.title;
-              if (!entryDesc && meta.description) entryDesc = meta.description;
-              if ((!entryTags || !entryTags.length) && meta.tags?.length) entryTags = meta.tags;
-            }
+            const meta = buildFolderPairMetadata(folderPath, pair, item.title, item.description, item.tags);
             return {
               // Store the absolute path so the worker resolves it regardless of
               // the global default folder (handled by the path.isAbsolute branch).
-              video_file_name: path.resolve(path.join(folderPath, pair.videoFile)),
+              video_file_name: meta.videoFileName,
               video_storage_path: null,
-              title: entryTitle || cleanVideoStem,
-              description: entryDesc || '',
-              tags: entryTags || [],
+              title: meta.title,
+              description: meta.description,
+              tags: meta.tags,
               target_platforms: item.target_platforms,
               account_id: item.account_id,
               scheduled_at: new Date(baseTime + idx * intensityMin * 60_000).toISOString(),
