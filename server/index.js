@@ -2957,17 +2957,20 @@ async function pollFolderWatchers() {
 
     for (const pair of ready) {
       try {
-        // Insert as a folder-style upload_jobs row so the existing worker handles it.
-        const tagPath = `[folder${cfg.intensity ? `|${cfg.intensity}` : ''}] ${absFolder}`;
+        // Queue the detected pair itself. Do not use a generic [folder] marker here:
+        // that would make the worker rescan the folder and pick the latest file,
+        // which can reverse numbered episodes or duplicate the wrong video.
         const meta = parseTextFile(pair.textAbs);
         const { data: insJob, error: insErr } = await supabase.from('upload_jobs').insert({
-          video_file_name: tagPath,
+          video_file_name: pair.videoAbs,
+          video_storage_path: null,
           title: meta.title || pair.videoFile,
           description: meta.description || '',
           tags: meta.tags || [],
           target_platforms: readyPlatforms,
           account_id: readyPlatforms.map((p) => cfg.accountSelections?.[p]).find(Boolean) || null,
           status: 'pending',
+          platform_results: readyPlatforms.map((name) => ({ name, status: 'pending' })),
         }).select().single();
 
         if (insErr) {
