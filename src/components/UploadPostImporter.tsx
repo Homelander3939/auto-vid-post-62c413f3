@@ -146,6 +146,7 @@ function buildPlatformTexts(
   sections: Record<string, string>,
   articleUrlsBlock: string,
   fallbackBody: string,
+  fallbackXBody: string,
   platforms: string[],
 ): Record<string, string> {
   const out: Record<string, string> = {};
@@ -157,10 +158,11 @@ function buildPlatformTexts(
         return m ? m[1] : l;
       }).join('\n')
     : '';
+  // Prefer explicit X section, else short fallback (post-hashtag block), else liFb body.
   const liFbFinal = (liFb || fallbackBody || '').trim();
-  const xFinal = (xText || liFb || fallbackBody || '').trim();
+  const xFinal = (xText || fallbackXBody || liFb || fallbackBody || '').trim();
   for (const p of platforms) {
-    if (p === 'x' && xFinal) out.x = (xFinal + (xText ? '' : links)).trim();
+    if (p === 'x' && xFinal) out.x = (xFinal + (xText || fallbackXBody ? '' : links)).trim();
     else if ((p === 'linkedin' || p === 'facebook') && liFbFinal) {
       out[p] = (liFbFinal + links).trim();
     }
@@ -170,7 +172,9 @@ function buildPlatformTexts(
 
 // Strip TechPulse-ish headers, ARTICLE_URLS lines, and an `images:` numbered
 // list from the raw .txt so the remaining text can be used as the post body.
-function deriveFallbackBody(rawText: string): string {
+// Returns { body, xBody } — when the text contains a hashtag-only line acting
+// as a divider, body = pre-hashtag (long, LI/FB), xBody = post-hashtag (short, X).
+function deriveFallbackBody(rawText: string): { body: string; xBody: string } {
   const lines = rawText.replace(/\r\n/g, '\n').split('\n');
   const out: string[] = [];
   let i = 0;
@@ -184,18 +188,34 @@ function deriveFallbackBody(rawText: string): string {
       if (!trimmed || /^\d+\.\s*.+$/.test(trimmed)) { i++; continue; }
       inImagesList = false;
     }
-    // Drop simple `key: value` header lines that match TECHPULSE conventions.
     const headerMatch = trimmed.match(/^([a-zA-Z_]+):\s*(.+)?$/);
     if (headerMatch) {
       const k = headerMatch[1].toLowerCase();
-      if (['platforms', 'image_count', 'session', 'post_index', 'created_at', 'topic', 'campaign', 'source'].includes(k)) {
+      if (['platforms', 'image_count', 'session', 'post_index', 'created_at', 'topic', 'campaign', 'source', 'upload_mode'].includes(k)) {
         i++; continue;
       }
     }
+    // Drop the format marker line (TECHPULSE_SOCIAL_POST_V1)
+    if (/^TECHPULSE_SOCIAL_POST_V1$/i.test(trimmed)) { i++; continue; }
     out.push(line);
     i++;
   }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  const cleaned = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+  // Detect a hashtag-only line that splits long (LI/FB) from short (X) version.
+  const cLines = cleaned.split('\n');
+  let splitIdx = -1;
+  for (let j = 0; j < cLines.length; j++) {
+    const t = cLines[j].trim();
+    // A line that is just hashtags (#a #b #c), 2+ tags
+    if (/^(#[\w\d_]+\s*){2,}$/.test(t)) { splitIdx = j; break; }
+  }
+  if (splitIdx > 0 && splitIdx < cLines.length - 1) {
+    const longBody = cLines.slice(0, splitIdx).join('\n').trim() + '\n\n' + cLines[splitIdx].trim();
+    const shortBody = cLines.slice(splitIdx + 1).join('\n').trim();
+    if (longBody && shortBody) return { body: longBody, xBody: shortBody };
+  }
+  return { body: cleaned, xBody: '' };
 }
 
 async function processManifest(
