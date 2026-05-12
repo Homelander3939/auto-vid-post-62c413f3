@@ -171,31 +171,31 @@ function formatTikTokFailureMessage(diagnostics) {
 }
 
 async function navigateToTikTokUpload(page) {
-  // Try new TikTok Studio URL first
-  console.log('[TikTok] Navigating to TikTok Studio upload page...');
-  try {
-    await page.goto(TIKTOK_UPLOAD_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(3000);
-    const hasFileInput = await page.$('input[type="file"]');
-    if (hasFileInput) return true;
-    // Check if we landed on the upload page by looking for upload-related elements
-    const isUploadPage = await page.evaluate(() => {
-      const text = (document.body?.innerText || '').toLowerCase();
-      return text.includes('select video') || text.includes('upload') || text.includes('drag');
-    });
-    if (isUploadPage) return true;
-  } catch (e) {
-    console.warn('[TikTok] Primary URL failed:', e.message);
-  }
+  const urls = [
+    TIKTOK_UPLOAD_URL,
+    TIKTOK_UPLOAD_URL_ALT,
+    'https://www.tiktok.com/upload',
+    'https://www.tiktok.com/tiktokstudio/upload?lang=en',
+  ];
 
-  // Fallback to old creator-center URL
-  console.log('[TikTok] Trying fallback upload URL...');
-  try {
-    await page.goto(TIKTOK_UPLOAD_URL_ALT, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(3000);
-    return true;
-  } catch (e) {
-    console.warn('[TikTok] Fallback URL also failed:', e.message);
+  const hasUploadSurface = async () => {
+    const hasFileInput = await page.$('input[type="file"]').catch(() => null);
+    if (hasFileInput) return true;
+    return page.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      return text.includes('select video') || text.includes('select file') || text.includes('drag and drop') || text.includes('upload video');
+    }).catch(() => false);
+  };
+
+  for (const url of urls) {
+    console.log(`[TikTok] Navigating to upload page: ${url}`);
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    } catch (e) {
+      console.warn('[TikTok] Upload URL navigation warning:', e.message);
+    }
+    await page.waitForTimeout(3500);
+    if (await hasUploadSurface()) return true;
   }
 
   return false;

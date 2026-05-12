@@ -229,6 +229,41 @@ function parseFolderMaxCount(marker) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function isFolderUploadMarker(value) {
+  return typeof value === 'string' && /^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(value);
+}
+
+function selectFolderPairsForUpload(folderPath, maxCount) {
+  let pairs = scanAllFiles(folderPath);
+  // "Number of last videos" means choose the highest-numbered N episodes,
+  // but keep scanAllFiles' ascending story order so uploads run 4 → 5 → 6,
+  // never 6 → 5 → 4.
+  if (maxCount && pairs.length > maxCount) pairs = pairs.slice(-maxCount);
+  return pairs;
+}
+
+function buildFolderPairMetadata(folderPath, pair, fallbackTitle = '', fallbackDescription = '', fallbackTags = []) {
+  const cleanVideoStem = pair.videoFile.replace(/\.[^.]+$/, '');
+  const generated = generateMetadataFromFilename(pair.videoFile);
+  let entryTitle = fallbackTitle && fallbackTitle !== '(auto from folder)' ? fallbackTitle : generated.title || cleanVideoStem;
+  let entryDesc = fallbackDescription || generated.description || '';
+  let entryTags = Array.isArray(fallbackTags) && fallbackTags.length ? fallbackTags : (generated.tags || []);
+
+  if (pair.textFile) {
+    const meta = parseTextFile(path.join(folderPath, pair.textFile));
+    if (meta.title) entryTitle = meta.title;
+    if (meta.description) entryDesc = meta.description;
+    if (meta.tags?.length) entryTags = meta.tags;
+  }
+
+  return {
+    videoFileName: path.resolve(path.join(folderPath, pair.videoFile)),
+    title: entryTitle || cleanVideoStem,
+    description: entryDesc || '',
+    tags: entryTags || [],
+  };
+}
+
 function getReadyPlatforms(settings, requestedPlatforms = []) {
   return (Array.isArray(requestedPlatforms) ? requestedPlatforms : []).filter((platform) => {
     const config = settings?.[platform];
@@ -319,7 +354,7 @@ async function processJob(jobId, options = {}) {
   processingJobs.add(jobId);
 
   try {
-    const { data: job } = await supabase.from('upload_jobs').select('*').eq('id', jobId).single();
+    let { data: job } = await supabase.from('upload_jobs').select('*').eq('id', jobId).single();
     if (!job || job.status !== 'pending') {
       processingJobs.delete(jobId);
       return;
@@ -328,6 +363,67 @@ async function processJob(jobId, options = {}) {
     const settings = await getSettings();
 
     const accountContext = await loadJobAccountContext(job);
+
+    if (isFolderUploadMarker(job.video_file_name) && parseFolderIntensity(job.video_file_name)) {
+      const folderPath = normalizeFolderPath(job.video_file_name);
+      const intensityMin = parseFolderIntensity(job.video_file_name);
+      const maxCount = parseFolderMaxCount(job.video_file_name);
+      const pairs = selectFolderPairsForUpload(folderPath, maxCount);
+
+      if (pairs.length === 0) {
+        console.error(`[Worker] No videos found in folder: ${folderPath}`);
+        await supabase.from('upload_jobs').update({ status: 'failed', completed_at: new Date().toISOString() }).eq('id', jobId);
+        await notifyTelegram(settings, `❌ Folder upload: no videos found in ${folderPath}`);
+        return;
+      }
+
+      const requestedPlatforms = Array.isArray(job.target_platforms) ? job.target_platforms : [];
+      const platformResults = requestedPlatforms.map((name) => ({ name, status: 'pending' }));
+      const firstMeta = buildFolderPairMetadata(folderPath, pairs[0], job.title, job.description, job.tags);
+
+      await supabase.from('upload_jobs').update({
+        video_file_name: firstMeta.videoFileName,
+        video_storage_path: null,
+        title: firstMeta.title,
+        description: firstMeta.description,
+        tags: firstMeta.tags,
+        platform_results: platformResults,
+      }).eq('id', jobId);
+
+      if (pairs.length > 1) {
+        const baseTime = Date.now();
+        const scheduledRows = pairs.slice(1).map((pair, idx) => {
+          const meta = buildFolderPairMetadata(folderPath, pair, job.title, job.description, job.tags);
+          return {
+            video_file_name: meta.videoFileName,
+            video_storage_path: null,
+            title: meta.title,
+            description: meta.description,
+            tags: meta.tags,
+            target_platforms: requestedPlatforms,
+            account_id: job.account_id,
+            scheduled_at: new Date(baseTime + (idx + 1) * intensityMin * 60_000).toISOString(),
+            status: 'scheduled',
+          };
+        });
+
+        const { data: scheduledChildren, error: scheduleError } = await supabase
+          .from('scheduled_uploads')
+          .insert(scheduledRows)
+          .select();
+        if (scheduleError) {
+          console.error('[Worker] Folder fan-out scheduling failed:', scheduleError.message);
+          await supabase.from('upload_jobs').update({ status: 'failed', completed_at: new Date().toISOString() }).eq('id', jobId);
+          return;
+        }
+        for (const child of scheduledChildren || []) {
+          try { saveScheduledAccountSelections(child.id, accountContext.selections); } catch {}
+        }
+      }
+
+      console.log(`[Worker] Folder upload expanded ${pairs.length} video(s), starting with ${path.basename(firstMeta.videoFileName)}`);
+      job = { ...job, video_file_name: firstMeta.videoFileName, video_storage_path: null, title: firstMeta.title, description: firstMeta.description, tags: firstMeta.tags, platform_results: platformResults };
+    }
 
     const folderPathOverride = normalizeFolderPath(options.folderPath);
     const results = job.platform_results || [];
@@ -371,7 +467,7 @@ async function processJob(jobId, options = {}) {
     let resolvedDescription = job.description;
     let resolvedTags = job.tags;
 
-    if (job.video_storage_path) {
+      if (job.video_storage_path) {
       const { data: fileData, error } = await supabase.storage.from('videos').download(job.video_storage_path);
       if (error || !fileData) {
         console.error('Failed to download video from storage:', error);
@@ -384,7 +480,7 @@ async function processJob(jobId, options = {}) {
       videoPath = path.join(tempDir, job.video_file_name);
       const buffer = Buffer.from(await fileData.arrayBuffer());
       fs.writeFileSync(videoPath, buffer);
-    } else if (typeof job.video_file_name === 'string' && /^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(job.video_file_name)) {
+    } else if (isFolderUploadMarker(job.video_file_name)) {
       const folderPath = normalizeFolderPath(job.video_file_name);
       const { videoFile, textFile } = scanFolder(folderPath);
 
@@ -2093,14 +2189,14 @@ async function processScheduledUploads() {
       let folderPathForJob = null;
 
       // Handle folder-based entries
-      if (/^\[folder(?:\|\d+(?:\|\d+)?)?\]\s/i.test(videoFileName)) {
+      if (isFolderUploadMarker(videoFileName)) {
         const folderPath = normalizeFolderPath(videoFileName);
         const intensityMin = parseFolderIntensity(videoFileName);
         const maxCount = parseFolderMaxCount(videoFileName);
 
         // If an intensity is set, fan out: scan ALL videos and schedule them spaced by intensity.
         if (intensityMin) {
-          let allPairs = scanAllFiles(folderPath);
+          let allPairs = selectFolderPairsForUpload(folderPath, maxCount);
           if (allPairs.length === 0) {
             console.error(`[Scheduler] No videos found in folder: ${folderPath}`);
             await supabase.from('scheduled_uploads').update({ status: 'error' }).eq('id', item.id);
@@ -2108,36 +2204,17 @@ async function processScheduledUploads() {
             continue;
           }
 
-          // If user requested "last N", interpret as the next N episodes in
-          // story order — i.e. the LOWEST-numbered N pairs. scanAllFiles is
-          // already sorted ascending by series #, so take the first N.
-          if (maxCount && allPairs.length > maxCount) {
-            allPairs = allPairs.slice(0, maxCount);
-          }
-
           const baseTime = new Date(item.scheduled_at).getTime();
           const fanoutRows = allPairs.map((pair, idx) => {
-            // Always derive a real title from the video filename as the floor,
-            // so we never queue a row labelled "(auto from folder)" even when
-            // no sibling .txt exists.
-            const cleanVideoStem = pair.videoFile.replace(/\.[^.]+$/, '');
-            let entryTitle = item.title && item.title !== '(auto from folder)' ? item.title : cleanVideoStem;
-            let entryDesc = item.description;
-            let entryTags = item.tags;
-            if (pair.textFile) {
-              const meta = parseTextFile(path.join(folderPath, pair.textFile));
-              if (meta.title) entryTitle = meta.title;
-              if (!entryDesc && meta.description) entryDesc = meta.description;
-              if ((!entryTags || !entryTags.length) && meta.tags?.length) entryTags = meta.tags;
-            }
+            const meta = buildFolderPairMetadata(folderPath, pair, item.title, item.description, item.tags);
             return {
               // Store the absolute path so the worker resolves it regardless of
               // the global default folder (handled by the path.isAbsolute branch).
-              video_file_name: path.resolve(path.join(folderPath, pair.videoFile)),
+              video_file_name: meta.videoFileName,
               video_storage_path: null,
-              title: entryTitle || cleanVideoStem,
-              description: entryDesc || '',
-              tags: entryTags || [],
+              title: meta.title,
+              description: meta.description,
+              tags: meta.tags,
               target_platforms: item.target_platforms,
               account_id: item.account_id,
               scheduled_at: new Date(baseTime + idx * intensityMin * 60_000).toISOString(),
@@ -2383,10 +2460,11 @@ async function processRecurringSchedule(opts = {}) {
 
           if (i === 0) {
             // First video: create job and process immediately
+            const videoFileName = path.resolve(path.join(folderPath, pair.videoFile));
             const { data: job, error } = await supabase
               .from('upload_jobs')
               .insert({
-                video_file_name: pair.videoFile,
+                video_file_name: videoFileName,
                 video_storage_path: null,
                 title, description, tags,
                 target_platforms: platforms,
@@ -2408,10 +2486,11 @@ async function processRecurringSchedule(opts = {}) {
           } else {
             // Subsequent videos: create scheduled uploads with spacing
             const scheduledAt = new Date(now.getTime() + i * intervalMinutes * 60_000).toISOString();
+            const videoFileName = path.resolve(path.join(folderPath, pair.videoFile));
             const { data: schedRow, error } = await supabase
               .from('scheduled_uploads')
               .insert({
-                video_file_name: pair.videoFile,
+                video_file_name: videoFileName,
                 video_storage_path: null,
                 title, description, tags,
                 target_platforms: platforms,
@@ -2880,17 +2959,20 @@ async function pollFolderWatchers() {
 
     for (const pair of ready) {
       try {
-        // Insert as a folder-style upload_jobs row so the existing worker handles it.
-        const tagPath = `[folder${cfg.intensity ? `|${cfg.intensity}` : ''}] ${absFolder}`;
+        // Queue the detected pair itself. Do not use a generic [folder] marker here:
+        // that would make the worker rescan the folder and pick the latest file,
+        // which can reverse numbered episodes or duplicate the wrong video.
         const meta = parseTextFile(pair.textAbs);
         const { data: insJob, error: insErr } = await supabase.from('upload_jobs').insert({
-          video_file_name: tagPath,
+          video_file_name: pair.videoAbs,
+          video_storage_path: null,
           title: meta.title || pair.videoFile,
           description: meta.description || '',
           tags: meta.tags || [],
           target_platforms: readyPlatforms,
           account_id: readyPlatforms.map((p) => cfg.accountSelections?.[p]).find(Boolean) || null,
           status: 'pending',
+          platform_results: readyPlatforms.map((name) => ({ name, status: 'pending' })),
         }).select().single();
 
         if (insErr) {
