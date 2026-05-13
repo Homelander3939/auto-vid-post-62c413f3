@@ -24,16 +24,18 @@ export function cleanVideoTitle(filename: string): string {
  * e.g. "Roman_History_38_2026-04-13" → 38
  */
 export function extractSeriesNumber(filename: string): number {
-  const stem = filename.replace(/\.[^.]+$/, '');
-  // Remove date/time patterns first to isolate the series number
-  const cleaned = stem
-    .replace(/[\s_-]+\d{4}[-_]\d{2}[-_]\d{2}/g, '')
-    .replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}/g, '')
-    .replace(/[\s_-]+\d{2}[-_]\d{2}[-_]\d{2}\b/g, '')
-    .replace(/[-_]\d{2}[-_]\d{2}[-_]\d{2}\b/g, '')
-    .replace(/[\s_-]+\d{6,}/g, '')
-    .replace(/[-_]\d{6,}/g, '');
-  const match = cleaned.match(/(\d+)\D*$/);
+  let stem = filename.replace(/\.[^.]+$/, '');
+  // Repeatedly peel trailing date/time/timestamp segments off the END of the stem
+  // (anchored to $) so we never accidentally consume the series number.
+  let prev: string;
+  do {
+    prev = stem;
+    stem = stem
+      .replace(/[\s._-]+\d{4}[-_.]\d{2}[-_.]\d{2}$/, '')
+      .replace(/[\s._-]+\d{2}[-_.]\d{2}[-_.]\d{2}$/, '')
+      .replace(/[\s._-]+\d{6,}$/, '');
+  } while (stem !== prev);
+  const match = stem.match(/(\d+)\D*$/);
   return match ? parseInt(match[1], 10) : Infinity;
 }
 
