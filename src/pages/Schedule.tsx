@@ -474,6 +474,9 @@ export default function Schedule() {
       const clientKey = (config as any).clientKey;
       setNewSchedules(prev => clientKey ? prev.filter(s => (s as any).clientKey !== clientKey) : prev.slice(1));
     }
+    qc.setQueryData<ScheduleConfig[]>(['schedules'], (current = []) => (
+      config.id ? current.map((item) => item.id === saved.id ? saved : item) : [...current, saved]
+    ));
     qc.invalidateQueries({ queryKey: ['schedules'] });
     toast({ title: 'Schedule saved', description: saved.enabled ? humanReadableCron(saved.cronExpression) : 'Disabled' });
     return saved;
