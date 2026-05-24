@@ -2977,13 +2977,9 @@ async function pollFolderWatchers() {
     if (defaultPlatforms.length) addFolder(settings.folderPath, defaultPlatforms, {}, 0);
   }
 
-  // 2. Enabled recurring schedules
-  try {
-    const { data: schedules } = await supabase.from('schedule_config').select('*').eq('enabled', true);
-    for (const s of schedules || []) {
-      addFolder(s.folder_path, Array.isArray(s.platforms) && s.platforms.length ? s.platforms : ['youtube','tiktok','instagram'], s.account_selections || {}, s.upload_interval_minutes || 0);
-    }
-  } catch (e) { console.error('[FolderWatch] schedules read failed:', e.message); }
+  // 2. Recurring schedules are intentionally NOT watched here. They must only
+  // run at their saved cron time via processRecurringSchedule(); watching their
+  // folders continuously would upload early and can duplicate the scheduled run.
 
   // NOTE: We intentionally do NOT add folders from pending one-shot campaigns
   // (scheduled_uploads with [folder|N] markers). Those campaigns fan themselves
@@ -2992,8 +2988,8 @@ async function pollFolderWatchers() {
   // videos as plain folder-watch upload_jobs (often with empty platform/account
   // selections), producing duplicate "New file detected" notifications followed
   // by spurious "Upload Failed" messages once credentials don't resolve. The
-  // global default folder (#1) and enabled recurring schedules (#2) are still
-  // watched, which covers all true "drop new files in and auto-upload" cases.
+  // the global default folder (#1) is still watched for true "drop new files in
+  // and auto-upload" behavior, while recurring campaigns stay time-controlled.
 
   if (folders.size === 0) return;
 
