@@ -471,7 +471,8 @@ export default function Schedule() {
   const handleSave = async (config: ScheduleConfig) => {
     const saved = await saveSchedule(config);
     if (!config.id) {
-      setNewSchedules(prev => prev.filter(s => s !== config));
+      const clientKey = (config as any).clientKey;
+      setNewSchedules(prev => clientKey ? prev.filter(s => (s as any).clientKey !== clientKey) : prev.slice(1));
     }
     qc.invalidateQueries({ queryKey: ['schedules'] });
     toast({ title: 'Schedule saved', description: saved.enabled ? humanReadableCron(saved.cronExpression) : 'Disabled' });
@@ -492,6 +493,7 @@ export default function Schedule() {
 
   const addNew = () => {
     setNewSchedules(prev => [...prev, {
+      clientKey: crypto.randomUUID(),
       name: `Schedule ${schedules.length + prev.length + 1}`,
       enabled: false,
       cronExpression: '0 9 * * *',
@@ -530,7 +532,7 @@ export default function Schedule() {
           <ScheduleEditor key={s.id} config={s} onSave={handleSave} onDelete={() => handleDelete(s.id!)} />
         ))}
         {newSchedules.map((s, i) => (
-          <ScheduleEditor key={`new-${i}`} config={s} onSave={handleSave} onDelete={() => setNewSchedules(prev => prev.filter((_, j) => j !== i))} />
+          <ScheduleEditor key={(s as any).clientKey || `new-${i}`} config={s} onSave={handleSave} onDelete={() => setNewSchedules(prev => prev.filter((_, j) => j !== i))} />
         ))}
 
         {schedules.length === 0 && newSchedules.length === 0 && (
