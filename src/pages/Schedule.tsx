@@ -475,6 +475,7 @@ export default function Schedule() {
     }
     qc.invalidateQueries({ queryKey: ['schedules'] });
     toast({ title: 'Schedule saved', description: saved.enabled ? humanReadableCron(saved.cronExpression) : 'Disabled' });
+    return saved;
   };
 
   const handleDelete = async (id: number) => {
