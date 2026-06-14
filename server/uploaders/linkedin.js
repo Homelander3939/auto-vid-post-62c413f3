@@ -77,22 +77,50 @@ async function uploadToLinkedIn(imagePath, { description, hashtags = [] }, opts 
     }
 
     if (imageFiles.length) {
+      // LinkedIn now opens a sub-detail dialog when you click Photo. We need to:
+      //  1) click the Photo button in the main composer
+      //  2) wait for the OS file input to be wired up (file input is added to DOM)
+      //  3) setInputFiles on the *image-typed* input — generic input[type=file] sometimes
+      //     hits a document picker
+      //  4) wait for the preview image to render
+      //  5) click "Next" / "Done" until we return to the main composer with the Post button
       const attachBtn = page.locator(
-        'div[role="dialog"] button[aria-label*="photo" i], div[role="dialog"] button[aria-label*="image" i], div[role="dialog"] button[aria-label*="media" i]'
+        'div[role="dialog"] button[aria-label*="photo" i], div[role="dialog"] button[aria-label*="image" i], div[role="dialog"] button[aria-label*="media" i], div[role="dialog"] button[aria-label*="add a photo" i]'
       ).first();
-      await attachBtn.click({ trial: false }).catch(() => {});
-      await page.waitForTimeout(500);
-      const fileInput = page.locator('input[type="file"]').first();
-      await fileInput.setInputFiles(imageFiles).catch(() => {});
-      await page.waitForTimeout(3000 + (imageFiles.length - 1) * 1500);
-      // LinkedIn often shows a "Next" / "Done" button to confirm the image.
+      await attachBtn.scrollIntoViewIfNeeded().catch(() => {});
+      await attachBtn.click().catch(() => {});
+      await page.waitForTimeout(1500);
+
+      // Prefer the image-specific input; fall back to any file input
+      let fileInput = page.locator('input[type="file"][accept*="image"]').first();
+      if (!(await fileInput.count().catch(() => 0))) {
+        fileInput = page.locator('input[type="file"]').first();
+      }
+      try {
+        await fileInput.setInputFiles(imageFiles);
+      } catch (e) {
+        console.warn('[LinkedIn] setInputFiles failed:', e.message);
+      }
+
+      // Wait for upload preview — LinkedIn shows the image inside the dialog within a few seconds.
+      const preview = page.locator(
+        'div[role="dialog"] img[src^="blob:"], div[role="dialog"] img[src*="media-exp"], div[role="dialog"] [data-test-id*="image-preview" i], div[role="dialog"] [class*="image-detour-view" i] img'
+      ).first();
+      await preview.waitFor({ state: 'visible', timeout: 20000 }).catch(() =>
+        console.warn('[LinkedIn] Image preview not detected, continuing')
+      );
+      await page.waitForTimeout(2000);
+
+      // Click Next/Done up to 3 times to confirm the image and return to the main composer
       for (let i = 0; i < 3; i++) {
         const nextBtn = page.locator(
-          'div[role="dialog"] button:has-text("Next"), div[role="dialog"] button:has-text("Done")'
+          'div[role="dialog"] button:has-text("Next"), div[role="dialog"] button:has-text("Done"), div[role="dialog"] button[aria-label="Next"], div[role="dialog"] button[aria-label="Done"]'
         ).first();
         if (await nextBtn.isVisible().catch(() => false)) {
+          const enabled = !(await nextBtn.isDisabled().catch(() => false));
+          if (!enabled) { await page.waitForTimeout(1500); continue; }
           await nextBtn.click().catch(() => {});
-          await page.waitForTimeout(1500);
+          await page.waitForTimeout(2000);
         } else break;
       }
     }
