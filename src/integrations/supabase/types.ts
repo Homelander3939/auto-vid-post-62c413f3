@@ -656,6 +656,7 @@ export type Database = {
           platform_results: Json
           platform_variants: Json
           scheduled_at: string | null
+          source_meta: Json | null
           status: string
           target_platforms: string[]
         }
@@ -673,6 +674,7 @@ export type Database = {
           platform_results?: Json
           platform_variants?: Json
           scheduled_at?: string | null
+          source_meta?: Json | null
           status?: string
           target_platforms?: string[]
         }
@@ -690,6 +692,7 @@ export type Database = {
           platform_results?: Json
           platform_variants?: Json
           scheduled_at?: string | null
+          source_meta?: Json | null
           status?: string
           target_platforms?: string[]
         }
