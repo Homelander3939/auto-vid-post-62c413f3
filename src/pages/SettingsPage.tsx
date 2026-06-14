@@ -352,6 +352,23 @@ function PlatformAccountCard({
                 </p>
               </div>
             )}
+            <div className="space-y-2">
+              <Label className="text-xs">Post to URL (optional)</Label>
+              <Input
+                value={form.targetUrl}
+                onChange={(e) => setForm((f) => ({ ...f, targetUrl: e.target.value }))}
+                placeholder={
+                  platform === 'youtube' ? 'https://studio.youtube.com/channel/UCxxxx'
+                  : platform === 'tiktok' ? 'https://www.tiktok.com/@yourhandle'
+                  : platform === 'instagram' ? 'https://www.instagram.com/yourhandle'
+                  : 'https://...'
+                }
+                className="h-9 font-mono text-xs"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Optional. Leave empty to upload on the account's default profile/channel. Set this if you need to upload to a specific channel/page under this account.
+              </p>
+            </div>
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
                 <Check className="w-3.5 h-3.5" />
