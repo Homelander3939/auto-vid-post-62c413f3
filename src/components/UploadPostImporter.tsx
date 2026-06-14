@@ -620,11 +620,50 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
         )}
 
         {bundles.length > 0 && (
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">
-              {bundles.length} bundle{bundles.length === 1 ? '' : 's'} detected · matched by filename + date
-            </span>
-            <Button size="sm" variant="ghost" onClick={reset}>Clear</Button>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-xs text-muted-foreground">
+                {bundles.length} bundle{bundles.length === 1 ? '' : 's'} detected · matched by filename + date
+              </span>
+              <Button size="sm" variant="ghost" onClick={reset}>Clear</Button>
+            </div>
+            {onSendToQueue && bundles.some((b) => b.errors.length === 0) && (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  className="gap-1.5"
+                  disabled={batchRunning}
+                  onClick={async () => {
+                    const ready = bundles.filter((b) => b.errors.length === 0);
+                    if (!ready.length) return;
+                    if (!confirm(`Upload all ${ready.length} ready bundle${ready.length === 1 ? '' : 's'} now?`)) return;
+                    setBatchRunning(true);
+                    let ok = 0; let fail = 0;
+                    for (const b of ready) {
+                      try { await onSendToQueue(b, 'now'); rememberImported(b.id); ok++; }
+                      catch (e: any) { fail++; console.error('Batch upload failed:', e?.message); }
+                    }
+                    setBatchRunning(false);
+                    toast({ title: `Batch upload queued`, description: `${ok} sent · ${fail} failed` });
+                  }}
+                >
+                  <Rocket className="w-3.5 h-3.5" /> Upload all now ({bundles.filter((b) => b.errors.length === 0).length})
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  disabled={batchRunning}
+                  onClick={() => {
+                    setBatchMode('schedule');
+                    setBatchCount(bundles.filter((b) => b.errors.length === 0).length);
+                    setBatchOpen(true);
+                  }}
+                >
+                  <Calendar className="w-3.5 h-3.5" /> Schedule batch…
+                </Button>
+              </div>
+            )}
           </div>
         )}
 
