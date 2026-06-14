@@ -52,6 +52,7 @@ interface AccountFormData {
   email: string;
   password: string;
   recoveryPhone: string;
+  targetUrl: string;
 }
 
 function PlatformAccountCard({
