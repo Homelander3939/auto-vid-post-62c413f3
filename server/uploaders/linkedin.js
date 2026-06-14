@@ -188,16 +188,23 @@ async function uploadToLinkedIn(imagePath, { description, hashtags = [] }, opts 
       throw new Error('LinkedIn requires login. Use Prepare in Settings to log in once.');
     }
 
+    const fullText = hashtags.length
+      ? `${description}\n\n${hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ')}`
+      : (description || '');
+
     await openComposer(page);
+
+    // Attach media BEFORE inserting URLs/text. Otherwise LinkedIn may render a
+    // large article link preview and our media checks can mistake that preview
+    // for an uploaded photo, causing text/link-only posts.
+    if (imageFiles.length) {
+      await attachImagesToComposer(page, imageFiles);
+    }
 
     const editor = page.locator('div[role="dialog"] div[contenteditable="true"]').first();
     await editor.waitFor({ state: 'visible', timeout: 15000 });
     await editor.click();
     await page.waitForTimeout(300);
-
-    const fullText = hashtags.length
-      ? `${description}\n\n${hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ')}`
-      : (description || '');
 
     // Try insertText first (fastest), fall back to typing if the editor didn't pick it up.
     await page.keyboard.insertText(fullText).catch(() => {});
@@ -207,10 +214,6 @@ async function uploadToLinkedIn(imagePath, { description, hashtags = [] }, opts 
       await editor.click();
       await page.keyboard.type(fullText, { delay: 10 });
       await page.waitForTimeout(500);
-    }
-
-    if (imageFiles.length) {
-      await attachImagesToComposer(page, imageFiles);
     }
 
     // Click Post — wait for it to enable. Filter out "Post settings" / "Post to anyone" buttons.
