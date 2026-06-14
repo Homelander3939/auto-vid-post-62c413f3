@@ -92,7 +92,7 @@ export default function SocialAccountCard({
 
   const startEdit = (a: SocialAccount) => {
     setEditingId(a.id);
-    setForm({ label: a.label, email: a.email, password: a.password });
+    setForm({ label: a.label, email: a.email, password: a.password, target_url: (a as any).target_url || '' });
     setAdding(true);
   };
 
