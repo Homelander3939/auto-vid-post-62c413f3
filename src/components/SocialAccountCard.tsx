@@ -48,7 +48,7 @@ export default function SocialAccountCard({
   const [preparingId, setPreparingId] = useState<string | null>(null);
 
   const platformAccounts = accounts.filter((a) => a.platform === platform);
-  const meta = PLATFORM_META[platform] || { title: platform, desc: '' };
+  const meta = PLATFORM_META[platform] || { title: platform, desc: '', urlPlaceholder: 'https://...' };
 
   const resetForm = () => { setForm({ label: '', email: '', password: '', target_url: '' }); setAdding(false); setEditingId(null); };
 
