@@ -43,8 +43,8 @@ async function openComposer(page) {
 
 async function countRealMediaPreviews(page) {
   return await page.locator('div[role="dialog"]').last().evaluate((dialog) => {
-    const reject = /(avatar|profile|presence|actor|member|identity|entity-photo|ghost-person)/i;
-    const accept = /(share|media|image|photo|video|preview|carousel|creation-state)/i;
+    const reject = /(avatar|profile|presence|actor|member|identity|entity-photo|ghost-person|article|external|url-preview|link-preview|third-party|embed)/i;
+    const accept = /(share-images|share-media|media|image|photo|video|carousel|creation-state)/i;
     const nodes = Array.from(dialog.querySelectorAll('img, video, [style*="background-image"]'));
     return nodes.filter((el) => {
       const r = el.getBoundingClientRect();
@@ -58,7 +58,7 @@ async function countRealMediaPreviews(page) {
       if (reject.test(text)) return false;
       const src = el.getAttribute('src') || '';
       const style = el.getAttribute('style') || '';
-      const explicitMedia = src.startsWith('blob:') || src.startsWith('data:image') || /media\.licdn|media-exp|dms\/image/i.test(src) || /background-image:\s*url/i.test(style);
+      const explicitMedia = src.startsWith('blob:') || src.startsWith('data:image') || ((/media\.licdn|media-exp|dms\/image/i.test(src) || /background-image:\s*url/i.test(style)) && accept.test(text));
       return explicitMedia || accept.test(text);
     }).length;
   }).catch(() => 0);
@@ -216,6 +216,10 @@ async function uploadToLinkedIn(imagePath, { description, hashtags = [] }, opts 
       await editor.click();
       await page.keyboard.type(fullText, { delay: 10 });
       await page.waitForTimeout(500);
+    }
+
+    if (imageFiles.length && !(await waitForRealMediaPreview(page, Math.min(imageFiles.length, 9), 10000))) {
+      throw new Error('LinkedIn uploaded media was not present after filling the post text. Aborting to avoid a text-only post.');
     }
 
     // Click Post — wait for it to enable. Filter out "Post settings" / "Post to anyone" buttons.
