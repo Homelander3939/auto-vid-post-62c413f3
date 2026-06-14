@@ -24,7 +24,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import {
-  FileText, Upload, AlertTriangle, CheckCircle2, RefreshCw, Send, Eye, Save,
+  FileText, Upload, AlertTriangle, CheckCircle2, RefreshCw, Send, Eye, Save, Calendar, Rocket,
 } from 'lucide-react';
 
 const PLATFORM_LABELS: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', facebook: 'Facebook' };
