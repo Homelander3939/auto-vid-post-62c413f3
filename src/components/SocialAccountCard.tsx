@@ -61,6 +61,7 @@ export default function SocialAccountCard({
         label: form.label.trim() || form.email.split('@')[0],
         email: form.email.trim(),
         password: form.password,
+        target_url: form.target_url.trim() || null,
         enabled: true,
       };
       if (editingId) payload.id = editingId;
