@@ -127,16 +127,18 @@ async function attachImagesToComposer(page, imageFiles) {
       console.log(`[LinkedIn] Selected ${imageFiles.length} image(s) through native file chooser`);
     }
 
-    await page.waitForTimeout(1000);
-    const candidates = [
-      page.locator('div[role="dialog"] input[type="file"][accept*="image"]').last(),
-      page.locator('input[type="file"][accept*="image"]').last(),
-      page.locator('input[type="file"]').last(),
-    ];
-    for (const input of candidates) {
-      if (!(await input.count().catch(() => 0))) continue;
-      attached = await input.setInputFiles(imageFiles, { timeout: 10000 }).then(() => true).catch(() => false);
-      if (attached) break;
+    if (!attached) {
+      await page.waitForTimeout(1000);
+      const candidates = [
+        page.locator('div[role="dialog"] input[type="file"][accept*="image"]').last(),
+        page.locator('input[type="file"][accept*="image"]').last(),
+        page.locator('input[type="file"]').last(),
+      ];
+      for (const input of candidates) {
+        if (!(await input.count().catch(() => 0))) continue;
+        attached = await input.setInputFiles(imageFiles, { timeout: 10000 }).then(() => true).catch(() => false);
+        if (attached) break;
+      }
     }
   }
   if (!attached) throw new Error('LinkedIn image picker opened but no controllable file input was found.');
