@@ -59,6 +59,18 @@ async function waitForRealMediaPreview(page, timeout = 45000) {
   return false;
 }
 
+async function resolvePostedLinkedInUrl(page, fallbackUrl) {
+  await page.waitForTimeout(5000);
+  const href = await page.locator(
+    'a[href*="/feed/update/"], a[href*="urn:li:activity"], a[href*="/posts/"]'
+  ).first().getAttribute('href').catch(() => null);
+  if (href) {
+    const absolute = href.startsWith('http') ? href : `https://www.linkedin.com${href.startsWith('/') ? '' : '/'}${href}`;
+    return absolute.split('?')[0];
+  }
+  return fallbackUrl || page.url();
+}
+
 async function attachImagesToComposer(page, imageFiles) {
   const attachBtn = page.locator(
     'div[role="dialog"] button[aria-label*="photo" i], div[role="dialog"] button[aria-label*="image" i], div[role="dialog"] button[aria-label*="media" i], div[role="dialog"] button[aria-label*="add a photo" i]'
@@ -178,8 +190,7 @@ async function uploadToLinkedIn(imagePath, { description, hashtags = [] }, opts 
 
     // Wait for the dialog to disappear (post submitted).
     await page.waitForSelector('div[role="dialog"] div[contenteditable="true"]', { state: 'detached', timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(3000);
-    return { url: page.url() };
+    return { url: await resolvePostedLinkedInUrl(page, targetUrl) };
   } finally {
     await safeClose(context);
   }
