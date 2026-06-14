@@ -44,6 +44,7 @@ export interface ImportedBundle {
   images: { name: string; file: File; previewUrl: string }[];
   texts: Record<string, string>;   // platform → text
   articleUrls: string[];
+  sourceMeta?: { folder: string; files: string[] };
   errors: string[];
   warnings: string[];
 }
@@ -306,6 +307,7 @@ async function processManifest(
     images,
     texts,
     articleUrls,
+      sourceMeta: (manifestFile as any).__sourceMeta,
     errors,
     warnings,
   };
@@ -498,7 +500,9 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
       const txts: File[] = [];
       const imgs: File[] = [];
       for (const b of data.bundles || []) {
-        txts.push(new File([b.content], b.manifestName, { type: 'text/plain' }));
+        const txt = new File([b.content], b.manifestName, { type: 'text/plain' });
+        (txt as any).__sourceMeta = b.sourceMeta;
+        txts.push(txt);
         for (const img of b.images || []) {
           if (img.dataBase64 && img.mime) imgs.push(base64ToFile(img.name, img.mime, img.dataBase64));
         }
