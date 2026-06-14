@@ -41,6 +41,24 @@ async function openComposer(page) {
     .waitFor({ state: 'visible', timeout: 20000 });
 }
 
+async function waitForRealMediaPreview(page, timeout = 45000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const count = await page.locator('div[role="dialog"] img').evaluateAll((imgs) => imgs.filter((img) => {
+      const r = img.getBoundingClientRect();
+      const src = img.getAttribute('src') || '';
+      const cls = `${img.className || ''} ${(img.closest('[class]') || {}).className || ''}`.toLowerCase();
+      const looksLikeMedia = src.startsWith('blob:') || src.includes('media-exp') || src.includes('media.licdn') || cls.includes('image') || cls.includes('media');
+      const bigEnough = r.width >= 90 && r.height >= 70;
+      const notAvatar = !cls.includes('avatar') && !cls.includes('presence-entity') && !cls.includes('profile');
+      return looksLikeMedia && bigEnough && notAvatar;
+    }).length).catch(() => 0);
+    if (count > 0) return true;
+    await page.waitForTimeout(750);
+  }
+  return false;
+}
+
 async function attachImagesToComposer(page, imageFiles) {
   const attachBtn = page.locator(
     'div[role="dialog"] button[aria-label*="photo" i], div[role="dialog"] button[aria-label*="image" i], div[role="dialog"] button[aria-label*="media" i], div[role="dialog"] button[aria-label*="add a photo" i]'
@@ -73,11 +91,15 @@ async function attachImagesToComposer(page, imageFiles) {
     if (!attached) throw new Error('LinkedIn image picker opened but no controllable file input was found.');
   }
 
-  const preview = page.locator(
-    'div[role="dialog"] img[src^="blob:"], div[role="dialog"] img[src*="media-exp"], div[role="dialog"] img[src*="media.licdn"], div[role="dialog"] [data-test-id*="image-preview" i], div[role="dialog"] [class*="image-detour-view" i] img'
-  ).first();
-  await preview.waitFor({ state: 'visible', timeout: 30000 });
-  await page.waitForTimeout(1500);
+  if (!(await waitForRealMediaPreview(page, 45000))) {
+    throw new Error('LinkedIn image file was selected, but no real media preview appeared. Aborting to avoid a text-only post.');
+  }
+  // LinkedIn can render a preview before the upload is committed. Wait longer and
+  // require the real preview to still be present before pressing Next/Done.
+  await page.waitForTimeout(5000 + (imageFiles.length - 1) * 1500);
+  if (!(await waitForRealMediaPreview(page, 10000))) {
+    throw new Error('LinkedIn image preview disappeared before it was attached. Aborting to avoid a text-only post.');
+  }
 
   // Confirm the media dialog and return to the main composer.
   for (let i = 0; i < 4; i++) {
@@ -95,11 +117,8 @@ async function attachImagesToComposer(page, imageFiles) {
     await page.waitForTimeout(2000);
   }
 
-  const composerPreview = page.locator(
-    'div[role="dialog"] img[src^="blob:"], div[role="dialog"] img[src*="media-exp"], div[role="dialog"] img[src*="media.licdn"], div[role="dialog"] [class*="share-creation-state__preview" i] img'
-  ).first();
-  if (!(await composerPreview.isVisible().catch(() => false))) {
-    throw new Error('LinkedIn image was selected but no preview remained in the post composer.');
+  if (!(await waitForRealMediaPreview(page, 20000))) {
+    throw new Error('LinkedIn image was selected but no real preview remained in the post composer. Aborting to avoid a text-only post.');
   }
 }
 
