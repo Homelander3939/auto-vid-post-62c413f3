@@ -78,6 +78,7 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
   const handleImageChange = (file: File | null) => {
     setImageFile(file);
     setAiImagePath(null);
+    setSourceMeta(null);
     if (imagePreview) URL.revokeObjectURL(imagePreview);
     setImagePreview(file ? URL.createObjectURL(file) : null);
     // Clear bundle extras whenever the user picks a manual single image.
@@ -132,6 +133,7 @@ function ComposeTab({ accounts, onCreated }: { accounts: SocialAccount[]; onCrea
     setAiPrompt(prompt);
     setAiSources(out.sources || []);
     setPlatformVariants(out.variants || {});
+    setSourceMeta(null);
     if (out.imagePath && out.imageUrl) {
       setAiImagePath(out.imagePath);
       setImageFile(null);
