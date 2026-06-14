@@ -38,7 +38,9 @@ async function uploadToX(imagePath, { description, hashtags = [] }, opts = {}) {
         await attach.click({ trial: true }).catch(() => {});
         await fileInput.setInputFiles(imageFiles);
       });
-      await page.waitForTimeout(4000 + (imageFiles.length - 1) * 1500);
+      await page.locator('[data-testid="attachments"] img, img[src^="blob:"]').first()
+        .waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
+      await page.waitForTimeout(5000 + (imageFiles.length - 1) * 2000);
     }
 
     const postBtn = page.locator('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]').first();
@@ -49,7 +51,10 @@ async function uploadToX(imagePath, { description, hashtags = [] }, opts = {}) {
       if (disabled !== 'true') break;
       await page.waitForTimeout(500);
     }
-    await postBtn.click();
+    await postBtn.scrollIntoViewIfNeeded().catch(() => {});
+    await postBtn.click({ force: true, timeout: 10000 }).catch(async () => {
+      await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter').catch(() => {});
+    });
 
     // Wait for navigation/toast indicating success
     await page.waitForTimeout(5000);
