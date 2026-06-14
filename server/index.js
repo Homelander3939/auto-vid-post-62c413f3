@@ -1827,7 +1827,7 @@ app.post('/api/browser-profiles/scheduled-selections', (req, res) => {
 app.post('/api/browser-profiles/open', async (req, res) => {
   try {
     const { accountId, label, platform, profileId } = req.body || {};
-    const ALLOWED = ['youtube', 'tiktok', 'instagram', 'social-x', 'social-tiktok', 'social-facebook'];
+    const ALLOWED = ['youtube', 'tiktok', 'instagram', 'social-x', 'social-tiktok', 'social-facebook', 'social-linkedin'];
     if (!platform || !ALLOWED.includes(platform)) {
       return res.status(400).json({ error: 'Valid platform is required' });
     }
