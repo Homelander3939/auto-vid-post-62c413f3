@@ -874,6 +874,82 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Batch schedule dialog — stagger N bundles starting at a time, every X interval */}
+      <Dialog open={batchOpen} onOpenChange={setBatchOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Calendar className="w-4 h-4" /> Schedule batch upload</DialogTitle>
+            <DialogDescription>
+              Stagger the next N ready bundles at a fixed interval, just like the video folder scheduler.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs">How many bundles</Label>
+              <Input
+                type="number"
+                min={1}
+                max={bundles.filter((b) => b.errors.length === 0).length}
+                value={batchCount}
+                onChange={(e) => setBatchCount(Math.max(1, Number(e.target.value) || 1))}
+                className="h-9"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                {bundles.filter((b) => b.errors.length === 0).length} ready · earliest postIndex first
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Start at</Label>
+              <Input type="datetime-local" value={batchStart} onChange={(e) => setBatchStart(e.target.value)} className="h-9" />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Interval</Label>
+                <Input type="number" min={1} value={batchIntervalValue} onChange={(e) => setBatchIntervalValue(Math.max(1, Number(e.target.value) || 1))} className="h-9" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Unit</Label>
+                <select
+                  value={batchIntervalUnit}
+                  onChange={(e) => setBatchIntervalUnit(e.target.value as 'minutes' | 'hours')}
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option value="minutes">Minutes</option>
+                  <option value="hours">Hours</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBatchOpen(false)} disabled={batchRunning}>Cancel</Button>
+            <Button
+              disabled={batchRunning || !onSendToQueue}
+              onClick={async () => {
+                if (!onSendToQueue) return;
+                const ready = bundles.filter((b) => b.errors.length === 0).slice(0, Math.max(1, batchCount));
+                if (!ready.length) return;
+                const startMs = new Date(batchStart).getTime();
+                if (!Number.isFinite(startMs)) { toast({ title: 'Pick a valid start time', variant: 'destructive' }); return; }
+                const stepMs = batchIntervalValue * (batchIntervalUnit === 'hours' ? 3600_000 : 60_000);
+                setBatchRunning(true);
+                let ok = 0; let fail = 0;
+                for (let i = 0; i < ready.length; i++) {
+                  const iso = new Date(startMs + i * stepMs).toISOString();
+                  try { await onSendToQueue(ready[i], 'schedule', iso); rememberImported(ready[i].id); ok++; }
+                  catch (e: any) { fail++; console.error('Batch schedule failed:', e?.message); }
+                }
+                setBatchRunning(false);
+                setBatchOpen(false);
+                toast({ title: 'Batch scheduled', description: `${ok} scheduled · ${fail} failed · every ${batchIntervalValue}${batchIntervalUnit === 'hours' ? 'h' : 'm'}` });
+              }}
+              className="gap-1.5"
+            >
+              <Calendar className="w-4 h-4" /> {batchRunning ? 'Scheduling…' : 'Schedule'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
