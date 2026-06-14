@@ -46,13 +46,18 @@ async function downloadImages(supabase, post) {
     ? post.image_paths
     : (post.image_path ? [post.image_path] : []);
   const out = [];
+  const errors = [];
   for (let i = 0; i < list.length; i++) {
     try {
       const local = await downloadImage(supabase, list[i], i);
       if (local) out.push(local);
     } catch (e) {
       console.error('[SocialPosts] Image download failed:', e.message);
+      errors.push(e.message);
     }
+  }
+  if (list.length && out.length !== list.length) {
+    throw new Error(`Only downloaded ${out.length}/${list.length} required image(s): ${errors.join('; ') || 'unknown error'}`);
   }
   return out;
 }
