@@ -342,6 +342,19 @@ export default function UploadPostImporter({ onLoad, onSendToQueue }: Props) {
   const [previewDraft, setPreviewDraft] = useState('');
   const [previewImgIdx, setPreviewImgIdx] = useState(0);
 
+  // Batch upload / schedule state
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchMode, setBatchMode] = useState<'now' | 'schedule'>('schedule');
+  const [batchCount, setBatchCount] = useState<number>(0);
+  const [batchStart, setBatchStart] = useState<string>(() => {
+    const d = new Date(Date.now() + 5 * 60 * 1000);
+    d.setSeconds(0, 0);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  });
+  const [batchIntervalValue, setBatchIntervalValue] = useState<number>(30);
+  const [batchIntervalUnit, setBatchIntervalUnit] = useState<'minutes' | 'hours'>('minutes');
+  const [batchRunning, setBatchRunning] = useState(false);
+
   const openPreview = (bundleId: string, platform: string, text: string) => {
     setPreviewBundleId(bundleId);
     setPreviewPlatform(platform);
