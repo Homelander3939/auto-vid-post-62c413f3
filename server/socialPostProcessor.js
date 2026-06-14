@@ -89,6 +89,10 @@ function cleanupSourceFiles(sourceMeta, shouldClean) {
   return line;
 }
 
+function stableStatusKey(results) {
+  return results.map((r) => `${r.name}:${r.status || ''}`).join('|');
+}
+
 async function processSocialPost(supabase, postId, notify) {
   if (processing.has(postId)) return;
   processing.add(postId);
@@ -107,9 +111,10 @@ async function processSocialPost(supabase, postId, notify) {
 
     localImages = await downloadImages(supabase, post);
 
-    const results = post.platform_results && post.platform_results.length
+    let results = post.platform_results && post.platform_results.length
       ? post.platform_results
       : (post.target_platforms || []).map((name) => ({ name, status: 'pending' }));
+    results = results.map((r) => ({ ...r, status: r.status === 'uploading' ? 'pending' : r.status }));
 
     for (const r of results) {
       if (r.status !== 'pending') continue;
@@ -126,8 +131,7 @@ async function processSocialPost(supabase, postId, notify) {
         continue;
       }
       const profile = getBrowserProfileForAccount(account.id);
-      r.status = 'uploading';
-      await supabase.from('social_posts').update({ platform_results: [...results] }).eq('id', postId);
+      const beforeStatus = stableStatusKey(results);
       try {
         // Use per-platform variant when available; fall back to the main description/hashtags
         const variant = (post.platform_variants || {})[r.name];
@@ -153,7 +157,9 @@ async function processSocialPost(supabase, postId, notify) {
         r.status = 'error';
         r.error = e.message;
       }
-      await supabase.from('social_posts').update({ platform_results: [...results] }).eq('id', postId);
+      if (stableStatusKey(results) !== beforeStatus) {
+        await supabase.from('social_posts').update({ platform_results: [...results] }).eq('id', postId);
+      }
     }
 
     const successCount = results.filter((r) => r.status === 'success').length;
