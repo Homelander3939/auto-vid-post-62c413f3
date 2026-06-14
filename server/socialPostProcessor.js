@@ -127,13 +127,15 @@ async function processSocialPost(supabase, postId, notify) {
     }).eq('id', postId);
 
     if (notify) {
+      const scheduleTag = post.scheduled_at ? ' (scheduled)' : '';
       const lines = results.map((r) =>
-        r.status === 'success' ? `✅ ${r.name}: ${r.url || 'posted'}`
-        : r.status === 'error' ? `❌ ${r.name}: ${r.error}`
+        r.status === 'success' ? `✅ ${r.name}${r.url ? `\n   🔗 ${r.url}` : ''}`
+        : r.status === 'error' ? `❌ ${r.name}: ${r.error || 'unknown error'}`
         : `⚪ ${r.name}: ${r.status}`
       );
       const emoji = finalStatus === 'completed' ? '🎉' : finalStatus === 'partial' ? '⚠️' : '❌';
-      await notify(`${emoji} Social post ${finalStatus}\n${(post.description || '').slice(0, 100)}\n\n${lines.join('\n')}`);
+      const preview = (post.description || '').slice(0, 120).replace(/\s+/g, ' ').trim();
+      await notify(`${emoji} Social post ${finalStatus}${scheduleTag}\n${preview}\n\n${lines.join('\n\n')}`);
     }
   } catch (e) {
     console.error('[SocialPosts] processor error:', e.message);
