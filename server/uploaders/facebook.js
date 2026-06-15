@@ -18,7 +18,7 @@ function normalizeFacebookPermalink(raw) {
   return null;
 }
 
-async function resolvePostedFacebookUrl(page) {
+async function resolvePostedFacebookUrl(page, targetUrl = null) {
   const direct = normalizeFacebookPermalink(page.url());
   if (direct) return direct;
 
@@ -34,6 +34,40 @@ async function resolvePostedFacebookUrl(page) {
   }).catch(() => null);
   const fromConfirmation = normalizeFacebookPermalink(confirmationLink);
   if (fromConfirmation) return fromConfirmation;
+
+  const shouldScanTarget = targetUrl && /^https?:\/\//i.test(targetUrl) && !/^https?:\/\/(?:www\.)?facebook\.com\/?$/i.test(targetUrl);
+  if (shouldScanTarget) {
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await page.waitForTimeout(3500 + attempt * 1500);
+      const permalink = await page.evaluate(() => {
+        const normalize = (raw) => {
+          try {
+            const u = new URL(raw, 'https://www.facebook.com');
+            const p = u.pathname;
+            const story = u.searchParams.get('story_fbid') || u.searchParams.get('fbid');
+            const id = u.searchParams.get('id');
+            if (story && id) return `https://www.facebook.com/permalink.php?story_fbid=${encodeURIComponent(story)}&id=${encodeURIComponent(id)}`;
+            if (/\/posts\//i.test(p) || /\/permalink\.php$/i.test(p) || /\/videos\//i.test(p) || /\/photo\//i.test(p) || /\/share\//i.test(p)) {
+              return `${u.origin}${u.pathname}${u.search}`;
+            }
+          } catch {}
+          return null;
+        };
+        const articles = Array.from(document.querySelectorAll('[role="article"]'));
+        const scopes = articles.length ? articles.slice(0, 4) : [document.body];
+        for (const scope of scopes) {
+          for (const a of Array.from(scope.querySelectorAll('a[href]'))) {
+            const out = normalize(a.getAttribute('href') || '');
+            if (out) return out;
+          }
+        }
+        return null;
+      }).catch(() => null);
+      if (permalink) return permalink;
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    }
+  }
 
   await page.goto('https://www.facebook.com/me', { waitUntil: 'domcontentloaded', timeout: 30000 });
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -163,7 +197,7 @@ async function uploadToFacebook(imagePath, { description, hashtags = [] }, opts 
     }
     await page.waitForTimeout(3500);
 
-    return { url: await resolvePostedFacebookUrl(page) };
+    return { url: await resolvePostedFacebookUrl(page, targetUrl) };
   } finally {
     await safeClose(context);
   }
