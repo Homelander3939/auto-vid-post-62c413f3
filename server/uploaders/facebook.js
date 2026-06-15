@@ -78,18 +78,45 @@ async function uploadToFacebook(imagePath, { description, hashtags = [] }, opts 
     }
     await postBtn.click({ force: true }).catch(async () => { await postBtn.click(); });
 
-    // Wait for dialog to close (post published)
-    await page.locator(dialogSel).first().waitFor({ state: 'detached', timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(3000);
-
-    // Try to capture the new post URL by looking for the most recent permalink
-    let postUrl = page.url();
-    if (postUrl === beforeUrl || postUrl === 'https://www.facebook.com/') {
-      const permalink = await page.locator('a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid"]').first().getAttribute('href').catch(() => null);
-      if (permalink) {
-        postUrl = permalink.startsWith('http') ? permalink : `https://www.facebook.com${permalink}`;
+    // Wait for dialog to close (post published) — real success signal
+    const dialogClosed = await page.locator(dialogSel).first()
+      .waitFor({ state: 'detached', timeout: 45000 })
+      .then(() => true).catch(() => false);
+    if (!dialogClosed) {
+      const stillOpen = await page.locator(dialogSel).first().isVisible().catch(() => false);
+      if (stillOpen) {
+        throw new Error('Facebook did not confirm the post (composer still open). Leaving source files for retry.');
       }
     }
+    await page.waitForTimeout(3500);
+
+    // Navigate to own profile and grab the freshest permalink — avoids picking
+    // up someone else's post from the feed.
+    let postUrl = page.url();
+    try {
+      await page.goto('https://www.facebook.com/me', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(4000);
+      const profileUrl = page.url();
+      const ownerMatch = profileUrl.match(/facebook\.com\/(?:profile\.php\?id=(\d+)|([A-Za-z0-9.]+))/);
+      const ownerId = ownerMatch ? (ownerMatch[1] || ownerMatch[2]) : null;
+      const permalink = await page.evaluate((owner) => {
+        const links = Array.from(document.querySelectorAll('a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid"], a[href*="/videos/"]'));
+        for (const a of links) {
+          const href = a.getAttribute('href') || '';
+          if (!owner) return href;
+          if (href.includes(`/${owner}/`) || href.includes(`story_fbid=`) && href.includes(`id=${owner}`) || href.includes(`/${owner}?`)) {
+            return href;
+          }
+        }
+        // fallback to first if owner check failed
+        return links[0]?.getAttribute('href') || null;
+      }, ownerId).catch(() => null);
+      if (permalink) {
+        postUrl = permalink.startsWith('http') ? permalink : `https://www.facebook.com${permalink}`;
+      } else {
+        postUrl = profileUrl;
+      }
+    } catch {}
     return { url: postUrl || 'https://facebook.com/' };
   } finally {
     await safeClose(context);
