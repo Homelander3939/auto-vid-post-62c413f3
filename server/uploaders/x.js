@@ -1,5 +1,6 @@
 // X (Twitter) post uploader using a persistent Chrome profile.
 const { launchPersistent, safeClose } = require('./social-post-base');
+const { dismissOverlayBlockingFlow } = require('./overlay-dismiss');
 
 const X_COMPOSE_URL = 'https://x.com/compose/post';
 
@@ -51,6 +52,73 @@ async function resolvePostedXUrl(page, handle, snippet) {
   return `https://x.com/${handle}`;
 }
 
+async function waitForXMediaReady(page, expectedCount, timeout = 90000) {
+  if (!expectedCount) return true;
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const state = await page.evaluate(() => {
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        const s = window.getComputedStyle(el);
+        return r.width > 8 && r.height > 8 && s.visibility !== 'hidden' && s.display !== 'none';
+      };
+      const previews = Array.from(document.querySelectorAll('[data-testid="attachments"] img, img[src^="blob:"]')).filter(visible).length;
+      const busy = Array.from(document.querySelectorAll('[role="progressbar"], [aria-busy="true"]')).some(visible)
+        || /uploading|processing/i.test(document.body.innerText || '');
+      return { previews, busy };
+    }).catch(() => ({ previews: 0, busy: false }));
+    if (state.previews >= expectedCount && !state.busy) return true;
+    await page.waitForTimeout(750);
+  }
+  return false;
+}
+
+async function getXPostButton(page) {
+  const buttons = page.locator('[data-testid="tweetButton"], [data-testid="tweetButtonInline"], button:has-text("Post")');
+  const count = await buttons.count().catch(() => 0);
+  for (let i = count - 1; i >= 0; i--) {
+    const btn = buttons.nth(i);
+    if (await btn.isVisible().catch(() => false)) return btn;
+  }
+  return buttons.last();
+}
+
+async function waitForEnabledXPostButton(page, timeout = 90000) {
+  const deadline = Date.now() + timeout;
+  let lastButton = null;
+  while (Date.now() < deadline) {
+    lastButton = await getXPostButton(page);
+    if (await lastButton.isVisible().catch(() => false)) {
+      const ariaDisabled = await lastButton.getAttribute('aria-disabled').catch(() => null);
+      const disabled = await lastButton.isDisabled().catch(() => false);
+      if (ariaDisabled !== 'true' && !disabled) return lastButton;
+    }
+    await page.waitForTimeout(500);
+  }
+  return lastButton || await getXPostButton(page);
+}
+
+async function clickXPostButton(page) {
+  const btn = await waitForEnabledXPostButton(page);
+  const ariaDisabled = await btn.getAttribute('aria-disabled').catch(() => null);
+  const disabled = await btn.isDisabled().catch(() => false);
+  if (ariaDisabled === 'true' || disabled) {
+    throw new Error('X Post button never became enabled. Leaving source files for retry.');
+  }
+
+  await btn.scrollIntoViewIfNeeded().catch(() => {});
+  await btn.click({ timeout: 10000 }).catch(async () => {
+    await btn.click({ force: true, timeout: 10000 });
+  });
+}
+
+async function visibleXProblemText(page) {
+  return await page.evaluate(() => {
+    const nodes = Array.from(document.querySelectorAll('[data-testid="toast"], div[role="alert"], [aria-live="assertive"], [aria-live="polite"]'));
+    return nodes.map((n) => (n.innerText || n.textContent || '').trim()).filter(Boolean).join(' | ').slice(0, 300);
+  }).catch(() => '');
+}
+
 async function uploadToX(imagePath, { description, hashtags = [] }, opts = {}) {
   const imageFiles = Array.isArray(imagePath) ? imagePath.filter(Boolean) : (imagePath ? [imagePath] : []);
   const context = await launchPersistent('x', opts);
@@ -94,30 +162,29 @@ async function uploadToX(imagePath, { description, hashtags = [] }, opts = {}) {
         await fileInput.setInputFiles(imageFiles);
       });
       await page.locator('[data-testid="attachments"] img, img[src^="blob:"]').first()
-        .waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
-      await page.waitForTimeout(5000 + (imageFiles.length - 1) * 2000);
+        .waitFor({ state: 'visible', timeout: 30000 });
+      const mediaReady = await waitForXMediaReady(page, imageFiles.length, 120000);
+      if (!mediaReady) throw new Error('X media upload did not finish. Leaving source files for retry.');
     }
 
-    const postBtn = page.locator('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]').first();
-    await postBtn.waitFor({ state: 'visible', timeout: 15000 });
-    for (let i = 0; i < 20; i++) {
-      const disabled = await postBtn.getAttribute('aria-disabled').catch(() => null);
-      if (disabled !== 'true') break;
-      await page.waitForTimeout(500);
+    let composerGone = false;
+    for (let attempt = 0; attempt < 4 && !composerGone; attempt++) {
+      await dismissOverlayBlockingFlow(page, { logPrefix: '[X]', clickBackground: false }).catch(() => {});
+      await clickXPostButton(page);
+      composerGone = await textArea.waitFor({ state: 'detached', timeout: 15000 })
+        .then(() => true).catch(() => false);
+      if (!composerGone) {
+        await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter').catch(() => {});
+        composerGone = await textArea.waitFor({ state: 'detached', timeout: 10000 })
+          .then(() => true).catch(() => false);
+      }
+      if (!composerGone) await page.waitForTimeout(1500);
     }
-    await postBtn.scrollIntoViewIfNeeded().catch(() => {});
-    let clicked = false;
-    await postBtn.click({ force: true, timeout: 10000 }).then(() => { clicked = true; }).catch(async () => {
-      await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter').catch(() => {});
-    });
 
-    // Wait for composer to disappear (real success signal)
-    const composerGone = await textArea.waitFor({ state: 'detached', timeout: 20000 })
-      .then(() => true).catch(() => false);
     const stillVisible = !composerGone && await textArea.isVisible().catch(() => false);
     if (stillVisible) {
       // Detect inline error toast
-      const errToast = await page.locator('[data-testid="toast"], div[role="alert"]').first().textContent().catch(() => '');
+      const errToast = await visibleXProblemText(page);
       throw new Error(`X did not confirm the post (composer still open${errToast ? `: ${errToast.trim()}` : ''}). Leaving source files for retry.`);
     }
 
