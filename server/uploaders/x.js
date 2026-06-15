@@ -74,7 +74,7 @@ async function waitForXMediaReady(page, expectedCount, timeout = 90000) {
 }
 
 async function getXPostButton(page) {
-  const buttons = page.locator('[data-testid="tweetButton"], [data-testid="tweetButtonInline"], button:has-text("Post")');
+  const buttons = page.locator('[data-testid="tweetButton"], [data-testid="tweetButtonInline"], [aria-label="Post"][role="button"], button:has-text("Post"), div[role="button"]:has-text("Post")');
   const count = await buttons.count().catch(() => 0);
   for (let i = count - 1; i >= 0; i--) {
     const btn = buttons.nth(i);
@@ -174,6 +174,7 @@ async function uploadToX(imagePath, { description, hashtags = [] }, opts = {}) {
       composerGone = await textArea.waitFor({ state: 'detached', timeout: 15000 })
         .then(() => true).catch(() => false);
       if (!composerGone) {
+        await textArea.click().catch(() => {});
         await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter').catch(() => {});
         composerGone = await textArea.waitFor({ state: 'detached', timeout: 10000 })
           .then(() => true).catch(() => false);
