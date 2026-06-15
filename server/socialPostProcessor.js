@@ -239,7 +239,9 @@ async function processSocialPost(supabase, postId, notify) {
     // Cleanup must not depend on Telegram delivery. If at least one platform posted,
     // remove the source bundle so folder schedules behave like video uploads.
     const cleanupMeta = post.source_meta || await inferSourceMeta(supabase, post);
-    const cleanupLine = cleanupSourceFiles(cleanupMeta, successCount > 0);
+    // Only clear source files after every selected platform is confirmed. In a
+    // partial run, keeping them lets failed platforms (like X) be retried.
+    const cleanupLine = cleanupSourceFiles(cleanupMeta, successCount > 0 && errorCount === 0);
 
     if (notify) {
       try {
