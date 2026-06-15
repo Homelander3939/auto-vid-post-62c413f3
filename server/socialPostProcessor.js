@@ -93,6 +93,24 @@ function stableStatusKey(results) {
   return results.map((r) => `${r.name}:${r.status || ''}`).join('|');
 }
 
+function validateConfirmedPostUrl(platform, url) {
+  const value = String(url || '').trim();
+  if (platform === 'x') {
+    if (!/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[A-Za-z0-9_]{1,15}\/status\/\d+/i.test(value)) {
+      throw new Error('X did not return an exact posted tweet link. Treating as failed to avoid a false success message.');
+    }
+  }
+  if (platform === 'facebook') {
+    const isExact = /^https?:\/\/(?:www\.)?facebook\.com\/(?:permalink\.php\?story_fbid=|[^/]+\/posts\/|groups\/[^/]+\/(?:posts|permalink)\/|[^/]+\/videos\/|photo\/|share\/)/i.test(value)
+      || /[?&](?:story_fbid|fbid)=/i.test(value);
+    const isProfileOnly = /^https?:\/\/(?:www\.)?facebook\.com\/(?:profile\.php\?id=\d+\/?|[A-Za-z0-9.]+\/?)(?:[?#].*)?$/i.test(value);
+    if (!isExact || isProfileOnly) {
+      throw new Error('Facebook did not return an exact post permalink. Treating as failed to avoid a false success message.');
+    }
+  }
+  return value;
+}
+
 function originalNameFromStoragePath(storagePath) {
   const base = path.basename(String(storagePath || ''));
   return base.replace(/^\d+-[a-z0-9]{4,12}-/i, '');
@@ -195,8 +213,8 @@ async function processSocialPost(supabase, postId, notify) {
           browserProfileId: profile?.id,
           targetUrl: account.target_url || null,
         });
+        r.url = validateConfirmedPostUrl(r.name, out?.url || '');
         r.status = 'success';
-        r.url = out?.url || '';
       } catch (e) {
         console.error(`[SocialPosts] ${r.name} failed:`, e.message);
         r.status = 'error';
@@ -221,7 +239,9 @@ async function processSocialPost(supabase, postId, notify) {
     // Cleanup must not depend on Telegram delivery. If at least one platform posted,
     // remove the source bundle so folder schedules behave like video uploads.
     const cleanupMeta = post.source_meta || await inferSourceMeta(supabase, post);
-    const cleanupLine = cleanupSourceFiles(cleanupMeta, successCount > 0);
+    // Only clear source files after every selected platform is confirmed. In a
+    // partial run, keeping them lets failed platforms (like X) be retried.
+    const cleanupLine = cleanupSourceFiles(cleanupMeta, successCount > 0 && errorCount === 0);
 
     if (notify) {
       try {
