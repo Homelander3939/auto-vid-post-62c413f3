@@ -101,7 +101,7 @@ function validateConfirmedPostUrl(platform, url) {
     }
   }
   if (platform === 'facebook') {
-    const isExact = /^https?:\/\/(?:www\.)?facebook\.com\/(?:permalink\.php\?story_fbid=|[^/]+\/posts\/|groups\/[^/]+\/(?:posts|permalink)\/|[^/]+\/videos\/|photo\/|share\/)/i.test(value)
+    const isExact = /^https?:\/\/(?:www\.)?facebook\.com\/(?:permalink\.php\?story_fbid=|story\.php\?|photo\.php\?|[^/]+\/(?:posts|videos|reel|watch)\/|groups\/[^/]+\/(?:posts|permalink)\/|share\/(?:p|r|v|post|video)\/)/i.test(value)
       || /[?&](?:story_fbid|fbid)=/i.test(value);
     const isProfileOnly = /^https?:\/\/(?:www\.)?facebook\.com\/(?:profile\.php\?id=\d+\/?|[A-Za-z0-9.]+\/?)(?:[?#].*)?$/i.test(value);
     if (!isExact || isProfileOnly) {
