@@ -3,6 +3,7 @@ const { launchPersistent, safeClose } = require('./social-post-base');
 const { dismissOverlayBlockingFlow } = require('./overlay-dismiss');
 
 const X_COMPOSE_URL = 'https://x.com/compose/post';
+const X_MAX_IMAGES = 4;
 
 function handleFromXUrl(raw) {
   if (!raw) return null;
@@ -39,6 +40,20 @@ async function getMyHandle(page) {
   return handleFromAvatar;
 }
 
+async function insertXText(page, textArea, text) {
+  await textArea.click();
+  const inserted = await page.evaluate((value) => {
+    const el = document.querySelector('div[role="textbox"][data-testid^="tweetTextarea"]');
+    if (!el) return false;
+    el.focus();
+    const ok = document.execCommand('insertText', false, value || '');
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: value || '' }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return ok || Boolean((el.innerText || el.textContent || '').trim());
+  }, text).catch(() => false);
+  if (!inserted) await page.keyboard.insertText(text);
+}
+
 async function getXPostButton(page) {
   const buttons = page.locator('[data-testid="tweetButtonInline"], [data-testid="tweetButton"], [aria-label="Post"][role="button"]');
   const count = await buttons.count().catch(() => 0);
@@ -68,31 +83,54 @@ async function getXMediaState(page) {
       return r.width > 8 && r.height > 8 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
     };
     const textbox = document.querySelector('div[role="textbox"][data-testid^="tweetTextarea"]');
-    const composer = textbox?.closest('[role="dialog"], form, [data-testid="primaryColumn"]') || document;
-    const attachments = composer.querySelector('[data-testid="attachments"]') || composer;
-    const previews = Array.from(attachments.querySelectorAll('img[src^="blob:"], video, [data-testid="attachments"] img')).filter(visible).length;
-    const busy = Array.from(attachments.querySelectorAll('[role="progressbar"], [aria-valuenow], [aria-busy="true"], [aria-label*="Uploading" i], [aria-label*="Processing" i]')).some(visible);
-    return { previews, busy };
-  }).catch(() => ({ previews: 0, busy: false }));
+    const composer = textbox?.closest('[role="dialog"], form, main, [data-testid="primaryColumn"]') || document;
+    const previews = Array.from(composer.querySelectorAll([
+      '[data-testid="attachments"] img',
+      '[data-testid="attachments"] video',
+      'img[src^="blob:"]',
+      'video[src^="blob:"]',
+      '[role="img"][aria-label*="Image" i]',
+    ].join(','))).filter(visible).length;
+    const busy = Array.from(composer.querySelectorAll([
+      '[role="progressbar"]',
+      '[aria-busy="true"]',
+      '[aria-label*="Uploading" i]',
+      '[aria-label*="Processing" i]',
+      '[data-testid*="progress" i]',
+    ].join(','))).some(visible);
+    const problem = Array.from(document.querySelectorAll('[data-testid="toast"], div[role="alert"], [aria-live="assertive"], [aria-live="polite"]'))
+      .map((n) => (n.innerText || n.textContent || '').trim())
+      .filter(Boolean)
+      .join(' | ')
+      .slice(0, 400);
+    return { previews, busy, problem };
+  }).catch(() => ({ previews: 0, busy: false, problem: '' }));
 }
 
-async function waitForXMediaReady(page, expectedCount, timeout = 90000) {
+async function waitForXMediaReady(page, expectedCount, timeout = 120000) {
   if (!expectedCount) return true;
   const deadline = Date.now() + timeout;
-  let enabledWithPreviewSince = 0;
+  let stableReadySince = 0;
+  let lastState = null;
   while (Date.now() < deadline) {
     const state = await getXMediaState(page);
+    lastState = state;
+    if (/failed to upload|could not upload|unsupported|too large|try again/i.test(state.problem || '')) {
+      throw new Error(`X rejected the media: ${state.problem}. Leaving source files for retry.`);
+    }
     const postEnabled = await isXPostButtonEnabled(page).catch(() => false);
-    if (state.previews >= expectedCount && !state.busy && postEnabled) return true;
-    if (state.previews >= expectedCount && postEnabled) {
-      if (!enabledWithPreviewSince) enabledWithPreviewSince = Date.now();
-      if (Date.now() - enabledWithPreviewSince > 5000) return true;
+    const hasExpectedPreview = state.previews >= Math.min(expectedCount, X_MAX_IMAGES);
+    const readyEnough = postEnabled && !state.busy && (hasExpectedPreview || state.previews > 0);
+    if (readyEnough) {
+      if (!stableReadySince) stableReadySince = Date.now();
+      if (Date.now() - stableReadySince >= 2500) return true;
     } else {
-      enabledWithPreviewSince = 0;
+      stableReadySince = 0;
     }
     await page.waitForTimeout(750);
   }
-  return false;
+  const detail = lastState ? ` previews=${lastState.previews}, busy=${lastState.busy}, message=${lastState.problem || 'none'}` : '';
+  throw new Error(`X media upload did not become publish-ready.${detail}. Leaving source files for retry.`);
 }
 
 async function waitForEnabledXPostButton(page, timeout = 90000) {
@@ -145,29 +183,44 @@ async function visibleXProblemText(page) {
   }).catch(() => '');
 }
 
+async function extractXStatusUrl(page) {
+  const directMatch = page.url().match(/https?:\/\/(?:x|twitter)\.com\/[^/]+\/status\/\d+/);
+  if (directMatch) return directMatch[0].replace(/^https?:\/\/twitter\.com/i, 'https://x.com');
+  return await page.evaluate(() => {
+    const anchors = Array.from(document.querySelectorAll('[data-testid="toast"] a[href*="/status/"], div[role="alert"] a[href*="/status/"], a[href*="/status/"]'));
+    for (const a of anchors) {
+      const href = a.getAttribute('href') || '';
+      const absolute = href.startsWith('http') ? href : `https://x.com${href}`;
+      const m = absolute.match(/https?:\/\/(?:x|twitter)\.com\/[^/]+\/status\/\d+/);
+      if (m) return m[0].replace(/^https?:\/\/twitter\.com/i, 'https://x.com');
+    }
+    return null;
+  }).catch(() => null);
+}
+
 async function waitForXPublishConfirmation(page, textArea, timeout = 45000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    const directUrl = page.url().match(/https?:\/\/(?:x|twitter)\.com\/[^/]+\/status\/\d+/);
-    if (directUrl) return true;
+    const statusUrl = await extractXStatusUrl(page);
+    if (statusUrl) return { confirmed: true, url: statusUrl };
     const stillVisible = await textArea.isVisible().catch(() => false);
     const toast = await visibleXProblemText(page);
-    if (!stillVisible || /your post was sent|posted|view/i.test(toast)) return true;
+    if (/failed|error|try again|could not|something went wrong/i.test(toast)) return { confirmed: false, error: toast };
+    if (!stillVisible || /your post was sent|posted|view/i.test(toast)) return { confirmed: true, url: null };
     await page.waitForTimeout(750);
   }
-  return false;
+  return { confirmed: false, error: '' };
 }
 
 async function resolvePostedXUrl(page, handle, snippet) {
-  const cur = page.url();
-  const directMatch = cur.match(/https?:\/\/(?:x|twitter)\.com\/[^/]+\/status\/\d+/);
-  if (directMatch) return directMatch[0].replace(/^https?:\/\/twitter\.com/i, 'https://x.com');
-  if (!handle) return cur;
+  const direct = await extractXStatusUrl(page);
+  if (direct) return direct;
+  if (!handle) return page.url();
 
   try {
     await page.goto(`https://x.com/${handle}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    for (let attempt = 0; attempt < 6; attempt++) {
-      await page.waitForTimeout(3000 + attempt * 1000);
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await page.waitForTimeout(2500 + attempt * 1000);
       const href = await page.evaluate(({ h, text }) => {
         const norm = (value) => String(value || '').toLowerCase().replace(/https?:\/\/\S+/g, '').replace(/#\w+/g, '').replace(/\s+/g, ' ').trim();
         const wanted = norm(text).slice(0, 90);
@@ -197,6 +250,10 @@ async function resolvePostedXUrl(page, handle, snippet) {
 
 async function uploadToX(imagePath, { description, hashtags = [] }, opts = {}) {
   const imageFiles = Array.isArray(imagePath) ? imagePath.filter(Boolean) : (imagePath ? [imagePath] : []);
+  const xImageFiles = imageFiles.slice(0, X_MAX_IMAGES);
+  if (imageFiles.length > X_MAX_IMAGES) {
+    console.warn(`[X] X supports ${X_MAX_IMAGES} images per post; uploading first ${X_MAX_IMAGES} of ${imageFiles.length}.`);
+  }
   const context = await launchPersistent('x', opts);
   try {
     const page = context.pages()[0] || await context.newPage();
@@ -220,47 +277,53 @@ async function uploadToX(imagePath, { description, hashtags = [] }, opts = {}) {
 
     const textArea = page.locator('div[role="textbox"][data-testid^="tweetTextarea"]').first();
     await textArea.waitFor({ state: 'visible', timeout: 30000 });
-    await textArea.click();
 
     const fullText = hashtags.length
       ? `${description || ''}\n\n${hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ')}`
       : (description || '');
 
-    await page.keyboard.insertText(fullText);
+    await insertXText(page, textArea, fullText);
     await page.waitForTimeout(1000);
 
-    if (imageFiles.length) {
+    if (xImageFiles.length) {
       const fileInput = page.locator('input[type="file"][accept*="image"], input[type="file"][accept*="video"], input[type="file"]').first();
-      await fileInput.setInputFiles(imageFiles).catch(async () => {
+      await fileInput.setInputFiles(xImageFiles).catch(async () => {
         const attach = page.locator('[data-testid="fileInput"], [aria-label*="media" i]').first();
         await attach.click({ trial: true }).catch(() => {});
-        await fileInput.setInputFiles(imageFiles);
+        await fileInput.setInputFiles(xImageFiles);
       });
-      await page.locator('[data-testid="attachments"] img, img[src^="blob:"], video').first()
-        .waitFor({ state: 'visible', timeout: 30000 });
-      const mediaReady = await waitForXMediaReady(page, imageFiles.length, 120000);
-      if (!mediaReady) throw new Error('X media upload did not finish or Post button stayed disabled. Leaving source files for retry.');
+      await page.locator('[data-testid="attachments"] img, [data-testid="attachments"] video, img[src^="blob:"], video[src^="blob:"]').first()
+        .waitFor({ state: 'visible', timeout: 45000 });
+      await waitForXMediaReady(page, xImageFiles.length, 120000);
     }
 
     let confirmed = false;
+    let publishedUrl = null;
+    let lastError = '';
     for (let attempt = 0; attempt < 4 && !confirmed; attempt++) {
       await dismissOverlayBlockingFlow(page, { logPrefix: '[X]', clickBackground: false }).catch(() => {});
       await clickXPostButton(page);
-      confirmed = await waitForXPublishConfirmation(page, textArea, 18000);
+      let result = await waitForXPublishConfirmation(page, textArea, 22000);
+      confirmed = result.confirmed;
+      publishedUrl = result.url || publishedUrl;
+      lastError = result.error || lastError;
       if (!confirmed) {
         await textArea.click().catch(() => {});
         await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter').catch(() => {});
-        confirmed = await waitForXPublishConfirmation(page, textArea, 12000);
+        result = await waitForXPublishConfirmation(page, textArea, 15000);
+        confirmed = result.confirmed;
+        publishedUrl = result.url || publishedUrl;
+        lastError = result.error || lastError;
       }
       if (!confirmed) await page.waitForTimeout(1500);
     }
 
     if (!confirmed) {
-      const errToast = await visibleXProblemText(page);
+      const errToast = lastError || await visibleXProblemText(page);
       throw new Error(`X did not confirm the post${errToast ? `: ${errToast.trim()}` : ''}. Leaving source files for retry.`);
     }
 
-    const finalUrl = await resolvePostedXUrl(page, myHandle, fullText);
+    const finalUrl = publishedUrl || await resolvePostedXUrl(page, myHandle, fullText);
     if (!/\/status\/\d+/.test(finalUrl)) {
       throw new Error('X post not visible on profile after publish. Treating as failure to avoid wrong link.');
     }
