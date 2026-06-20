@@ -5,7 +5,11 @@ function normalizeFacebookPermalink(raw) {
   if (!raw) return null;
   let url;
   try { url = new URL(raw, 'https://www.facebook.com'); } catch { return null; }
-  if (!/(^|\.)facebook\.com$/i.test(url.hostname)) return null;
+  if (/(^|\.)facebook\.com$/i.test(url.hostname) && /^\/plugins\/post\.php$/i.test(url.pathname)) {
+    const embedded = url.searchParams.get('href');
+    if (embedded) return normalizeFacebookPermalink(embedded);
+  }
+  if (!/(^|\.)(facebook|fb)\.com$/i.test(url.hostname)) return null;
   url.hash = '';
 
   const path = url.pathname.replace(/\/$/, '');
@@ -17,7 +21,8 @@ function normalizeFacebookPermalink(raw) {
     || /\/permalink\.php$/i.test(path)
     || /\/story\.php$/i.test(path)
     || /\/photo\.php$/i.test(path)
-    || /\/share\/(?:p|r|v|post|video)\//i.test(path)) {
+    || /\/(?:share|shareable)\/(?:p|r|v|post|video)\//i.test(path)
+    || /\/shares?\//i.test(path)) {
     const keep = new URLSearchParams();
     for (const key of ['story_fbid', 'fbid', 'id']) {
       const value = url.searchParams.get(key);
@@ -44,12 +49,16 @@ async function extractFacebookPermalinkFromArticles(page, snippet = '') {
     const normalizeUrl = (raw) => {
       try {
         const u = new URL(raw, 'https://www.facebook.com');
-        if (!/(^|\.)facebook\.com$/i.test(u.hostname)) return null;
+        if (/(^|\.)facebook\.com$/i.test(u.hostname) && /^\/plugins\/post\.php$/i.test(u.pathname)) {
+          const embedded = u.searchParams.get('href');
+          if (embedded) return normalizeUrl(embedded);
+        }
+        if (!/(^|\.)(facebook|fb)\.com$/i.test(u.hostname)) return null;
         const p = u.pathname.replace(/\/$/, '');
         const story = u.searchParams.get('story_fbid') || u.searchParams.get('fbid');
         const id = u.searchParams.get('id');
         if (story && id) return `https://www.facebook.com/permalink.php?story_fbid=${encodeURIComponent(story)}&id=${encodeURIComponent(id)}`;
-        if (/\/(?:posts|videos|reel|watch)\//i.test(p) || /\/groups\/[^/]+\/(?:posts|permalink)\//i.test(p) || /\/permalink\.php$/i.test(p) || /\/story\.php$/i.test(p) || /\/photo\.php$/i.test(p) || /\/share\/(?:p|r|v|post|video)\//i.test(p)) {
+        if (/\/(?:posts|videos|reel|watch)\//i.test(p) || /\/groups\/[^/]+\/(?:posts|permalink)\//i.test(p) || /\/permalink\.php$/i.test(p) || /\/story\.php$/i.test(p) || /\/photo\.php$/i.test(p) || /\/(?:share|shareable)\/(?:p|r|v|post|video)\//i.test(p) || /\/shares?\//i.test(p)) {
           const keep = new URLSearchParams();
           for (const key of ['story_fbid', 'fbid', 'id']) {
             const value = u.searchParams.get(key);
@@ -94,11 +103,25 @@ async function copyFacebookLinkFromTopArticle(page, snippet = '') {
     const article = articles.nth(i);
     const body = normalizePostText(await article.innerText({ timeout: 3000 }).catch(() => ''));
     if (wanted && i > 0 && !body.includes(wanted.slice(0, Math.min(28, wanted.length))) && !/just now|\b1m\b|\b2m\b/i.test(body)) continue;
-    const menu = article.locator('[aria-label*="Actions for this post" i], [aria-label="More"][role="button"], [aria-label*="More options" i][role="button"], div[aria-haspopup="menu"][role="button"]').last();
-    if (!(await menu.isVisible().catch(() => false))) continue;
+    const menu = article.locator('[aria-label*="Actions for this post" i], [aria-label="More"][role="button"], [aria-label*="More options" i][role="button"], [aria-label*="Open Menu" i][role="button"], div[aria-haspopup="menu"][role="button"]').last();
+    if (!(await menu.isVisible().catch(() => false))) {
+      const href = await article.locator('a[href*="story_fbid="], a[href*="/posts/"], a[href*="/permalink/"], a[href*="/groups/"][href*="/posts/"], a[href*="/share/"]').first().getAttribute('href').catch(() => null);
+      const normalizedHref = normalizeFacebookPermalink(href);
+      if (normalizedHref) return normalizedHref;
+      continue;
+    }
+    await menu.scrollIntoViewIfNeeded().catch(() => {});
     await menu.click({ force: true }).catch(() => {});
     await page.waitForTimeout(1000);
-    const copy = page.locator('[role="menuitem"]:has-text("Copy link"), [role="menuitem"]:has-text("Copy Link"), div[role="button"]:has-text("Copy link"), span:has-text("Copy link")').first();
+    let copy = page.locator('[role="menuitem"]:has-text("Copy link"), [role="menuitem"]:has-text("Copy Link"), div[role="button"]:has-text("Copy link"), span:has-text("Copy link")').first();
+    if (!(await copy.isVisible().catch(() => false))) {
+      const embed = page.locator('[role="menuitem"]:has-text("Embed"), div[role="button"]:has-text("Embed"), span:has-text("Embed")').first();
+      if (await embed.isVisible().catch(() => false)) {
+        await embed.click({ force: true }).catch(() => {});
+        await page.waitForTimeout(1200);
+        copy = page.locator('[role="button"]:has-text("Copy Code"), [role="button"]:has-text("Copy code"), span:has-text("Copy Code"), span:has-text("Copy code")').first();
+      }
+    }
     if (await copy.isVisible().catch(() => false)) {
       await copy.click({ force: true }).catch(() => {});
       await page.waitForTimeout(800);
