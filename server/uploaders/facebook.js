@@ -5,26 +5,32 @@ function normalizeFacebookPermalink(raw) {
   if (!raw) return null;
   let url;
   try { url = new URL(raw, 'https://www.facebook.com'); } catch { return null; }
-  if (!/(^|\.)facebook\.com$/i.test(url.hostname)) return null;
+  if (/(^|\.)facebook\.com$/i.test(url.hostname) && /^\/plugins\/post\.php$/i.test(url.pathname)) {
+    const embedded = url.searchParams.get('href');
+    if (embedded) return normalizeFacebookPermalink(embedded);
+  }
+  if (!/(^|\.)(facebook|fb)\.com$/i.test(url.hostname)) return null;
   url.hash = '';
 
   const path = url.pathname.replace(/\/$/, '');
   const story = url.searchParams.get('story_fbid') || url.searchParams.get('fbid');
   const owner = url.searchParams.get('id');
-  if (story && owner) return `https://www.facebook.com/permalink.php?story_fbid=${encodeURIComponent(story)}&id=${encodeURIComponent(owner)}`;
+  const origin = 'https://www.facebook.com';
+  if (story && owner) return `${origin}/permalink.php?story_fbid=${encodeURIComponent(story)}&id=${encodeURIComponent(owner)}`;
   if (/\/(?:posts|videos|reel|watch)\//i.test(path)
     || /\/groups\/[^/]+\/(?:posts|permalink)\//i.test(path)
     || /\/permalink\.php$/i.test(path)
     || /\/story\.php$/i.test(path)
     || /\/photo\.php$/i.test(path)
-    || /\/share\/(?:p|r|v|post|video)\//i.test(path)) {
+    || /\/(?:share|shareable)\/(?:p|r|v|post|video)\//i.test(path)
+    || /\/shares?\//i.test(path)) {
     const keep = new URLSearchParams();
     for (const key of ['story_fbid', 'fbid', 'id']) {
       const value = url.searchParams.get(key);
       if (value) keep.set(key, value);
     }
     const query = keep.toString();
-    return `${url.origin}${path}${query ? `?${query}` : ''}`;
+    return `${origin}${path}${query ? `?${query}` : ''}`;
   }
   return null;
 }
@@ -39,24 +45,70 @@ function normalizePostText(value) {
     .trim();
 }
 
+function extractFacebookPermalinkFromText(raw) {
+  const text = String(raw || '');
+  const candidates = [];
+  for (const match of text.matchAll(/https?:\\?\/\\?\/(?:www\.|web\.|m\.)?(?:facebook|fb)\.com[^\s"'<>\\)]+/gi)) {
+    candidates.push(match[0].replace(/\\\//g, '/').replace(/\\u0025/g, '%'));
+  }
+  for (const encoded of text.matchAll(/https?%3A%2F%2F(?:www\.|web\.|m\.)?(?:facebook|fb)\.com[^\s"'<>\\)]+/gi)) {
+    try { candidates.push(decodeURIComponent(encoded[0])); } catch {}
+  }
+  for (const candidate of candidates) {
+    const normalized = normalizeFacebookPermalink(candidate);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+async function waitForFacebookMediaReady(page, dialogSel, expectedCount, timeout = 120000) {
+  if (!expectedCount) return;
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const state = await page.evaluate((selector) => {
+      const dialog = document.querySelector(selector) || document;
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        const s = window.getComputedStyle(el);
+        return r.width > 8 && r.height > 8 && s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+      };
+      const previews = Array.from(dialog.querySelectorAll('img[src^="blob:"], video[src^="blob:"], [aria-label*="Photo" i] img, [aria-label*="image" i] img')).filter(visible).length;
+      const busy = Array.from(dialog.querySelectorAll('[role="progressbar"], [aria-busy="true"], [aria-label*="Uploading" i], [aria-label*="Processing" i]')).some(visible);
+      const text = (dialog.innerText || dialog.textContent || '').slice(0, 1000);
+      return { previews, busy, text };
+    }, dialogSel).catch(() => ({ previews: 0, busy: false, text: '' }));
+    if (/couldn't upload|could not upload|failed to upload|unsupported|try again/i.test(state.text || '')) {
+      throw new Error(`Facebook rejected the media: ${state.text}. Leaving source files for retry.`);
+    }
+    if (!state.busy && (state.previews >= expectedCount || state.previews > 0)) return;
+    await page.waitForTimeout(750);
+  }
+  throw new Error('Facebook media upload did not finish. Leaving source files for retry.');
+}
+
 async function extractFacebookPermalinkFromArticles(page, snippet = '') {
   return await page.evaluate((rawSnippet) => {
     const normalizeUrl = (raw) => {
       try {
         const u = new URL(raw, 'https://www.facebook.com');
-        if (!/(^|\.)facebook\.com$/i.test(u.hostname)) return null;
+        if (/(^|\.)facebook\.com$/i.test(u.hostname) && /^\/plugins\/post\.php$/i.test(u.pathname)) {
+          const embedded = u.searchParams.get('href');
+          if (embedded) return normalizeUrl(embedded);
+        }
+        if (!/(^|\.)(facebook|fb)\.com$/i.test(u.hostname)) return null;
         const p = u.pathname.replace(/\/$/, '');
         const story = u.searchParams.get('story_fbid') || u.searchParams.get('fbid');
         const id = u.searchParams.get('id');
-        if (story && id) return `https://www.facebook.com/permalink.php?story_fbid=${encodeURIComponent(story)}&id=${encodeURIComponent(id)}`;
-        if (/\/(?:posts|videos|reel|watch)\//i.test(p) || /\/groups\/[^/]+\/(?:posts|permalink)\//i.test(p) || /\/permalink\.php$/i.test(p) || /\/story\.php$/i.test(p) || /\/photo\.php$/i.test(p) || /\/share\/(?:p|r|v|post|video)\//i.test(p)) {
+        const origin = 'https://www.facebook.com';
+        if (story && id) return `${origin}/permalink.php?story_fbid=${encodeURIComponent(story)}&id=${encodeURIComponent(id)}`;
+        if (/\/(?:posts|videos|reel|watch)\//i.test(p) || /\/groups\/[^/]+\/(?:posts|permalink)\//i.test(p) || /\/permalink\.php$/i.test(p) || /\/story\.php$/i.test(p) || /\/photo\.php$/i.test(p) || /\/(?:share|shareable)\/(?:p|r|v|post|video)\//i.test(p) || /\/shares?\//i.test(p)) {
           const keep = new URLSearchParams();
           for (const key of ['story_fbid', 'fbid', 'id']) {
             const value = u.searchParams.get(key);
             if (value) keep.set(key, value);
           }
           const query = keep.toString();
-          return `${u.origin}${p}${query ? `?${query}` : ''}`;
+          return `${origin}${p}${query ? `?${query}` : ''}`;
         }
       } catch {}
       return null;
@@ -94,16 +146,30 @@ async function copyFacebookLinkFromTopArticle(page, snippet = '') {
     const article = articles.nth(i);
     const body = normalizePostText(await article.innerText({ timeout: 3000 }).catch(() => ''));
     if (wanted && i > 0 && !body.includes(wanted.slice(0, Math.min(28, wanted.length))) && !/just now|\b1m\b|\b2m\b/i.test(body)) continue;
-    const menu = article.locator('[aria-label*="Actions for this post" i], [aria-label="More"][role="button"], [aria-label*="More options" i][role="button"], div[aria-haspopup="menu"][role="button"]').last();
-    if (!(await menu.isVisible().catch(() => false))) continue;
+    const menu = article.locator('[aria-label*="Actions for this post" i], [aria-label="More"][role="button"], [aria-label*="More options" i][role="button"], [aria-label*="Open Menu" i][role="button"], div[aria-haspopup="menu"][role="button"]').last();
+    if (!(await menu.isVisible().catch(() => false))) {
+      const href = await article.locator('a[href*="story_fbid="], a[href*="/posts/"], a[href*="/permalink/"], a[href*="/groups/"][href*="/posts/"], a[href*="/share/"]').first().getAttribute('href').catch(() => null);
+      const normalizedHref = normalizeFacebookPermalink(href);
+      if (normalizedHref) return normalizedHref;
+      continue;
+    }
+    await menu.scrollIntoViewIfNeeded().catch(() => {});
     await menu.click({ force: true }).catch(() => {});
     await page.waitForTimeout(1000);
-    const copy = page.locator('[role="menuitem"]:has-text("Copy link"), [role="menuitem"]:has-text("Copy Link"), div[role="button"]:has-text("Copy link"), span:has-text("Copy link")').first();
+    let copy = page.locator('[role="menuitem"]:has-text("Copy link"), [role="menuitem"]:has-text("Copy Link"), div[role="button"]:has-text("Copy link"), span:has-text("Copy link")').first();
+    if (!(await copy.isVisible().catch(() => false))) {
+      const embed = page.locator('[role="menuitem"]:has-text("Embed"), div[role="button"]:has-text("Embed"), span:has-text("Embed")').first();
+      if (await embed.isVisible().catch(() => false)) {
+        await embed.click({ force: true }).catch(() => {});
+        await page.waitForTimeout(1200);
+        copy = page.locator('[role="button"]:has-text("Copy Code"), [role="button"]:has-text("Copy code"), span:has-text("Copy Code"), span:has-text("Copy code")').first();
+      }
+    }
     if (await copy.isVisible().catch(() => false)) {
       await copy.click({ force: true }).catch(() => {});
       await page.waitForTimeout(800);
       const clipped = await page.evaluate(() => navigator.clipboard?.readText?.()).catch(() => null);
-      const normalized = normalizeFacebookPermalink(clipped);
+      const normalized = normalizeFacebookPermalink(clipped) || extractFacebookPermalinkFromText(clipped);
       if (normalized) return normalized;
     }
     await page.keyboard.press('Escape').catch(() => {});
@@ -114,12 +180,6 @@ async function copyFacebookLinkFromTopArticle(page, snippet = '') {
 async function resolvePostedFacebookUrl(page, targetUrl = null, snippet = '') {
   const direct = normalizeFacebookPermalink(page.url());
   if (direct) return direct;
-
-  await page.waitForTimeout(2500);
-  const copied = await copyFacebookLinkFromTopArticle(page, snippet);
-  if (copied) return copied;
-  const onCurrentPage = await extractFacebookPermalinkFromArticles(page, snippet);
-  if (onCurrentPage) return onCurrentPage;
 
   const confirmationLink = await page.evaluate(() => {
     const anchors = Array.from(document.querySelectorAll('a[href]'));
@@ -133,6 +193,12 @@ async function resolvePostedFacebookUrl(page, targetUrl = null, snippet = '') {
   }).catch(() => null);
   const fromConfirmation = normalizeFacebookPermalink(confirmationLink);
   if (fromConfirmation) return fromConfirmation;
+
+  await page.waitForTimeout(2500);
+  const copied = await copyFacebookLinkFromTopArticle(page, snippet);
+  if (copied) return copied;
+  const onCurrentPage = await extractFacebookPermalinkFromArticles(page, snippet);
+  if (onCurrentPage) return onCurrentPage;
 
   const urlsToScan = [];
   if (targetUrl && /^https?:\/\//i.test(targetUrl) && !/^https?:\/\/(?:www\.)?facebook\.com\/?$/i.test(targetUrl)) urlsToScan.push(targetUrl);
@@ -203,7 +269,7 @@ async function uploadToFacebook(imagePath, { description, hashtags = [] }, opts 
         await page.waitForTimeout(1500);
         await fileInput.setInputFiles(imageFiles).catch(() => {});
       }
-      await page.waitForTimeout(5000 + (imageFiles.length - 1) * 1500);
+      await waitForFacebookMediaReady(page, dialogSel, imageFiles.length, 120000);
     }
 
     // Dismiss popovers again before clicking buttons
@@ -226,6 +292,10 @@ async function uploadToFacebook(imagePath, { description, hashtags = [] }, opts 
       const disabled = await postBtn.getAttribute('aria-disabled').catch(() => null);
       if (disabled !== 'true') break;
       await page.waitForTimeout(500);
+    }
+    const stillDisabled = await postBtn.getAttribute('aria-disabled').catch(() => null);
+    if (stillDisabled === 'true') {
+      throw new Error('Facebook Post button stayed disabled. Leaving source files for retry.');
     }
     await postBtn.click({ force: true }).catch(async () => { await postBtn.click(); });
 
