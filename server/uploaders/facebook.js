@@ -167,7 +167,7 @@ async function copyFacebookLinkFromTopArticle(page, snippet = '') {
       await copy.click({ force: true }).catch(() => {});
       await page.waitForTimeout(800);
       const clipped = await page.evaluate(() => navigator.clipboard?.readText?.()).catch(() => null);
-      const normalized = normalizeFacebookPermalink(clipped);
+      const normalized = normalizeFacebookPermalink(clipped) || extractFacebookPermalinkFromText(clipped);
       if (normalized) return normalized;
     }
     await page.keyboard.press('Escape').catch(() => {});
@@ -267,7 +267,7 @@ async function uploadToFacebook(imagePath, { description, hashtags = [] }, opts 
         await page.waitForTimeout(1500);
         await fileInput.setInputFiles(imageFiles).catch(() => {});
       }
-      await page.waitForTimeout(5000 + (imageFiles.length - 1) * 1500);
+      await waitForFacebookMediaReady(page, dialogSel, imageFiles.length, 120000);
     }
 
     // Dismiss popovers again before clicking buttons
@@ -290,6 +290,10 @@ async function uploadToFacebook(imagePath, { description, hashtags = [] }, opts 
       const disabled = await postBtn.getAttribute('aria-disabled').catch(() => null);
       if (disabled !== 'true') break;
       await page.waitForTimeout(500);
+    }
+    const stillDisabled = await postBtn.getAttribute('aria-disabled').catch(() => null);
+    if (stillDisabled === 'true') {
+      throw new Error('Facebook Post button stayed disabled. Leaving source files for retry.');
     }
     await postBtn.click({ force: true }).catch(async () => { await postBtn.click(); });
 
